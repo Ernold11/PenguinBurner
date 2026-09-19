@@ -1,26 +1,31 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
 import subprocess
 import time
+from pathlib import Path
 
 from overlay.state import read_overlay_state
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from profiles.uv.profile_store import profile_clock_voltage_memory_summary
-from profiles.uv.profile_store import profile_display_name
-from profiles.uv.profile_store import profile_presentation_name
-from profiles.uv.profile_store import read_auto_uv_profile_summaries
-from profiles.uv.profile_tiers import available_adaptive_tiers
-from profiles.uv.profile_tiers import profile_tier_label
-from profiles.uv.profile_tiers import resolve_profile_tier_profiles
-from runtime.daemon_client import boot_runtime_spec
-from runtime.daemon_client import daemon_status
-from runtime.support.runtime_service import LEGACY_PENGUIN_BURNER_UNIT_NAME
-from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
-from runtime.support.runtime_service import SYSTEMCTL
-from runtime.support.runtime_service import legacy_systemd_service_unit_path
-from runtime.support.runtime_service import systemd_service_unit_path
+from profiles.uv.profile_store import (
+    STOCK_PROFILE_SELECTOR,
+    profile_clock_voltage_memory_summary,
+    profile_display_name,
+    profile_presentation_name,
+    read_auto_uv_profile_summaries,
+)
+from profiles.uv.profile_tiers import (
+    available_adaptive_tiers,
+    profile_tier_label,
+    resolve_profile_tier_profiles,
+)
+from runtime.daemon_client import boot_runtime_spec, daemon_status
+from runtime.support.runtime_service import (
+    LEGACY_PENGUIN_BURNER_UNIT_NAME,
+    PENGUIN_BURNER_UNIT_NAME,
+    SYSTEMCTL,
+    legacy_systemd_service_unit_path,
+    systemd_service_unit_path,
+)
 
 
 def load_profile_summaries() -> list[dict]:

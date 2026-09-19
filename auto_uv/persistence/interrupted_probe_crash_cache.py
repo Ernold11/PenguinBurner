@@ -8,7 +8,6 @@ from pathlib import Path
 from .auto_uv_persisted_json_files import probe_in_progress_path
 from .unsafe_voltage_blacklist_file import record_unsafe_voltage
 
-
 CRASH_CACHE_CANDIDATE_PHASES = {
     "candidate",
     "final-verify",

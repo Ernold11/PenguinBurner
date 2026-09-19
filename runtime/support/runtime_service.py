@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-import dataclasses
-import os
-from pathlib import Path
-import pwd
 import configparser
+import dataclasses
 import json
+import os
+import pwd
 import shlex
 import shutil
 import stat
@@ -13,16 +12,21 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
-from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
-from runtime.daemon_client import apply_runtime_spec
-from runtime.daemon_client import daemon_status
-from runtime.daemon_client import set_boot_runtime_spec
-from runtime.daemon_client import stop_runtime_profile
-from runtime.runtime_spec import build_runtime_spec_from_intent, runtime_intent_from_argv
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from common.subprocess_locale import stable_subprocess_env
-
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+from runtime.daemon_client import (
+    DEFAULT_DAEMON_SOCKET,
+    apply_runtime_spec,
+    daemon_status,
+    set_boot_runtime_spec,
+    stop_runtime_profile,
+)
+from runtime.runtime_spec import (
+    build_runtime_spec_from_intent,
+    runtime_intent_from_argv,
+)
 
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
 ROOT_UID = 0

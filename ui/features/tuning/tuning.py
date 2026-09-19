@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_ADAPTIVE
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_ADAPTIVE,
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_PERFORMANCE,
+)
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
     uv_limit_power_limit_pct_for_gpu,
@@ -14,9 +16,7 @@ from auto_uv.scan_mode.uv_limits import (
 )
 from common.penguin_burner_paths import default_runtime_config_path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-
 from ui.features.tuning.gpu_selection import runtime_gpu_index
-
 
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.tail_rise_bins
 DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins

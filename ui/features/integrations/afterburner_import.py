@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from common.penguin_burner_paths import (
+    default_runtime_config_path,
+    discover_afterburner_device_profiles,
+    managed_afterburner_root,
+    resolve_afterburner_root,
+    sync_afterburner_export_tree,
+)
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from integrations.afterburner.fan_curve import load_afterburner_fan_settings
 from integrations.afterburner.import_vf_curve import (
     build_plan,
@@ -12,19 +21,11 @@ from integrations.afterburner.vfcurve import (
     discover_afterburner_vf_sections,
     resolve_afterburner_vf_source,
 )
-from integrations.afterburner.vfcurve_describe import describe_afterburner_flatten_validation
-from common.penguin_burner_paths import (
-    default_runtime_config_path,
-    discover_afterburner_device_profiles,
-    managed_afterburner_root,
-    resolve_afterburner_root,
-    sync_afterburner_export_tree,
+from integrations.afterburner.vfcurve_describe import (
+    describe_afterburner_flatten_validation,
 )
-from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.gpu_identity import normalized_gpu_identity
 from profiles.uv.profile_store import archive_auto_uv_profile
-
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from integrations.afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from integrations.afterburner.import_fan_curve import write_config
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ def gpu_choices_from_nvml_identities(identities) -> list[GpuChoice]:
     choices: list[GpuChoice] = []
     for identity in identities:
         try:
-            index = max(0, int(getattr(identity, "index")))
+            index = max(0, int(identity.index))
         except (TypeError, ValueError):
             continue
         if index in seen:

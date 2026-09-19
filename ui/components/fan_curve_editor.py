@@ -14,8 +14,11 @@ from curve_editors.fan.fan_curve_manual_editor import (
 )
 
 from .. import theme
-from .curve_editor import CurveEditHistory, install_curve_editor_shortcut_legend
-from .curve_editor import nearest_curve_point
+from .curve_editor import (
+    CurveEditHistory,
+    install_curve_editor_shortcut_legend,
+    nearest_curve_point,
+)
 from .curve_plot import CurvePlot
 
 

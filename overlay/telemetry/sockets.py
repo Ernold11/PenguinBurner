@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import pwd
+from pathlib import Path
 
 
 def latency_socket_path(env: dict[str, str] | None = None) -> Path:

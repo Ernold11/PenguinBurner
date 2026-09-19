@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from overlay.wrapper_tokens import (
     ingame_latency_present,
     overlay_present,
-    strip_penguin_burner_tokens as strip_wrapper_tokens,
     wrapper_present,
     wrapper_tokens,
+)
+from overlay.wrapper_tokens import (
+    strip_penguin_burner_tokens as strip_wrapper_tokens,
 )
 
 COMMAND_TOKEN = "%command%"

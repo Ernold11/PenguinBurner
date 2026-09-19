@@ -3,12 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import signal
 import socket
 import sys
+from pathlib import Path
 from typing import Any
-
 
 DEFAULT_DAEMON_SOCKET = "/run/penguin-burnerd.sock"
 

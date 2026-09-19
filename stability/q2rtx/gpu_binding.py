@@ -25,8 +25,7 @@ def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:
 
 def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
     cleaned = str(pci_device_id or "").strip().lower()
-    if cleaned.startswith("0x"):
-        cleaned = cleaned[2:]
+    cleaned = cleaned.removeprefix("0x")
     cleaned = "".join(ch for ch in cleaned if ch in "0123456789abcdef")
     if len(cleaned) < 8:
         return "", ""

@@ -51,8 +51,8 @@ from .preference_rows import (
     preference_group,
     preference_row,
 )
-from .toggle_switch import make_toggle_switch
 from .spinner import make_spinner
+from .toggle_switch import make_toggle_switch
 
 _MODE_LABELS = {
     GAME_MODE_ADAPTIVE: "Adaptive",

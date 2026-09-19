@@ -7,58 +7,70 @@ from typing import Any
 from cli.runtime_config_file import persist_on_startup_to_runtime_config
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
-from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from profiles.uv.profile_store import bind_auto_uv_profile_gpu_identity
-from profiles.uv.profile_store import delete_auto_uv_profile_paths
-from profiles.uv.profile_tiers import save_profile_tier_assignment
-from profiles.uv.profile_tiers import save_profile_tier_none_assignment
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.gpu_identity import (
     GPU_COMPATIBILITY_LEGACY,
     GPU_COMPATIBILITY_MATCH,
+    normalized_gpu_identity,
     profile_gpu_compatibility,
     profile_gpu_uuid,
 )
-from profiles.gpu_identity import normalized_gpu_identity
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from runtime.daemon_client import clear_boot_runtime_spec
-from runtime.daemon_client import set_boot_main_gpu
-
-from ui.commands import delete_profiles_command
-from ui.commands import profile_verify_command
-from ui.commands import runtime_profile_command
-from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
+from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
+from profiles.uv.profile_store import (
+    STOCK_PROFILE_SELECTOR,
+    bind_auto_uv_profile_gpu_identity,
+    delete_auto_uv_profile_paths,
+)
+from profiles.uv.profile_tiers import (
+    save_profile_tier_assignment,
+    save_profile_tier_none_assignment,
+)
+from runtime.daemon_client import clear_boot_runtime_spec, set_boot_main_gpu
+from ui.commands import (
+    delete_profiles_command,
+    profile_verify_command,
+    runtime_profile_command,
+)
 from ui.components.fan_curve_editor import open_fan_curve_editor_dialog
 from ui.components.memory_offset_editor import open_memory_offset_editor_dialog
 from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
-from ui.features.curves.curve_profiles import curve_points_from_values
-from ui.features.curves.curve_profiles import profile_base_curve_points
-from ui.features.curves.curve_profiles import profile_curve_plan
-from ui.features.curves.curve_profiles import save_edited_curve_profile
+from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.dialogs.verify import select_verify_options
-from ui.features.curves.fan_profiles import profile_fan_curve_points
-from ui.features.curves.fan_profiles import profile_fan_curve_target_point
-from ui.features.curves.fan_profiles import profile_fan_measurement_points
-from ui.features.curves.fan_profiles import profile_id_from_archive_path
-from ui.features.curves.fan_profiles import save_edited_fan_profile
-from ui.features.curves.fan_profiles import sync_profile_fan_payload
+from ui.features.curves.curve_profiles import (
+    curve_points_from_values,
+    profile_base_curve_points,
+    profile_curve_plan,
+    save_edited_curve_profile,
+)
+from ui.features.curves.fan_profiles import (
+    profile_fan_curve_points,
+    profile_fan_curve_target_point,
+    profile_fan_measurement_points,
+    profile_id_from_archive_path,
+    save_edited_fan_profile,
+    sync_profile_fan_payload,
+)
 from ui.features.curves.memory_offset_profiles import save_edited_memory_offset_profile
-from ui.features.integrations.lact_export import detect_lact_gpu_id
-from ui.features.integrations.lact_export import lact_export_output_path
-from ui.features.integrations.lact_export import write_lact_profile_config
+from ui.features.integrations.lact_export import (
+    detect_lact_gpu_id,
+    lact_export_output_path,
+    write_lact_profile_config,
+)
+from ui.features.profiles.profiles import (
+    adaptive_profile_tier_labels,
+    delete_confirmation_text,
+    penguin_burner_runtime_is_active,
+    profile_can_apply,
+    profile_can_verify,
+    profile_delete_autostart_action,
+    profile_for_selector,
+    profile_is_deletable,
+    profile_status_label,
+    profile_verify_selector,
+    running_auto_uv_profile_info,
+    systemd_autostart_profile_info,
+)
 from ui.features.tuning.tuning import memory_offset_mhz_range
-from ui.features.profiles.profiles import adaptive_profile_tier_labels
-from ui.features.profiles.profiles import delete_confirmation_text
-from ui.features.profiles.profiles import profile_can_apply
-from ui.features.profiles.profiles import profile_can_verify
-from ui.features.profiles.profiles import penguin_burner_runtime_is_active
-from ui.features.profiles.profiles import profile_delete_autostart_action
-from ui.features.profiles.profiles import profile_for_selector
-from ui.features.profiles.profiles import running_auto_uv_profile_info
-from ui.features.profiles.profiles import profile_is_deletable
-from ui.features.profiles.profiles import profile_status_label
-from ui.features.profiles.profiles import profile_verify_selector
-from ui.features.profiles.profiles import systemd_autostart_profile_info
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
 from ui.features.tuning.verify import workload_label
 

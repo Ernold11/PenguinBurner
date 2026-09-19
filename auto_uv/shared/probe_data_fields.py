@@ -24,6 +24,6 @@ def numeric_values(records: list[Any], field_name: str) -> list[float]:
     return values
 
 
-def percent(value: float | int) -> float:
+def percent(value: float) -> float:
     return max(0.0, float(value) / 100.0)
 

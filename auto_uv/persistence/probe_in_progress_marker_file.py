@@ -5,9 +5,9 @@ Clean exits remove the marker; a later run can treat a stale marker as crash evi
 
 from __future__ import annotations
 
-from datetime import datetime
 import os
 import socket
+from datetime import datetime
 from pathlib import Path
 
 from .auto_uv_persisted_json_files import probe_in_progress_path, safe_json_write

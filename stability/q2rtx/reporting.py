@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .models import Q2RTXStabilityResult, TelemetrySample
 
-
 _QUIET_OUTPUT_TAIL_PREFIXES: tuple[str, ...] = ()
 _QUIET_OUTPUT_TAIL_LINES = frozenset(
     {

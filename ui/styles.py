@@ -1,6 +1,5 @@
 from . import theme
 
-
 STYLESHEET = f"""
 QMainWindow {{
     background: {theme.WINDOW_BG};

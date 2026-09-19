@@ -6,7 +6,6 @@ from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING
 from auto_uv.persistence.verified_candidate_result_file import artifact_points
 from profiles.uv.profile_store import user_edited_display_name
 
-
 MANUAL_SMOOTH_TRIGGER_CLOCK_BINS = 5
 MANUAL_SMOOTH_LEFT_VOLTAGE_BINS = 5
 USER_EDITED_PROFILE_SOURCE = "user-edited"
@@ -676,9 +675,7 @@ def _flatten_plan_from_index(
     for index, raw in enumerate(points):
         item = dict(raw)
         target_mhz = int(item["target_mhz"])
-        if index >= flatten_index:
-            target_mhz = flatten_clock_mhz
-        elif target_mhz > flatten_clock_mhz:
+        if index >= flatten_index or target_mhz > flatten_clock_mhz:
             target_mhz = flatten_clock_mhz
         item["target_mhz"] = int(target_mhz)
         item["new_offset_mhz"] = int(item["target_mhz"]) - int(item["base_mhz"])
@@ -976,6 +973,5 @@ def _target_clock_for_voltage(
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
-    if maximum < minimum:
-        maximum = minimum
+    maximum = max(maximum, minimum)
     return max(int(minimum), min(int(maximum), int(value)))

@@ -5,12 +5,12 @@ This package is outside auto_uv because it validates system readiness, not the u
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Any, Callable, Protocol, cast
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient, VfPoint
-
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)
 AUTO_UV_SUPPORT_ISSUE_URL = "https://github.com/jpietek/PenguinBurner/issues/3"

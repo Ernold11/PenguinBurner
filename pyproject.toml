@@ -159,3 +159,63 @@ packages = [
 [tool.pytest.ini_options]
 # Keep collection inside our own suite; never walk vendored third_party/ trees.
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Keep the static-analysis policy in the repository instead of inheriting
+# whichever default rule set happens to ship with the installed Ruff version.
+select = [
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  "I",
+  "UP",
+  "B",
+  "SIM",
+  "BLE001",
+  "C401",
+  "DTZ005",
+  "EXE001",
+  "FLY002",
+  "FURB188",
+  "FURB192",
+  "ISC004",
+  "PIE810",
+  "PLR0402",
+  "PLR1711",
+  "PLR1730",
+  "PLW0602",
+  "PLW1509",
+  "PYI034",
+  "PYI041",
+  "RET501",
+  "RUF007",
+  "RUF010",
+  "RUF012",
+  "RUF023",
+  "RUF034",
+  "RUF046",
+  "RUF100",
+  "S110",
+  "S112",
+  "TRY004",
+]
+# These broad-family rules were not part of the audited baseline and would add
+# unrelated findings merely by making the policy explicit.
+ignore = ["B905", "SIM105", "UP042"]
+
+[tool.ruff.lint.flake8-bugbear]
+# These constructors produce frozen, slotted settings values that are safe to
+# share as function defaults.
+extend-immutable-calls = [
+  "auto_uv.curve.base_load_flatten_target.CurveTiming",
+  "auto_uv.curve.base_load_telemetry.LoadedTelemetryRules",
+  "auto_uv.curve.vf_curve_flattening.FlatteningRules",
+  "auto_uv.probes.stability_decision.StabilityThresholds",
+  "auto_uv.run.lower_voltage_probe_target.LowerVoltageProbeTargetRules",
+  "auto_uv.run.lower_voltage_search.LowerVoltageSearchRules",
+  "auto_uv.scan_mode.efficiency_fps_per_w_policy.EfficiencyPolicyRules",
+]

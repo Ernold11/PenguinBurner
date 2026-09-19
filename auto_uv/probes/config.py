@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
+from dataclasses import replace
 
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from stability.q2rtx.constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
 from stability.q2rtx.cuda_companion import cuda_bruteforce_companion_command
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2

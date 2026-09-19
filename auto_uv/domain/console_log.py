@@ -5,10 +5,12 @@ This module formats messages only; scan decisions stay in the rule modules.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from auto_uv.domain.types import AutoUvProbeSummary
-from auto_uv.scan_mode.efficiency_fps_per_w_policy import compare_temperature_normalized_fps_per_w
+from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
+    compare_temperature_normalized_fps_per_w,
+)
 
 
 def log_phase(log: Callable[[str], None], phase: str, message: str) -> None:

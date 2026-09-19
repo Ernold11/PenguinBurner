@@ -13,7 +13,6 @@ from overlay.telemetry.steam_game_setup import (
 from .users import active_steam_user, default_steam_root
 from .vdf import parse_vdf, vdf_lookup
 
-
 # StateFlags is a bitfield; mid-update values like 6 must still count as
 # installed, so test bits instead of comparing whole values.
 STATE_FLAG_FULLY_INSTALLED = 4

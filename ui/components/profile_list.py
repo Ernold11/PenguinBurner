@@ -3,19 +3,20 @@ from __future__ import annotations
 from datetime import datetime
 from math import isfinite
 
-from profiles.uv.profile_store import profile_presentation_name
 from profiles.gpu_identity import (
+    GPU_COMPATIBILITY_LEGACY,
+    GPU_COMPATIBILITY_MATCH,
     profile_gpu_compatibility,
     profile_gpu_label,
     profile_gpu_uuid,
 )
-from profiles.gpu_identity import GPU_COMPATIBILITY_LEGACY, GPU_COMPATIBILITY_MATCH
+from profiles.uv.profile_store import profile_presentation_name
 from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
 )
-from .. import theme
 
+from .. import theme
 
 GOOD_DELTA_COLOR = theme.GOOD
 BAD_DELTA_COLOR = theme.ERROR
@@ -395,7 +396,7 @@ class ProfileList:
             target_choice = self._gpu_choices[0]
         self._target_gpu_uuid = target_uuid
         self._target_gpu_index = (
-            int(getattr(target_choice, "index")) if target_choice is not None else None
+            int(target_choice.index) if target_choice is not None else None
         )
         self._populate_target_gpu_combo(target_uuid)
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
@@ -455,7 +456,7 @@ class ProfileList:
         )
         self._target_gpu_uuid = uuid
         self._target_gpu_index = (
-            int(getattr(choice, "index")) if choice is not None else None
+            int(choice.index) if choice is not None else None
         )
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
         self._sync_target_gpu_presentation()
@@ -754,7 +755,7 @@ class ProfileList:
 def _standard_trash_icon(QtWidgets, widget):
     style = widget.style()
     standard_pixmap = getattr(QtWidgets.QStyle, "StandardPixmap", QtWidgets.QStyle)
-    return style.standardIcon(getattr(standard_pixmap, "SP_TrashIcon"))
+    return style.standardIcon(standard_pixmap.SP_TrashIcon)
 
 
 def _sortable_item_class(QtWidgets, sort_role: int):

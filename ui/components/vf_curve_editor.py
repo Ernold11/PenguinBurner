@@ -2,23 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from curve_editors.uv.vf_curve_manual_editor import ManualCurveEdit
-from curve_editors.uv.vf_curve_manual_editor import manual_add_curve_point_edit
-from curve_editors.uv.vf_curve_manual_editor import manual_drag_anchor_edit
-from curve_editors.uv.vf_curve_manual_editor import manual_flatten_from_existing_point
-from curve_editors.uv.vf_curve_manual_editor import manual_nudge_selected_frequency
-from curve_editors.uv.vf_curve_manual_editor import manual_nudge_selected_voltage
-from curve_editors.uv.vf_curve_manual_editor import manual_offset_selected_range
-from curve_editors.uv.vf_curve_manual_editor import manual_select_adjacent_point
-from curve_editors.uv.vf_curve_manual_editor import manual_select_curve_point
-from curve_editors.uv.vf_curve_manual_editor import manual_select_range_to_right
-from curve_editors.uv.vf_curve_manual_editor import manual_tune_single_point_edit
+from curve_editors.uv.vf_curve_manual_editor import (
+    ManualCurveEdit,
+    manual_add_curve_point_edit,
+    manual_drag_anchor_edit,
+    manual_flatten_from_existing_point,
+    manual_nudge_selected_frequency,
+    manual_nudge_selected_voltage,
+    manual_offset_selected_range,
+    manual_select_adjacent_point,
+    manual_select_curve_point,
+    manual_select_range_to_right,
+    manual_tune_single_point_edit,
+)
+from ui.features.curves.curve_profiles import curve_points_from_values
 
 from .. import theme
-from ui.features.curves.curve_profiles import curve_points_from_values
-from .curve_editor import CurveEditHistory
-from .curve_editor import install_curve_editor_shortcut_legend
-from .curve_editor import nearest_curve_point
+from .curve_editor import (
+    CurveEditHistory,
+    install_curve_editor_shortcut_legend,
+    nearest_curve_point,
+)
 from .curve_plot import CurvePlot
 
 

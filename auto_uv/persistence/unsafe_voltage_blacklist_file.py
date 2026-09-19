@@ -5,8 +5,8 @@ Only hard crash-like entries block future search; controlled stops remain visibl
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
 
 from .auto_uv_persisted_json_files import safe_json_write, unsafe_voltage_blacklist_path

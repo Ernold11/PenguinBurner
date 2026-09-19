@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import os
 from configparser import Error as ConfigParserError
 from configparser import RawConfigParser
-import os
 from pathlib import Path
 
 from . import theme
-
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 

@@ -3,30 +3,34 @@ from __future__ import annotations
 from auto_uv.scan_mode.auto_uv_mode import adaptive_tier_option_key
 from auto_uv.scan_mode.uv_limits import uv_limit_clock_target_range_for_gpu
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from ..assets import asset_image_path
 from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
-from ui.features.tuning.tuning import AUTO_UV_PRESET_ADAPTIVE
-from ui.features.tuning.tuning import AUTO_UV_PRESET_BALANCED
-from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
-from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
-from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from ui.features.tuning.tuning import auto_uv_voltage_floor_range_mv
-from ui.features.tuning.tuning import auto_uv_nvml_info_text
-from ui.features.tuning.tuning import auto_uv_performance_preset_label
-from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
-from ui.features.tuning.tuning import auto_uv_target_default
-from ui.features.tuning.tuning import auto_uv_power_limit_default
-from ui.features.tuning.tuning import auto_uv_preset
-from ui.features.tuning.tuning import auto_uv_scan_estimate_minutes
-from ui.features.tuning.tuning import auto_uv_scan_estimate_text
-from ui.features.tuning.tuning import memory_offset_mhz_range
-from ui.features.tuning.tuning import read_auto_uv_nvml_info
-from .error_details import qt_flags
-from .form_rows import add_form_row
-from .form_rows import dialog_form_layout
-from .form_rows import install_spinbox_enter_commit_filter
-from .form_rows import wrapped_tooltip
+from ui.features.tuning.tuning import (
+    AUTO_UV_PRESET_ADAPTIVE,
+    AUTO_UV_PRESET_BALANCED,
+    AUTO_UV_PRESET_EFFICIENCY,
+    AUTO_UV_PRESET_PERFORMANCE,
+    GPU_UNDERVOLTING_PURPOSE_TEXT,
+    auto_uv_nvml_info_text,
+    auto_uv_performance_preset_label,
+    auto_uv_performance_preset_tooltip,
+    auto_uv_power_limit_default,
+    auto_uv_preset,
+    auto_uv_scan_estimate_minutes,
+    auto_uv_scan_estimate_text,
+    auto_uv_target_default,
+    auto_uv_voltage_floor_range_mv,
+    memory_offset_mhz_range,
+    read_auto_uv_nvml_info,
+)
 
+from ..assets import asset_image_path
+from .error_details import qt_flags
+from .form_rows import (
+    add_form_row,
+    dialog_form_layout,
+    install_spinbox_enter_commit_filter,
+    wrapped_tooltip,
+)
 
 SCAN_SCOPE_FULL = "full"
 SCAN_SCOPE_SELECTED_PROFILE = "selected-profile"
@@ -79,10 +83,7 @@ def select_scan_tuning(
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
     gpu_combo.setMinimumWidth(360)
-    size_adjust_policy = getattr(
-        getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox),
-        "AdjustToContents",
-    )
+    size_adjust_policy = getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox).AdjustToContents
     gpu_combo.setSizeAdjustPolicy(size_adjust_policy)
     for choice in gpu_choices:
         gpu_combo.addItem(choice.label, int(choice.index))
@@ -659,9 +660,9 @@ def select_scan_tuning(
     )
     start_button = buttons.addButton(
         "Start Auto Undervolt",
-        getattr(role_enum, "AcceptRole"),
+        role_enum.AcceptRole,
     )
-    buttons.addButton(getattr(standard_enum, "Cancel"))
+    buttons.addButton(standard_enum.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     start_button.setDefault(True)
@@ -787,12 +788,12 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
     dependable while leaving the buttons' normal hover and click events alone.
     """
     event_types = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
-    enter_type = getattr(event_types, "Enter")
-    leave_type = getattr(event_types, "Leave")
+    enter_type = event_types.Enter
+    leave_type = event_types.Leave
     targets = tuple(widgets)
 
     class _HoverTooltipFilter(QtCore.QObject):
-        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+        def eventFilter(self, watched, event):
             if watched not in targets:
                 return False
             if event.type() == enter_type:
@@ -819,24 +820,15 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
 
 
 def _aspect_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt),
-        "KeepAspectRatio",
-    )
+    return getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt).KeepAspectRatio
 
 
 def _transform_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "TransformationMode", QtCore.Qt),
-        "SmoothTransformation",
-    )
+    return getattr(QtCore.Qt, "TransformationMode", QtCore.Qt).SmoothTransformation
 
 
 def _horizontal_orientation(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "Orientation", QtCore.Qt),
-        "Horizontal",
-    )
+    return getattr(QtCore.Qt, "Orientation", QtCore.Qt).Horizontal
 
 
 def _sync_power_limit_controls(controls: dict, info) -> None:

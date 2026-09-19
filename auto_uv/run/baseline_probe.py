@@ -1,20 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, Callable, cast
+from typing import Any, cast
 
-from stability.q2rtx.models import Q2RTXStabilityConfig
-
-from auto_uv.domain.types import (
-    AutoUvCriticalProbeError,
-    AutoUvError,
-    AutoUvProbeSummary,
-    BaseLoadTarget,
-    FailureKind,
-    FailureSeverity,
-    VfCurveCandidate,
-)
-from auto_uv.domain.console_log import log_benchmark, log_phase
 from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
@@ -29,19 +18,34 @@ from auto_uv.curve.vf_curve_flattening import (
     build_flatten_target_for_plan,
     build_flattened_plan,
 )
-from auto_uv.persistence.verified_candidate_result_file import write_latest_verified_candidate
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
+from auto_uv.domain.console_log import log_benchmark, log_phase
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import (
+    AutoUvCriticalProbeError,
+    AutoUvError,
+    AutoUvProbeSummary,
+    BaseLoadTarget,
+    FailureKind,
+    FailureSeverity,
+    VfCurveCandidate,
+)
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
 from auto_uv.persistence.unsafe_voltage_cache import (
     unsafe_entry_blocks_voltage_candidate,
     unsafe_entry_clock_floor_mhz,
 )
-from auto_uv.shared.positive_int import positive_int
+from auto_uv.persistence.verified_candidate_result_file import (
+    write_latest_verified_candidate,
+)
 from auto_uv.probes.config import reference_discovery_q2rtx_duration_s
+from auto_uv.probes.event_payload import probe_summary_event_payload
 from auto_uv.probes.runner import AutoUvProbeRunner
 from auto_uv.probes.stability_decision import classify_failed_result
-from auto_uv.probes.event_payload import probe_summary_event_payload
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.shared.positive_int import positive_int
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 
 def retarget_clock_ceiling_for_candidate(

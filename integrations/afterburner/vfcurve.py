@@ -9,13 +9,13 @@ import struct
 from collections import Counter
 from pathlib import Path
 
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
 )
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from .vfcurve_describe import describe_afterburner_flatten_validation
 

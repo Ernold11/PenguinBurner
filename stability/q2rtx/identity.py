@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import pwd
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from .models import StabilityTestError
 

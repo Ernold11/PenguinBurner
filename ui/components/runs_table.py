@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .. import theme
-from ..models import probe_decision_label
-from ..models import probe_failure_label
-from ..models import probe_reason_tooltip
+from ..models import probe_decision_label, probe_failure_label, probe_reason_tooltip
 from .table_sizing import set_header_fit_column_widths
 
 

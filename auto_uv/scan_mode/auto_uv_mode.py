@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 AUTO_UV_MODE_EFFICIENCY = "efficiency"
 AUTO_UV_MODE_BALANCED = "balanced"
 AUTO_UV_MODE_PERFORMANCE = "performance"

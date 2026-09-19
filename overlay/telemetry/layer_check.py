@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import subprocess
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
-from overlay.native_layer import LATENCY_LAYER_NAME
-from overlay.native_layer import native_layer_dirs
+from overlay.native_layer import LATENCY_LAYER_NAME, native_layer_dirs
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = f"{PENGUIN_BURNER_WRAPPER} %command%"

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
 
+from common.penguin_burner_paths import (
+    claim_desktop_user_ownership,
+    default_user_config_dir,
+)
 from profiles.uv.profile_store import resolve_auto_uv_profile
-from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 
 class LactExportError(RuntimeError):

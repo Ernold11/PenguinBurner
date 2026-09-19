@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from ..assets import application_version
-from ..assets import asset_image_path
-from ..constants import APP_DISPLAY_NAME
 from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from .error_details import qt_flags
-from .error_details import selectable_text_flags
 
+from ..assets import application_version, asset_image_path
+from ..constants import APP_DISPLAY_NAME
+from .error_details import qt_flags, selectable_text_flags
 
 SPONSOR_URL = "https://github.com/sponsors/jpietek"
 ISSUES_URL = "https://github.com/jpietek/PenguinBurner/issues"
@@ -168,14 +166,8 @@ def show_about_dialog(*, QtCore, QtGui, QtWidgets, parent) -> None:
 
 
 def _aspect_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt),
-        "KeepAspectRatio",
-    )
+    return getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt).KeepAspectRatio
 
 
 def _transform_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "TransformationMode", QtCore.Qt),
-        "SmoothTransformation",
-    )
+    return getattr(QtCore.Qt, "TransformationMode", QtCore.Qt).SmoothTransformation

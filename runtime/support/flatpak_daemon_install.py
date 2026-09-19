@@ -9,7 +9,6 @@ from runtime.support.runtime_service import (
     LAST_RUNTIME_STATE_PATH,
 )
 
-
 FlatpakRuntimeAction = Literal["apply-intent", "migrate-legacy", "none"]
 
 

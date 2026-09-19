@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import tomllib
+from dataclasses import dataclass
+from pathlib import Path
 
 from common.atomic_write import atomic_write_text
 from common.penguin_burner_paths import default_user_config_dir
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
-
 
 OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
 STEAM_LAUNCH_OPTION = f"{PENGUIN_BURNER_WRAPPER} %command%"

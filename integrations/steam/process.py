@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import time
-
+from pathlib import Path
 
 _STEAM_LAUNCH_APPID_RE = re.compile(r"SteamLaunch AppId=(\d+)")
 

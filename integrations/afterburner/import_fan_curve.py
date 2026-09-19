@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import math
 import os
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
 )
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+
 from .fan_curve import (
     highest_point_temperature_at_or_below_speed,
     highest_zero_speed_temperature,
     temperature_for_speed,
     validate_afterburner_fan_settings,
 )
-
 
 DEFAULT_EMERGENCY_AUTO_OVERRIDE_TEMP_C = 80.0
 DEFAULT_EMERGENCY_AUTO_RESUME_TEMP_C = 75.0

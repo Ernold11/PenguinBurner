@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
 from auto_uv.curve.vf_curve_flattening import FlatteningRules, snap_target_clock
+
 from .settings import AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS
 
 

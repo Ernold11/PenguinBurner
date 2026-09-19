@@ -35,10 +35,7 @@ def toggle_switch_class(QtCore, QtGui, QtWidgets) -> type:
             self.setCheckable(True)
             self.setFixedSize(TRACK_WIDTH, TRACK_HEIGHT)
             self.setCursor(
-                getattr(
-                    getattr(QtCore.Qt, "CursorShape", QtCore.Qt),
-                    "PointingHandCursor",
-                )
+                getattr(QtCore.Qt, "CursorShape", QtCore.Qt).PointingHandCursor
             )
             # Position of the knob as 0.0 (off) .. 1.0 (on). Animated rather
             # than derived from isChecked() so the control shows the change
@@ -69,7 +66,7 @@ def toggle_switch_class(QtCore, QtGui, QtWidgets) -> type:
             """Knob travel, 0.0 off to 1.0 on. Exposed for tests."""
             return float(self._slide)
 
-        def setChecked(self, checked: bool) -> None:  # noqa: N802 - Qt override
+        def setChecked(self, checked: bool) -> None:
             super().setChecked(bool(checked))
             # A programmatic set before the widget is ever shown should land at
             # its final position rather than crawl there on the first repaint.
@@ -80,16 +77,13 @@ def toggle_switch_class(QtCore, QtGui, QtWidgets) -> type:
 
         # -- painting --------------------------------------------------------
 
-        def sizeHint(self):  # noqa: N802 - Qt override name
+        def sizeHint(self):
             return QtCore.QSize(TRACK_WIDTH, TRACK_HEIGHT)
 
-        def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override name
+        def paintEvent(self, _event) -> None:
             painter = QtGui.QPainter(self)
             painter.setRenderHint(
-                getattr(
-                    getattr(QtGui.QPainter, "RenderHint", QtGui.QPainter),
-                    "Antialiasing",
-                )
+                getattr(QtGui.QPainter, "RenderHint", QtGui.QPainter).Antialiasing
             )
             track_color, border_color, knob_color = self._colors()
 
@@ -104,7 +98,7 @@ def toggle_switch_class(QtCore, QtGui, QtWidgets) -> type:
             left = KNOB_MARGIN + travel * self._slide
             painter.setBrush(QtGui.QBrush(QtGui.QColor(knob_color)))
             painter.setPen(
-                getattr(getattr(QtCore.Qt, "PenStyle", QtCore.Qt), "NoPen")
+                getattr(QtCore.Qt, "PenStyle", QtCore.Qt).NoPen
             )
             painter.drawEllipse(
                 QtCore.QRectF(left, KNOB_MARGIN, diameter, diameter)
@@ -130,11 +124,11 @@ def toggle_switch_class(QtCore, QtGui, QtWidgets) -> type:
                 theme.TEXT_MUTED,
             )
 
-        def enterEvent(self, event) -> None:  # noqa: N802 - Qt override name
+        def enterEvent(self, event) -> None:
             self.update()
             super().enterEvent(event)
 
-        def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override name
+        def leaveEvent(self, event) -> None:
             self.update()
             super().leaveEvent(event)
 

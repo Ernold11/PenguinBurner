@@ -16,6 +16,14 @@ from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
 )
+from profiles.game_profile import (
+    GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
+    game_mode_uses_latency_markers,
+    normalize_game_mode,
+    normalize_game_target_fps,
+)
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 
 from .cdp import (
@@ -38,14 +46,6 @@ from .settings import (
     SteamGameSetting,
     load_steam_game_settings,
     store_steam_game_setting,
-)
-from profiles.game_profile import (
-    GAME_MODE_ADAPTIVE,
-    GAME_MODE_DEFAULT,
-    GAME_MODE_NONE,
-    game_mode_uses_latency_markers,
-    normalize_game_mode,
-    normalize_game_target_fps,
 )
 from .users import SteamUser, active_steam_user
 
@@ -478,11 +478,9 @@ class SteamIntegrationManager:
         request with the same watch PID swaps the active profile in place.
         None means the game is not running (nothing to do).
         """
-        from runtime.daemon_client import daemon_status, start_game_runtime_profile
-
         from drivers.nvidia.daemon_gpu import DaemonGpuClient
-
         from profiles.game_profile import game_gpu_target, profile_argv_for_setting
+        from runtime.daemon_client import daemon_status, start_game_runtime_profile
 
         try:
             status = daemon_status(timeout_s=1.0)

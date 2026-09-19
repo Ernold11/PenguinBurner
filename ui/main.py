@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import sys
+from dataclasses import dataclass
 
 from common.flatpak_wrappers import ensure_host_integration
+
 from .assets import application_icon
-from .constants import APP_DESKTOP_ID
-from .constants import APP_DISPLAY_NAME
-from .qt import apply_dark_palette
-from .qt import apply_desktop_font_settings
-from .qt import import_qt
-from .qt import prepare_desktop_scale_env
+from .constants import APP_DESKTOP_ID, APP_DISPLAY_NAME
+from .qt import (
+    apply_dark_palette,
+    apply_desktop_font_settings,
+    import_qt,
+    prepare_desktop_scale_env,
+)
 from .window import MainWindow
 
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
 from auto_uv.scan_mode.auto_uv_mode import (
@@ -17,7 +17,6 @@ from ui.features.auto_uv.final_choice_ranking import (
     final_choice_shows_oc_column,
     sort_candidates_for_final_choice,
 )
-
 
 InputFn = Callable[[str], str]
 LogFn = Callable[[str], None]

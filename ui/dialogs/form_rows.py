@@ -89,11 +89,11 @@ def install_spinbox_enter_commit_filter(
 ) -> None:
     """Make Enter commit typed spin-box text instead of waiting for focus loss."""
     del QtWidgets  # Kept for a uniform call shape across these helpers.
-    event_type = getattr(getattr(QtCore.QEvent, "Type", QtCore.QEvent), "KeyPress")
+    event_type = getattr(QtCore.QEvent, "Type", QtCore.QEvent).KeyPress
     key_enum = getattr(QtCore.Qt, "Key", QtCore.Qt)
     enter_keys = {
-        qt_enum_value(getattr(key_enum, "Key_Return")),
-        qt_enum_value(getattr(key_enum, "Key_Enter")),
+        qt_enum_value(key_enum.Key_Return),
+        qt_enum_value(key_enum.Key_Enter),
     }
 
     class _SpinBoxEnterFilter(QtCore.QObject):
@@ -109,7 +109,7 @@ def install_spinbox_enter_commit_filter(
                 if editor is not None:
                     self._spinboxes_by_target[editor] = spinbox
 
-        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+        def eventFilter(self, watched, event):
             if watched not in self._spinboxes_by_target:
                 return False
             if event.type() != event_type:

@@ -13,7 +13,6 @@ from pathlib import Path
 
 from .vdf import parse_vdf, vdf_lookup
 
-
 STEAMID64_BASE = 76561197960265728
 
 

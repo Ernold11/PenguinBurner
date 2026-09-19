@@ -6,6 +6,7 @@ Classify busy telemetry and failures that should be cached as unsafe.
 from __future__ import annotations
 
 from auto_uv.domain.user_options import AUTO_UV_STALL_TUNING
+
 from ..persistence.unsafe_voltage_cache import controlled_failure_reason
 
 

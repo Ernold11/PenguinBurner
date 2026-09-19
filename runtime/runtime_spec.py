@@ -14,7 +14,9 @@ from typing import Any
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 from cli.runtime_config_file import default_runtime_config, load_runtime_config
 from common.penguin_burner_errors import NvmlError
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from overlay.config import load_overlay_config
+from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
@@ -23,8 +25,6 @@ from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
 )
-from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime.daemon_client import gpu_capabilities, require_daemon_capabilities
 from runtime.gpu_control.adaptive_profile_policy import AdaptiveProfilePolicyConfig
@@ -37,7 +37,6 @@ from ui.features.curves.fan_profiles import (
     fan_curve_points_from_payload,
     read_json_file,
 )
-
 
 RUNTIME_SPEC_FORMAT_VERSION = 1
 RUNTIME_SPEC_CAPABILITY = "runtime-spec-v1"

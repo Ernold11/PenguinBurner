@@ -9,9 +9,9 @@ launch time.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
-import json
 from pathlib import Path
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write

@@ -5,13 +5,20 @@ This module handles daemon flags and early profile validation before running the
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import os
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from common.cli_output import enable_cli_output_wrapping
+from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
+from profiles.uv.profile_tiers import (
+    available_adaptive_tiers,
+    resolve_profile_tier_profiles,
+)
+from runtime.daemon_client import apply_runtime_intent, daemon_status
+from runtime.runtime_spec import runtime_intent_from_argv
 from runtime.support.runtime_debug import debug_exception, log
 from runtime.support.runtime_service import (
     DEFAULT_DAEMON_SOCKET,
@@ -21,14 +28,6 @@ from runtime.support.runtime_service import (
     reexec_daemon_lifecycle_with_root,
     running_under_systemd_service,
     uninstall_systemd_service,
-)
-from runtime.daemon_client import apply_runtime_intent
-from runtime.daemon_client import daemon_status
-from runtime.runtime_spec import runtime_intent_from_argv
-from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
-from profiles.uv.profile_tiers import (
-    available_adaptive_tiers,
-    resolve_profile_tier_profiles,
 )
 
 from .runtime_profile_argument import (

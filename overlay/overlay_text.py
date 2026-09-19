@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from .config import OverlayConfig
-from .config import default_overlay_config
-from .config import normalize_overlay_config
-
+from .config import OverlayConfig, default_overlay_config, normalize_overlay_config
 
 SAMPLE_OVERLAY_VALUES = {
     "present_fps": "60",

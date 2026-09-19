@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass
 import time
-
+from dataclasses import dataclass
 
 NVML_SUCCESS = 0
 NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE = 32

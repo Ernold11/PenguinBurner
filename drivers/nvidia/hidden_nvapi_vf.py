@@ -11,7 +11,6 @@ from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
 )
 
-
 NvAPI_Status = ctypes.c_int32
 NvU32 = ctypes.c_uint32
 NvS32 = ctypes.c_int32

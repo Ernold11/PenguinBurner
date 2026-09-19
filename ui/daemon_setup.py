@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from typing import Callable
+from collections.abc import Callable
 
 from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
 from runtime.support.runtime_service import daemon_worker_registration_error

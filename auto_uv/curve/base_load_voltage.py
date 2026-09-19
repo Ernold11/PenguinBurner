@@ -8,13 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..shared.probe_data_fields import read_field
 from .base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,
     derive_active_power_floor_w,
     sample_is_loaded,
 )
-from ..shared.probe_data_fields import read_field
 
 
 @dataclass(frozen=True, slots=True)

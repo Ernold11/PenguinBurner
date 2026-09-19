@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
 import re
 import stat
 import sys
+from pathlib import Path
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
-from .native_layer import LATENCY_LAYER_NAME
-from .native_layer import native_layer_dirs
+from .native_layer import LATENCY_LAYER_NAME, native_layer_dirs
 from .shim_deploy import (
     deploy_nvapi_shim,
     nvapi_shim_artifact,
     prefix_system32,
     spawn_refront_watcher,
 )
-from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .state import (
-    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
+    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_STATE_ENV,
     clear_overlay_override,
     overlay_state_path,
 )
+from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 from .wrapper_tokens import LUTRIS_GAME_ID_ENV, LUTRIS_ID_FLAG_PREFIX
 

@@ -4,27 +4,32 @@ from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_PERFORMANCE,
     normalize_auto_uv_mode,
 )
-from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_DEFAULT_SORT_COLUMN
-from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_FPS_SORT_COLUMN
-from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_FPSW_SORT_COLUMN
-from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_HIGHER_FIRST_COLUMNS
-from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_SORTABLE_COLUMNS
-from ui.features.auto_uv.final_choice_ranking import best_final_choice_candidate_id
-from ui.features.auto_uv.final_choice_ranking import candidate_oc_mhz
-from ui.features.auto_uv.final_choice_ranking import candidate_short_duration_s
-from ui.features.auto_uv.final_choice_ranking import final_choice_shows_oc_column
-from ui.features.auto_uv.final_choice_ranking import final_choice_sort_column_for_mode
-from ui.features.auto_uv.final_choice_ranking import final_choice_sort_values
-from ui.features.auto_uv.final_choice_ranking import numeric_sort_value
-from ui.features.auto_uv.final_choice_ranking import sort_candidates_for_final_choice
+from ui.features.auto_uv.final_choice_ranking import (
+    FINAL_CHOICE_DEFAULT_SORT_COLUMN,
+    FINAL_CHOICE_FPS_SORT_COLUMN,
+    FINAL_CHOICE_FPSW_SORT_COLUMN,
+    FINAL_CHOICE_HIGHER_FIRST_COLUMNS,
+    FINAL_CHOICE_SORTABLE_COLUMNS,
+    best_final_choice_candidate_id,
+    candidate_oc_mhz,
+    candidate_short_duration_s,
+    final_choice_shows_oc_column,
+    final_choice_sort_column_for_mode,
+    final_choice_sort_values,
+    numeric_sort_value,
+    sort_candidates_for_final_choice,
+)
 
-from ..constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-from ..constants import MAX_FINAL_VERIFICATION_DURATION_S
-from ..components.profile_list import _format_profile_metric_with_delta
-from ..components.profile_list import _paint_profile_delta_item
-from ..components.profile_list import _profile_base_metric
+from ..components.profile_list import (
+    _format_profile_metric_with_delta,
+    _paint_profile_delta_item,
+    _profile_base_metric,
+)
 from ..components.table_sizing import set_header_fit_column_widths
-
+from ..constants import (
+    DEFAULT_FINAL_VERIFICATION_DURATION_S,
+    MAX_FINAL_VERIFICATION_DURATION_S,
+)
 
 FINAL_CHOICE_SORT_ROLE = 261
 FINAL_CHOICE_COLUMNS = [
@@ -234,8 +239,7 @@ def select_final_candidate(
         return None, _seconds(duration_spin.value()), rejected_action["value"]
     selected_rows = table.selectionModel().selectedRows(0)
     selected_row = int(selected_rows[-1].row()) if selected_rows else table.currentRow()
-    if selected_row < 0:
-        selected_row = 0
+    selected_row = max(selected_row, 0)
     item = table.item(selected_row, 0)
     selected_id = str(item.data(QtCore.Qt.UserRole) or "") if item is not None else ""
     return by_id.get(selected_id), _seconds(duration_spin.value()), "select"

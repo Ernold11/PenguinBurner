@@ -5,18 +5,20 @@ The module owns config defaults and small persistence updates; runtime behavior 
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import tomllib
+from pathlib import Path
 
-from integrations.afterburner.import_fan_curve import write_config as write_runtime_config
+from common.penguin_burner_paths import default_runtime_config_path
+from integrations.afterburner.import_fan_curve import (
+    write_config as write_runtime_config,
+)
 from runtime.support.adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_CONFIG_KEY,
     ADAPTIVE_TARGET_FPS_CONFIG_SECTION,
     DEFAULT_ADAPTIVE_TARGET_FPS,
     parse_adaptive_target_fps,
 )
-from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
 PERSIST_ON_STARTUP_CONFIG_KEY = "persist_on_startup"

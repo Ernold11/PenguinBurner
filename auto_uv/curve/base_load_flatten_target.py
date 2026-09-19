@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from auto_uv.domain.types import BaseLoadTarget
+
 from .base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,
@@ -17,7 +18,6 @@ from .base_load_telemetry import (
     sample_values,
     saturated_tail_samples,
 )
-
 
 LIGHT_LOAD_DIAGNOSTIC_BUSY_UTIL_PCT = 60.0
 LIGHT_LOAD_DIAGNOSTIC_POWER_LIMIT_PCT = 50.0

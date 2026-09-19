@@ -7,24 +7,27 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Callable
+from collections.abc import Callable
 
-from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
-from .final_choice_ranking import final_choice_sort_label
-from .final_choice_ranking import sort_candidates_for_final_choice
-from .final_choice_ranking import best_final_choice_candidate_id
+from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import (
+    AutoUvFinalChoiceDiscarded,
+    AutoUvProbeSummary,
+)
 from auto_uv.persistence.auto_uv_persisted_json_files import (
     auto_uv_stop_requested,
     final_choice_request_path,
     final_choice_response_path,
     safe_json_write,
 )
-from auto_uv.domain.types import (
-    AutoUvFinalChoiceDiscarded,
-    AutoUvProbeSummary,
+from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
+
+from .final_choice_ranking import (
+    best_final_choice_candidate_id,
+    final_choice_sort_label,
+    sort_candidates_for_final_choice,
 )
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
-from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 
 
 def choose_final_verification_candidate(
@@ -760,7 +763,7 @@ def float_or_none(value: object) -> float | None:
         return None
 
 
-def format_user_duration(duration_s: int | float | None) -> str:
+def format_user_duration(duration_s: float | None) -> str:
     if duration_s is None:
         return "n/a"
     seconds = int(round(float(duration_s)))

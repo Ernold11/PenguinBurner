@@ -291,7 +291,7 @@ class SteamCdpClient:
     def close(self) -> None:
         self._socket.close()
 
-    def __enter__(self) -> "SteamCdpClient":
+    def __enter__(self) -> SteamCdpClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:

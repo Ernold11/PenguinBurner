@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 
 from common.subprocess_locale import stable_subprocess_env
 from drivers.nvidia.daemon_gpu import (

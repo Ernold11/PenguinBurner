@@ -7,12 +7,11 @@ intent before sending an immutable RuntimeSpec to the daemon.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-import os
 
 from runtime.support.adaptive_target_fps import adaptive_target_ms_from_fps
-
 
 ADAPTIVE_TARGET_SLOW_WINDOWS_ENV = "PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS"
 ADAPTIVE_NEAR_SLOW_WINDOWS_ENV = "PENGUIN_BURNER_ADAPTIVE_NEAR_SLOW_WINDOWS"
@@ -103,7 +102,7 @@ class AdaptiveProfilePolicyConfig:
         fps: object,
         *,
         env: Mapping[str, str] | None = None,
-    ) -> "AdaptiveProfilePolicyConfig":
+    ) -> AdaptiveProfilePolicyConfig:
         default = cls()
         target_ms = adaptive_target_ms_from_fps(fps)
         scale = target_ms / default.target_ms
@@ -133,7 +132,7 @@ class AdaptiveProfilePolicyConfig:
     def with_responsiveness(
         self,
         env: Mapping[str, str] | None = None,
-    ) -> "AdaptiveProfilePolicyConfig":
+    ) -> AdaptiveProfilePolicyConfig:
         """Scale every windows and dwell knob by the one-word preset.
 
         Cadence only: the utilisation bars and the pacing slack are
@@ -165,7 +164,7 @@ class AdaptiveProfilePolicyConfig:
     def with_env_overrides(
         self,
         env: Mapping[str, str] | None = None,
-    ) -> "AdaptiveProfilePolicyConfig":
+    ) -> AdaptiveProfilePolicyConfig:
         values: Mapping[str, str] = os.environ if env is None else env
         return replace(
             self,

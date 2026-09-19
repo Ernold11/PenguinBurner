@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import math
+from pathlib import Path
 
+from common.atomic_write import atomic_write_json
+from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.fan.fan_curve_manual_editor import (
     user_edited_fan_curve_profile_payload,
 )
 from profiles.uv.profile_store import archive_auto_uv_profile
-from common.atomic_write import atomic_write_json
-from common.penguin_burner_paths import default_user_config_dir
 
 
 def profile_fan_curve_points(profile: dict) -> list[tuple[float, float]]:

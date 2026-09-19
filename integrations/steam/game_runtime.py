@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.game_profile import game_gpu_target, profile_argv_for_setting
 
 from .settings import steam_game_setting
 from .users import list_steam_users
-
 
 APP_ID_ENV_VARS = ("SteamAppId", "STEAM_COMPAT_APP_ID", "SteamGameId")
 ACCOUNT_NAME_ENV_VARS = ("SteamUser", "SteamAppUser")

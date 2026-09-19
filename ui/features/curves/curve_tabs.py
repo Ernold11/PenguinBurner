@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from ui.features.curves.curve_profiles import load_cached_base_curve_points
-from ui.features.curves.curve_profiles import save_cached_base_curve_points
+from ui.features.curves.curve_profiles import (
+    load_cached_base_curve_points,
+    save_cached_base_curve_points,
+)
 
 
 class CurveTabs:

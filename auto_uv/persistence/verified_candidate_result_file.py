@@ -5,15 +5,19 @@ The latest file feeds resume handoff and the candidate list feeds the final-choi
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
 
-from .auto_uv_persisted_json_files import safe_json_write, verified_candidates_path
-from .auto_uv_persisted_json_files import auto_uv_user_config_dir
 from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
+
 from ..curve.base_vf_curve import read_base_vf_points
 from ..curve.vf_curve_flattening import build_flatten_target_for_plan
+from .auto_uv_persisted_json_files import (
+    auto_uv_user_config_dir,
+    safe_json_write,
+    verified_candidates_path,
+)
 
 
 def write_latest_verified_candidate(

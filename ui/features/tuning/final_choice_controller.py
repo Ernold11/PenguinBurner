@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-from ui.constants import MAX_FINAL_VERIFICATION_DURATION_S
+from ui.constants import (
+    DEFAULT_FINAL_VERIFICATION_DURATION_S,
+    MAX_FINAL_VERIFICATION_DURATION_S,
+)
 
 
 @dataclass(slots=True)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 
-
 CLI_OUTPUT_WRAP_COLUMNS = 160
 
 
@@ -51,7 +50,7 @@ def enable_cli_output_wrapping(*, width: int = CLI_OUTPUT_WRAP_COLUMNS) -> None:
         sys.stderr = WrappedOutputStream(sys.stderr, width=int(width))
 
 
-def format_user_duration(seconds: float | int | None) -> str:
+def format_user_duration(seconds: float | None) -> str:
     if seconds is None:
         return "n/a"
     total = max(0, int(round(float(seconds))))

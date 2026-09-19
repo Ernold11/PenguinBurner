@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import pwd
 import struct
+from pathlib import Path
 
 from .constants import (
     PAK_ENTRY_SIZE,

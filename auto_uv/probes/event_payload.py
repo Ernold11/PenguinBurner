@@ -57,7 +57,7 @@ def probe_summary_event_payload(
     }
 
 
-def _rounded(value: float | int | None, *, precision: int = 2) -> float | None:
+def _rounded(value: float | None, *, precision: int = 2) -> float | None:
     if value is None:
         return None
     return round(float(value), precision)

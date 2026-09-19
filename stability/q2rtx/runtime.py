@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass, replace
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import time
+from collections import deque
+from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import (
-    FATAL_OUTPUT_REGEXES,
     FATAL_OUTPUT_PATTERNS,
+    FATAL_OUTPUT_REGEXES,
     LAUNCHER_ERROR_PATTERNS,
     Q2RTX_LAUNCHER_ERROR_REASON,
 )
@@ -45,11 +45,11 @@ from .process_harness import (
     _terminate_process_group,
     _wrap_command_for_live_output,
 )
+from .resolution import resolve_q2rtx_render_resolution
 from .telemetry import (
     _query_xid_messages_since,
     query_gpu_metrics,
 )
-from .resolution import resolve_q2rtx_render_resolution
 
 
 @dataclass(slots=True)
@@ -356,7 +356,7 @@ class _FrameProgressWatchdog:
     A binary that never emits ``frame`` events leaves the watchdog dormant.
     """
 
-    __slots__ = ("threshold_s", "_advances", "_last_index", "_last_progress_s")
+    __slots__ = ("_advances", "_last_index", "_last_progress_s", "threshold_s")
 
     # Distinct frame advances required before a freeze can trip. Proves the
     # render loop was genuinely live, so a lone startup frame can't false-trip.

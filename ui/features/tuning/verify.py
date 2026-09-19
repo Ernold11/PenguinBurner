@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 from common.penguin_burner_paths import default_user_config_dir
 from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-
 
 DEFAULT_VERIFY_DURATION_S = DEFAULT_FINAL_VERIFICATION_DURATION_S
 MAX_VERIFY_DURATION_S = 3600

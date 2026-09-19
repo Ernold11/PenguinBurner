@@ -9,8 +9,8 @@ import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode.auto_uv_mode import ADAPTIVE_TIER_MODES, AUTO_UV_MODES
-from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
 
 DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s

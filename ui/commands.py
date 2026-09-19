@@ -3,11 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import pwd
 import shutil
 import sys
-from typing import Mapping
+from collections.abc import Mapping
+from pathlib import Path
 
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
@@ -16,7 +16,6 @@ from auto_uv.scan_mode.auto_uv_mode import (
 )
 from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ui.features.tuning.gpu_selection import runtime_gpu_index
-
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"

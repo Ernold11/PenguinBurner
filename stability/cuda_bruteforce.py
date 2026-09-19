@@ -7,7 +7,6 @@ import ctypes
 import ctypes.util
 import time
 
-
 PTX_SOURCE = rb"""
 .version 6.0
 .target sm_52

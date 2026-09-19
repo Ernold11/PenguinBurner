@@ -5,12 +5,13 @@ Short-probe candidates and final-verified profiles share one payload shape so hu
 
 from __future__ import annotations
 
-from datetime import datetime
 import re
+from datetime import datetime
 from pathlib import Path
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from profiles.gpu_identity import normalized_gpu_identity
+
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_user_config_dir,
     safe_json_write,
@@ -19,7 +20,6 @@ from ..persistence.verified_candidate_result_file import (
     append_verified_candidate,
     verified_candidate_payload,
 )
-
 
 PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
