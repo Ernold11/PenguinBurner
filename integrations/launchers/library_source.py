@@ -16,7 +16,7 @@ from .library import (
     LauncherWriteState,
     LibraryGame,
 )
-from .wrapper_manager import LauncherGameRow, WrapperManager
+from .wrapper_manager import ApplyResult, LauncherGameRow, WrapperManager
 
 
 class WrapperLibrarySource:
@@ -169,8 +169,8 @@ class WrapperLibrarySource:
             ),
         )
 
-    def after_setting_write(self, game_id: str, setter: str) -> None:
-        """These launchers pick a change up on the next launch, not live."""
+    def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
+        """Launchers can deliver supported changes to an existing session."""
         del game_id, setter
 
     def games(self) -> tuple[LibraryGame, ...]:

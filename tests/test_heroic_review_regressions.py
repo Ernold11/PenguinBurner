@@ -148,7 +148,7 @@ class HeroicSessionRegressions(unittest.TestCase):
                  patch.object(Path, "read_bytes", side_effect=PermissionError), \
                  redirect_stdout(output):
                 exec(process._SESSION_PROBE, {})  # noqa: S102 - execute our fixed probe with mocked proc access
-            self.assertEqual(json.loads(output.getvalue()), {"sessions": [], "unreadable": [41]})
+            self.assertEqual(json.loads(output.getvalue()), {"sessions": [], "external": [], "unreadable": [41]})
 
     def test_daemon_watches_recover_inaccessible_sessions_without_reviving_exits(self):
         probe = subprocess.CompletedProcess([], 0, json.dumps({
@@ -161,7 +161,9 @@ class HeroicSessionRegressions(unittest.TestCase):
         ]}}
         with patch.object(process, "run_on_host", return_value=probe), \
              patch.object(process, "daemon_status", return_value=watches):
-            self.assertEqual(process.running_heroic_games(known_pids=(41,)), {
+            sessions = process.probe_heroic_sessions(known_pids=(41,))
+            assert sessions is not None
+            self.assertEqual(sessions.wrapped, {
                 "Readable": (42,), "Protected": (41,),
             })
 
@@ -194,7 +196,7 @@ class HeroicSessionRegressions(unittest.TestCase):
         }))
         with patch.object(process, "run_on_host", return_value=probe), \
              patch.object(process, "daemon_status", return_value={}):
-            self.assertIsNone(process.running_heroic_games(known_pids=(41,)))
+            self.assertIsNone(process.probe_heroic_sessions(known_pids=(41,)))
 
     def test_probe_reads_exec_environment_and_excludes_descendants(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,7 +219,9 @@ class HeroicSessionRegressions(unittest.TestCase):
                 command[-2] = str(proc)
                 return subprocess.run(command, capture_output=True, text=True, check=False)
             with patch.object(process, "run_on_host", side_effect=run_probe):
-                running = process.running_heroic_games()
+                sessions = process.probe_heroic_sessions()
+                assert sessions is not None
+                running = sessions.wrapped
                 self.assertEqual(set(running), {"Sid Meier"})
                 self.assertCountEqual(running["Sid Meier"], (41, 44))
 
@@ -225,7 +229,7 @@ class HeroicSessionRegressions(unittest.TestCase):
         for result in (None, subprocess.CompletedProcess([], 1, ""),
                        subprocess.CompletedProcess([], 0, "invalid JSON")):
             with self.subTest(result=result), patch.object(process, "run_on_host", return_value=result):
-                self.assertIsNone(process.running_heroic_games())
+                self.assertIsNone(process.probe_heroic_sessions())
 
     def test_flatpak_probe_uses_host_python_and_host_proc(self):
         with patch.object(process, "running_in_flatpak", return_value=True), \
@@ -235,7 +239,9 @@ class HeroicSessionRegressions(unittest.TestCase):
              patch.object(host_process.subprocess, "run", return_value=subprocess.CompletedProcess(
                  [], 0, '{"sessions": [], "unreadable": []}'
              )) as run:
-            self.assertEqual(process.running_heroic_games(), {})
+            sessions = process.probe_heroic_sessions()
+            assert sessions is not None
+            self.assertEqual(sessions.wrapped, {})
         command = run.call_args.args[0]
         self.assertEqual(command[:5], ["/usr/bin/flatpak-spawn", "--host", "--directory=/tmp", "/host/python3", "-c"])
         self.assertEqual(command[-2:], ["/proc", GAME_KEY_ENV])
@@ -258,7 +264,7 @@ launcher.main()
         try:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                if child.pid in (process.running_heroic_games() or {}).get("ReviewProbe", ()):
+                if child.pid in (process.probe_heroic_sessions() or process.HeroicSessions()).wrapped.get("ReviewProbe", ()):
                     break
                 time.sleep(0.05)
             else:
@@ -266,7 +272,9 @@ launcher.main()
             self.assertNotIn(b"--pb-game-id", Path(f"/proc/{child.pid}/cmdline").read_bytes())
             self.assertTrue(process.stop_heroic_game(child.pid))
             child.wait(timeout=5)
-            self.assertNotIn("ReviewProbe", process.running_heroic_games())
+            sessions = process.probe_heroic_sessions()
+            assert sessions is not None
+            self.assertNotIn("ReviewProbe", sessions.wrapped)
         finally:
             if child.poll() is None:
                 child.terminate()
@@ -286,7 +294,7 @@ class HeroicAvailabilityRegressions(unittest.TestCase):
             with self.subTest(result=result), \
                  patch.object(process, "host_has_command", side_effect=lambda name: name == "flatpak"), \
                  patch.object(process, "run_on_host", return_value=result) as probe, \
-                 patch.object(process, "start_on_host") as start:
+                 patch.object(process, "launch_with_current_settings") as start:
                 self.assertFalse(process.heroic_available())
                 self.assertFalse(process.launch_heroic_game("gog", "123"))
                 probe.assert_called_with(["flatpak", "info", process.FLATPAK_APP_ID])
