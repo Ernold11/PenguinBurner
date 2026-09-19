@@ -5,8 +5,10 @@ wrapper PenguinBurner wrote into that game's ``launch_arguments`` is already
 in the command Faugus builds. Nothing here re-implements a launch.
 
 Faugus keeps a running-games file of its own, but only its window writes it,
-so a game we started would be missing from it. Session identity in the
-environment is what holds regardless of who did the launching.
+so a game we started would be missing from it. The environment is what holds
+regardless of who did the launching: our wrapper carries its session identity,
+and Faugus stamps every game it starts with FAUGUSID -- the same marker its
+own "kill this game" walks /proc for.
 """
 
 from __future__ import annotations
@@ -17,12 +19,17 @@ from integrations.launchers.host_process import (
     run_on_host,
     start_on_host,
 )
-from integrations.launchers.wrapped_sessions import running_wrapped_sessions
+from integrations.launchers.wrapped_sessions import (
+    LauncherSessions,
+    running_wrapped_sessions,
+)
 
 LAUNCHER_ID = "faugus"
 COMMAND = "faugus-launcher"
 #: Faugus's Flatpak application id, for hosts that installed it that way.
 FLATPAK_APP_ID = "io.github.Faugus.faugus-launcher"
+#: What Faugus puts in front of every game command, holding that game's id.
+GAME_ID_ENV = "FAUGUSID"
 
 
 def faugus_available() -> bool:
@@ -62,11 +69,13 @@ def launch_faugus_game(game_id: str) -> bool:
     return bool(command) and start_on_host(command)
 
 
-def running_faugus_games(
+def probe_faugus_sessions(
     *, known_pids: tuple[int, ...] = (),
-) -> dict[str, tuple[int, ...]] | None:
-    """Wrapped sessions; None if a probe or known session cannot be read."""
-    return running_wrapped_sessions(LAUNCHER_ID, known_pids=known_pids)
+) -> LauncherSessions | None:
+    """Wrapped sessions and observed Faugus launches; None if unreadable."""
+    return running_wrapped_sessions(
+        LAUNCHER_ID, external_env=GAME_ID_ENV, known_pids=known_pids
+    )
 
 
 def stop_faugus_game(pid: int) -> bool:
