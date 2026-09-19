@@ -1,6 +1,6 @@
 # Game Library
 
-Manage **Steam, Lutris and Heroic** games in one list. Choose a GPU profile, Adaptive
+Manage **Steam, Lutris, Heroic and Faugus Launcher** games in one list. Choose a GPU profile, Adaptive
 FPS target, and overlay settings for each game, then launch it here or through
 its usual launcher.
 
@@ -14,8 +14,8 @@ its usual launcher.
 4. Use **Play** to start the game; **Stop** appears while it runs.
 
 Steam may require a one-time library scan or restart before edits are available.
-See [Steam setup](../steam.md), [Lutris setup](lutris.md) or
-[Heroic setup](heroic.md).
+See [Steam setup](../steam.md), [Lutris setup](lutris.md),
+[Heroic setup](heroic.md) or [Faugus setup](faugus.md).
 Discovery reads the library; wrapping a game changes its launch command.
 
 ## Per-game settings
@@ -27,7 +27,7 @@ Discovery reads the library; wrapping a game changes its launch command.
 | Auto-UV mode | Switch tiers with Adaptive, pin one tier, or use stock settings. |
 | Per-game target | Override the system-wide Adaptive FPS target; off follows that target. |
 | Overlay | Show the in-game HUD. Adaptive keeps required timing markers active when the HUD is hidden. |
-| Command | View or edit the launch command, Lutris prefix, or Heroic wrapper row. |
+| Command | View or edit the launch command, Lutris prefix, Heroic wrapper row, or Faugus launch arguments. |
 | Compatibility tool | Choose the Wine/Proton version for a Windows game in Steam, Heroic, or native Lutris. Changes take effect on the next launch. |
 
 The compatibility picker uses the launcher's available tools. **Heroic default**
@@ -45,6 +45,7 @@ visible inside its sandbox. A missing tool remains visible as the saved selectio
 but cannot be newly selected.
 
 Existing launch options, command prefixes and wrapper rows are preserved.
+Lutris and Faugus changes apply on the next launch.
 Adaptive FPS targets update live for running wrapped Steam, Lutris, and Heroic
 games, including switching back to the system-wide target. Tier changes still
 wait for sustained frame-time headroom. Heroic's Play action refreshes saved
