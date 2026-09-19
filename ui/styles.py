@@ -116,6 +116,12 @@ QLabel#gameTitle {{
 QLabel#gameMetadata {{
     color: {theme.TEXT_MUTED};
 }}
+QLabel#gameLaunchWarning {{
+    color: {theme.WARNING_TEXT};
+    background: {theme.ROW_WARNING_BG};
+    padding: 8px;
+    border-radius: 5px;
+}}
 /* Matched by property, not by name: the launcher declares these rows, so
    there is more than one and their names are not known here. */
 QLineEdit[launcherField="true"], QPlainTextEdit[launcherField="true"] {{
@@ -174,7 +180,8 @@ QPushButton#gamePlayButton[playState="running"]:pressed {{
     border-color: {theme.DANGER_BUTTON_PRESSED_BORDER};
 }}
 QPushButton#gamePlayButton[playState="starting"],
-QPushButton#gamePlayButton[playState="stopping"] {{
+QPushButton#gamePlayButton[playState="stopping"],
+QPushButton#gamePlayButton[playState="external"] {{
     background: {theme.CONTROL_BG};
     border-color: {theme.BORDER_STRONG};
     color: {theme.TEXT_MUTED};

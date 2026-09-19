@@ -15,49 +15,77 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from integrations.launchers.host_process import (
     host_has_command,
     host_terminate,
     run_on_host,
     running_in_flatpak,
-    start_on_host,
 )
 from overlay.wrapper_tokens import GAME_KEY_ENV, split_game_key
 from runtime.daemon_client import daemon_status
+from .launch_sync import launch_with_current_settings
 
 LAUNCHER_ID = "heroic"
 COMMAND = "heroic"
 #: Heroic's Flatpak application id, for hosts that installed it that way.
 FLATPAK_APP_ID = "com.heroicgameslauncher.hgl"
 
+
+@dataclass(frozen=True)
+class HeroicSessions:
+    """Controllable wrapper sessions and observed unwrapped Heroic launches."""
+
+    wrapped: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    external: dict[str, tuple[int, ...]] = field(default_factory=dict)
+
+
 # A stdlib-only host probe: the PenguinBurner package need not be installed
-# outside our Flatpak. Only the session leader qualifies; helpers and game
-# children inherit its identity but must never become targets for Stop.
+# outside our Flatpak. Only wrapper session leaders qualify for Stop. Heroic's
+# direct launch children are observable separately when the wrapper is missing.
 _SESSION_PROBE = """
 import json, os, sys
 from pathlib import Path
 
+root = Path(sys.argv[1])
 sessions = []
+external = []
 unreadable = []
-for proc in Path(sys.argv[1]).iterdir():
+for proc in root.iterdir():
     if not proc.name.isdecimal():
         continue
     try:
         if proc.stat().st_uid != os.getuid():
             continue
         fields = (proc / 'environ').read_bytes().split(b'\\0')
+        env = dict(field.split(b'=', 1) for field in fields if b'=' in field)
+        if env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode():
+            key = env.get(sys.argv[2].encode(), b'').decode('utf-8', errors='replace')
+            if key:
+                sessions.append([int(proc.name), key])
+        elif not env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION'):
+            app = env.get(b'HEROIC_APP_NAME', b'').decode('utf-8', errors='replace')
+            runner = env.get(b'HEROIC_APP_RUNNER', b'')
+            if app and runner in (b'legendary', b'gog', b'nile', b'sideload'):
+                # Observe only Heroic's direct launch child. Wine servers and
+                # crash handlers inherit the app id but can outlive the game.
+                stat = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                if stat[0] == 'Z':
+                    continue
+                parent = root / stat[1]
+                command = (parent / 'cmdline').read_bytes().split(b'\\0')
+                if command and (
+                    Path(os.fsdecode(command[0])).name.lower() == 'heroic'
+                    or (parent / 'exe').resolve().name.lower() == 'heroic'
+                ):
+                    external.append([int(proc.name), app])
     except PermissionError:
         unreadable.append(int(proc.name))
-        continue
     except (FileNotFoundError, ProcessLookupError):
         continue
-    env = dict(field.split(b'=', 1) for field in fields if b'=' in field)
-    if env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode():
-        key = env.get(sys.argv[2].encode(), b'').decode('utf-8', errors='replace')
-        if key:
-            sessions.append([int(proc.name), key])
-print(json.dumps({'sessions': sessions, 'unreadable': unreadable}))
+print(json.dumps({'sessions': sessions, 'external': external, 'unreadable': unreadable}))
 """
 
 
@@ -96,16 +124,16 @@ def launch_command(runner: str, app_name: str) -> list[str] | None:
     return None if launcher is None else [*launcher, "--no-gui", url]
 
 
-def launch_heroic_game(runner: str, app_name: str) -> bool:
-    """Ask Heroic to start a game (detached)."""
+def launch_heroic_game(runner: str, app_name: str, *, home: Path | None = None) -> bool:
+    """Ask Heroic to start a game after refreshing its cached settings."""
     command = launch_command(runner, app_name)
-    return bool(command) and start_on_host(command)
+    return command is not None and launch_with_current_settings(command, home=home)
 
 
-def running_heroic_games(
+def probe_heroic_sessions(
     *, known_pids: tuple[int, ...] = (),
-) -> dict[str, tuple[int, ...]] | None:
-    """Wrapped sessions; None if a probe or known session cannot be read."""
+) -> HeroicSessions | None:
+    """Sessions; None if a probe or known session cannot be read."""
     python = (
         os.environ.get("PENGUIN_BURNER_HOST_PYTHON") or "/usr/bin/python3"
         if running_in_flatpak() else sys.executable
@@ -141,7 +169,13 @@ def running_heroic_games(
                 running[game_id] = (*running.get(game_id, ()), int(pid))
     except (KeyError, ValueError, TypeError):
         return None
-    return running
+    external: dict[str, tuple[int, ...]] = {}
+    try:
+        for pid, game_id in payload.get("external", []):
+            external[game_id] = (*external.get(game_id, ()), int(pid))
+    except (ValueError, TypeError):
+        return None
+    return HeroicSessions(running, external)
 
 
 def stop_heroic_game(pid: int) -> bool:

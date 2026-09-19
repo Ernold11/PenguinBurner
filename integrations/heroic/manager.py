@@ -103,6 +103,6 @@ class HeroicIntegrationManager(WrapperManager):
 
     def _describe(self, game, setting) -> str:
         description = super()._describe(game, setting)
-        if setting.enabled and uses_flatpak(self._home):
-            description += " Fully exit and reopen Heroic before launching. Configured does not mean loaded in an already-running game."
+        if setting.enabled:
+            description += " Play in Game Library refreshes Heroic's saved launch settings."
         return description

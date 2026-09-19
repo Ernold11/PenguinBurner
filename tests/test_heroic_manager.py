@@ -35,7 +35,7 @@ def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
     assert row is not None and row.wrapped
     assert row.setting.injected_command == row.command
     assert repairs == [tmp_path]
-    assert "reopen Heroic" in result.message
+    assert "Play in Game Library" in result.message
     assert manager.set_game_enabled("Turkey", False).ok
     settings = json.loads((root / "GamesConfig/Turkey.json").read_text())
     assert "wrapperOptions" not in settings["Turkey"]
@@ -326,3 +326,131 @@ def test_the_global_wrappers_are_read_once_a_scan_not_once_a_game(
     assert len(rows) == 3
     assert reads == [True]
     assert {row.command for row in rows} == {"game-performance"}
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_overlay_toggle_updates_running_heroic_session(tmp_path, monkeypatch, enabled):
+    from integrations.heroic import library_source
+    from integrations.heroic.process import HeroicSessions
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    manager = _manager(tmp_path)
+    assert manager.set_game_enabled("Turkey", True).ok
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    override = tmp_path / "overlay-override"
+    override.write_text("0" if enabled else "1")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    monkeypatch.setattr(
+        library_source, "probe_heroic_sessions",
+        lambda **kwargs: HeroicSessions(wrapped={"Turkey": (42,)}),
+    )
+
+    assert manager.set_game_overlay("Turkey", enabled).ok
+    result = source.after_setting_write("Turkey", "set_game_overlay")
+
+    assert result is not None and result.ok
+    assert "live" in result.message
+    assert override.read_text() == ("1" if enabled else "0")
+    assert _stored(tmp_path).overlay is enabled
+
+
+@pytest.mark.parametrize("state", ["idle", "other_game", "external", "unknown"])
+def test_overlay_toggle_does_not_claim_live_update_without_wrapped_session(
+    tmp_path, monkeypatch, state
+):
+    from integrations.heroic import library_source
+    from integrations.heroic.process import HeroicSessions
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    manager = _manager(tmp_path)
+    assert manager.set_game_enabled("Turkey", True).ok
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    sessions = {
+        "idle": HeroicSessions(),
+        "other_game": HeroicSessions(wrapped={"Other": (42,)}),
+        "external": HeroicSessions(external={"Turkey": (42,)}),
+        "unknown": None,
+    }
+    monkeypatch.setattr(
+        library_source, "probe_heroic_sessions", lambda **kwargs: sessions[state]
+    )
+    override = tmp_path / "overlay-override"
+    override.write_text("0")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+
+    assert manager.set_game_overlay("Turkey", True).ok
+    result = source.after_setting_write("Turkey", "set_game_overlay")
+
+    assert override.read_text() == "0"
+    assert _stored(tmp_path).overlay is True
+    if state in ("idle", "other_game"):
+        assert result is None
+    else:
+        assert result is not None and not result.ok
+        assert "saved" in result.message
+        if state == "external":
+            assert "relaunch" in result.message
+
+
+def test_live_overlay_write_failure_keeps_saved_preference(tmp_path, monkeypatch):
+    from integrations.heroic import library_source
+    from integrations.heroic.process import HeroicSessions
+
+    manager = _manager(tmp_path)
+    assert manager.set_game_enabled("Turkey", True).ok
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    monkeypatch.setattr(
+        library_source, "probe_heroic_sessions",
+        lambda **kwargs: HeroicSessions(wrapped={"Turkey": (42,)}),
+    )
+    monkeypatch.setattr("overlay.state.write_overlay_override", lambda enabled: False)
+
+    assert manager.set_game_overlay("Turkey", True).ok
+    result = source.after_setting_write("Turkey", "set_game_overlay")
+
+    assert result is not None and not result.ok
+    assert "live visibility update failed" in result.message
+    assert _stored(tmp_path).overlay is True
+
+
+def test_other_heroic_settings_do_not_change_live_overlay(tmp_path, monkeypatch):
+    source = HeroicLibrarySource(_manager(tmp_path), home=tmp_path)
+    monkeypatch.setattr(
+        source, "_running_sessions", lambda: pytest.fail("Unexpected live overlay update")
+    )
+    for setter in ("set_game_enabled", "set_game_mode", "set_game_gpu", "set_game_target_fps"):
+        assert source.after_setting_write("Turkey", setter) is None
+
+
+def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch):
+    from integrations.heroic import library_source
+    from integrations.heroic.process import HeroicSessions
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+    from ui.components.game_library_panel import GameLibraryPanel
+    from ui.qt import import_qt
+
+    manager = _manager(tmp_path)
+    assert manager.set_game_enabled("Turkey", True).ok
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    monkeypatch.setattr(source, "probe_can_launch", lambda: True)
+    monkeypatch.setattr(
+        library_source, "probe_heroic_sessions",
+        lambda **kwargs: HeroicSessions(wrapped={"Turkey": (42,)}),
+    )
+    override = tmp_path / "overlay-override"
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    panel = GameLibraryPanel(
+        QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, sources=(source,)
+    )
+    qtbot.addWidget(panel.widget)
+    panel.ensure_scanned()
+    qtbot.waitUntil(lambda: bool(panel._games), timeout=5000)
+    panel._select_key("heroic:Turkey")
+
+    for enabled in (True, False):
+        panel.overlay_switch.click()
+        qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+        assert override.read_text() == ("1" if enabled else "0")
+        assert _stored(tmp_path).overlay is enabled
+        assert "live" in panel.status_label.text()
