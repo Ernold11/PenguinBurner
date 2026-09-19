@@ -2,24 +2,25 @@ from __future__ import annotations
 
 import os
 import pwd
+from collections.abc import Mapping
 from pathlib import Path
 
 
-def latency_socket_path(env: dict[str, str] | None = None) -> Path:
-    env = os.environ if env is None else env
-    explicit = str(env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip()
+def latency_socket_path(env: Mapping[str, str] | None = None) -> Path:
+    resolved_env = os.environ if env is None else env
+    explicit = str(resolved_env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip()
     if explicit:
         return Path(explicit).expanduser()
-    runtime_dir = str(env.get("XDG_RUNTIME_DIR") or "").strip()
+    runtime_dir = str(resolved_env.get("XDG_RUNTIME_DIR") or "").strip()
     if runtime_dir:
         return Path(runtime_dir) / "penguin-burner" / "latency.sock"
     if os.getuid() == 0:
-        sudo_uid = str(env.get("SUDO_UID") or "").strip()
+        sudo_uid = str(resolved_env.get("SUDO_UID") or "").strip()
         if sudo_uid.isdigit():
             candidate = Path("/run/user") / sudo_uid
             if candidate.exists():
                 return candidate / "penguin-burner" / "latency.sock"
-        sudo_user = str(env.get("SUDO_USER") or "").strip()
+        sudo_user = str(resolved_env.get("SUDO_USER") or "").strip()
         if sudo_user:
             try:
                 candidate = Path("/run/user") / str(pwd.getpwnam(sudo_user).pw_uid)
@@ -30,7 +31,7 @@ def latency_socket_path(env: dict[str, str] | None = None) -> Path:
     return Path(f"/tmp/penguin-burner-latency-{os.getuid()}.sock")
 
 
-def _home_latency_socket_path(env: dict[str, str]) -> Path | None:
+def _home_latency_socket_path(env: Mapping[str, str]) -> Path | None:
     home = str(env.get("HOME") or "").strip()
     if home and home != "/root":
         return Path(home).expanduser() / ".cache" / "penguin-burner" / "latency.sock"
@@ -69,11 +70,11 @@ def _home_latency_socket_path(env: dict[str, str]) -> Path | None:
     return None
 
 
-def latency_socket_paths(env: dict[str, str] | None = None) -> list[Path]:
-    env = os.environ if env is None else env
-    paths = [latency_socket_path(env)]
-    if not str(env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip():
-        home_path = _home_latency_socket_path(env)
+def latency_socket_paths(env: Mapping[str, str] | None = None) -> list[Path]:
+    resolved_env = os.environ if env is None else env
+    paths = [latency_socket_path(resolved_env)]
+    if not str(resolved_env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip():
+        home_path = _home_latency_socket_path(resolved_env)
         if home_path is not None:
             paths.append(home_path)
 

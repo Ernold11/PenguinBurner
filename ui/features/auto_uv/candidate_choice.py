@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from typing import Any, cast
 
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
@@ -101,6 +102,7 @@ def choose_final_verification_candidate(
         request_reason=str(request_reason or "sweep-complete"),
         discard_returns_none=False,
     )
+    assert selected is not None
 
     selected_plan = candidate_plan_from_record(selected) or stable_plan
     selected_voltage_mv = int(selected.get("candidate_voltage_mv") or 0)
@@ -141,8 +143,8 @@ def choose_recovery_final_verification_candidate(
         if not candidate_id:
             continue
         try:
-            voltage_mv = int(record.get("candidate_voltage_mv"))
-            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+            voltage_mv = int(cast(Any, record.get("candidate_voltage_mv")))
+            lock_clock_mhz = int(cast(Any, record.get("lock_clock_mhz")))
         except (TypeError, ValueError):
             continue
         if voltage_mv <= 0 or lock_clock_mhz <= 0:
@@ -187,8 +189,8 @@ def choose_recovery_final_verification_candidate(
     selected_plan = candidate_plan_from_record(selected)
     if not selected_plan:
         return None
-    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
-    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    selected_voltage_mv = int(cast(Any, selected.get("candidate_voltage_mv")))
+    selected_lock_clock_mhz = int(cast(Any, selected.get("lock_clock_mhz")))
     try:
         tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
     except (TypeError, ValueError):
@@ -227,8 +229,8 @@ def choose_next_final_verification_candidate_after_failure(
         if not candidate_id:
             continue
         try:
-            voltage_mv = int(record.get("candidate_voltage_mv"))
-            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+            voltage_mv = int(cast(Any, record.get("candidate_voltage_mv")))
+            lock_clock_mhz = int(cast(Any, record.get("lock_clock_mhz")))
         except (TypeError, ValueError):
             continue
         if voltage_mv <= int(failed_voltage_mv) or lock_clock_mhz <= 0:
@@ -270,8 +272,8 @@ def choose_next_final_verification_candidate_after_failure(
     selected_plan = candidate_plan_from_record(selected)
     if not selected_plan:
         return None
-    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
-    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    selected_voltage_mv = int(cast(Any, selected.get("candidate_voltage_mv")))
+    selected_lock_clock_mhz = int(cast(Any, selected.get("lock_clock_mhz")))
     try:
         tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
     except (TypeError, ValueError):
@@ -758,7 +760,7 @@ def probe_float(probe: AutoUvProbeSummary | None, field_name: str) -> float | No
 
 def float_or_none(value: object) -> float | None:
     try:
-        return None if value is None else float(value)
+        return None if value is None else float(cast(Any, value))
     except (TypeError, ValueError):
         return None
 

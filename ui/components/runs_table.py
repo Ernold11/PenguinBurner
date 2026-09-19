@@ -517,7 +517,11 @@ class RunsTable:
             voltage = self._cell_text(row, 1)
             clock = self._cell_text(row, self.TARGET_MHZ_COLUMN)
             probe_key = (voltage, clock)
-        progress = dict(self._progress_by_probe.get(probe_key, {}))
+        progress = (
+            dict(self._progress_by_probe.get(probe_key, {}))
+            if probe_key is not None
+            else {}
+        )
         progress["label"] = str(label)
         return progress
 

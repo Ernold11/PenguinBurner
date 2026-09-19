@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, MutableMapping
 from configparser import Error as ConfigParserError
 from configparser import RawConfigParser
 from pathlib import Path
@@ -25,23 +26,27 @@ def import_qt():
     return QtCore, QtGui, QtWidgets, pg
 
 
-def prepare_desktop_scale_env(env: dict[str, str] | None = None) -> None:
-    env = os.environ if env is None else env
-    if not _should_apply_flatpak_kde_settings(env):
+def prepare_desktop_scale_env(env: MutableMapping[str, str] | None = None) -> None:
+    resolved_env = os.environ if env is None else env
+    if not _should_apply_flatpak_kde_settings(resolved_env):
         return
-    env.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
+    resolved_env.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
     forced_dpi = _read_kde_config_value(
         "kcmfonts",
         "General",
         "forceFontDPI",
     )
     if forced_dpi and forced_dpi != "0":
-        env.setdefault("QT_FONT_DPI", forced_dpi)
+        resolved_env.setdefault("QT_FONT_DPI", forced_dpi)
 
 
-def apply_desktop_font_settings(app, QtGui, env: dict[str, str] | None = None) -> None:
-    env = os.environ if env is None else env
-    if not _should_apply_flatpak_kde_settings(env):
+def apply_desktop_font_settings(
+    app,
+    QtGui,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    resolved_env = os.environ if env is None else env
+    if not _should_apply_flatpak_kde_settings(resolved_env):
         return
     font_text = _read_kde_config_value("kdeglobals", "General", "font")
     if not font_text:
@@ -77,11 +82,11 @@ def apply_dark_palette(app, QtGui) -> None:
     app.setPalette(palette)
 
 
-def _should_apply_flatpak_kde_settings(env: dict[str, str]) -> bool:
+def _should_apply_flatpak_kde_settings(env: Mapping[str, str]) -> bool:
     return FLATPAK_INFO_PATH.is_file() and _desktop_is_kde(env)
 
 
-def _desktop_is_kde(env: dict[str, str]) -> bool:
+def _desktop_is_kde(env: Mapping[str, str]) -> bool:
     current_desktop = env.get("XDG_CURRENT_DESKTOP", "")
     desktop_parts = current_desktop.replace(";", ":").split(":")
     return env.get("KDE_FULL_SESSION", "").lower() == "true" or any(
@@ -89,10 +94,14 @@ def _desktop_is_kde(env: dict[str, str]) -> bool:
     )
 
 
+class _CaseSensitiveConfigParser(RawConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
+
+
 def _read_kde_config_value(filename: str, section: str, key: str) -> str:
     path = Path.home() / ".config" / filename
-    parser = RawConfigParser(strict=False)
-    parser.optionxform = str
+    parser = _CaseSensitiveConfigParser(strict=False)
     try:
         with path.open("r", encoding="utf-8") as handle:
             parser.read_file(handle)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from curve_editors.uv.vf_curve_manual_editor import (
     ManualCurveEdit,
@@ -76,7 +77,7 @@ def open_vf_curve_editor_dialog(
     current_edit = {"value": initial_manual_edit()}
     syncing_target = {"active": False}
     syncing_point_handles = {"active": False}
-    point_handle_items: dict[int, object] = {}
+    point_handle_items: dict[int, Any] = {}
 
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Edit VF Curve")
@@ -367,7 +368,7 @@ def open_vf_curve_editor_dialog(
             points.append((float(voltage_mv), float(clock_mhz)))
         return sorted(points)
 
-    def point_item(entry):
+    def point_item(entry: Any) -> Any:
         return entry.get("item") if isinstance(entry, dict) else entry
 
     def style_point_handle(item, *, selected: bool) -> None:

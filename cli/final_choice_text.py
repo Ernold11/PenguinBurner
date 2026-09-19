@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
 from auto_uv.scan_mode.auto_uv_mode import (
@@ -391,7 +392,10 @@ def _recovery_decision_text(recovery_decision: object) -> str:
 
 def _duration_s(payload: dict) -> int:
     try:
-        return max(1, round(float(payload.get("final_verification_duration_s"))))
+        return max(
+            1,
+            round(float(cast(Any, payload.get("final_verification_duration_s")))),
+        )
     except (TypeError, ValueError):
         return 1
 

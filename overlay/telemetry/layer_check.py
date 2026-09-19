@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from overlay.native_layer import LATENCY_LAYER_NAME, native_layer_dirs
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
@@ -97,7 +98,7 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
             ]
         )
 
-    warnings = result.get("warnings") or []
+    warnings = cast(Any, result.get("warnings") or [])
     if warnings:
         lines.append("Layer warnings:")
         lines.extend(f"  {line}" for line in list(warnings)[:5])

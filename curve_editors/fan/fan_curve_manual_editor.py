@@ -261,7 +261,8 @@ def _fan_payload_with_points(
     points: list[tuple[float, float]],
 ) -> dict:
     payload = dict(fan_payload)
-    fan = dict(payload.get("fan") if isinstance(payload.get("fan"), dict) else {})
+    raw_fan = payload.get("fan")
+    fan = dict(raw_fan) if isinstance(raw_fan, dict) else {}
     fan["curve"] = _json_points(points)
     payload["fan"] = fan
     payload["manual_edit_source"] = "penguin-burner-ui"

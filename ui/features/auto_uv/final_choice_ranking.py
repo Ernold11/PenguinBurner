@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any, cast
 
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_EFFICIENCY,
@@ -92,7 +93,9 @@ def best_final_choice_candidate_id(candidates: list[dict], auto_uv_mode: object)
 
 def candidate_short_duration_s(candidate: dict) -> int:
     try:
-        duration_s = round(float(candidate.get("short_verification_duration_s")))
+        duration_s = round(
+            float(cast(Any, candidate.get("short_verification_duration_s")))
+        )
     except (TypeError, ValueError):
         duration_s = 30
     return max(1, min(3600, duration_s))

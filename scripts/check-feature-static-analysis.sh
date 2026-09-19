@@ -23,18 +23,6 @@ python_paths=(
     penguin_burner.py
 )
 
-blocking_pyright_paths=(
-    auto_uv/curve
-    auto_uv/domain
-    auto_uv/final_verification
-    auto_uv/gpu
-    auto_uv/probes
-    auto_uv/scan_mode
-    drivers
-    runtime
-    stability
-)
-
 count_paths=(
     auto_uv
     cli
@@ -118,25 +106,7 @@ run ruff check "${python_paths[@]}"
 
 run vulture "${python_paths[@]}" --min-confidence "${VULTURE_MIN_CONFIDENCE:-80}"
 
-echo
-echo "==> blocking pyright ${blocking_pyright_paths[*]}"
-pyright "${blocking_pyright_paths[@]}"
-
-echo
-echo "==> pyright ${python_paths[*]} (advisory until the repo has a clean baseline)"
-pyright_report="$report_dir/pyright.txt"
-if ! pyright "${python_paths[@]}" >"$pyright_report" 2>&1; then
-    if [ "${PB_STATIC_STRICT_PYRIGHT:-0}" = "1" ]; then
-        cat "$pyright_report"
-        echo "pyright failed and PB_STATIC_STRICT_PYRIGHT=1" >&2
-        exit 1
-    fi
-    tail -80 "$pyright_report"
-    echo "pyright reported existing type issues; review touched-file output."
-    echo "full pyright report: $pyright_report"
-else
-    cat "$pyright_report"
-fi
+run pyright "${python_paths[@]}"
 
 run scc --no-cocomo \
     --exclude-dir .git,__pycache__,build,dist,tests,third_party,reverse,nvuv-play,specs \

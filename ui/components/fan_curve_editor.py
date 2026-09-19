@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from curve_editors.fan.fan_curve_manual_editor import (
     ManualFanCurveEdit,
@@ -59,7 +60,7 @@ def open_fan_curve_editor_dialog(
 
     current_edit = {"value": initial_fan_edit()}
     syncing_points = {"active": False}
-    point_items: dict[int, object] = {}
+    point_items: dict[int, Any] = {}
 
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Edit Fan Curve")
@@ -181,7 +182,7 @@ def open_fan_curve_editor_dialog(
             "Drag or use arrow keys to tune the curve."
         )
 
-    def point_item(entry):
+    def point_item(entry: Any) -> Any:
         if isinstance(entry, dict):
             return entry.get("item")
         return entry
@@ -487,4 +488,3 @@ def open_fan_curve_editor_dialog(
     finally:
         if app_instance is not None:
             app_instance.removeEventFilter(key_filter)
-

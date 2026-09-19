@@ -396,7 +396,9 @@ class ProfileList:
             target_choice = self._gpu_choices[0]
         self._target_gpu_uuid = target_uuid
         self._target_gpu_index = (
-            int(target_choice.index) if target_choice is not None else None
+            int(getattr(target_choice, "index", -1))
+            if target_choice is not None
+            else None
         )
         self._populate_target_gpu_combo(target_uuid)
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
@@ -456,7 +458,7 @@ class ProfileList:
         )
         self._target_gpu_uuid = uuid
         self._target_gpu_index = (
-            int(choice.index) if choice is not None else None
+            int(getattr(choice, "index", -1)) if choice is not None else None
         )
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
         self._sync_target_gpu_presentation()

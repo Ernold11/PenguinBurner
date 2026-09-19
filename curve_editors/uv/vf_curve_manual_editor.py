@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING
 from auto_uv.persistence.verified_candidate_result_file import artifact_points
@@ -25,8 +26,8 @@ class ManualCurveEdit:
 
 def editable_anchor_from_profile(profile: dict) -> tuple[int, int] | None:
     try:
-        voltage_mv = round(float(profile.get("candidate_voltage_mv")))
-        clock_mhz = round(float(profile.get("lock_clock_mhz")))
+        voltage_mv = round(float(cast(Any, profile.get("candidate_voltage_mv"))))
+        clock_mhz = round(float(cast(Any, profile.get("lock_clock_mhz"))))
     except (TypeError, ValueError):
         return None
     if voltage_mv <= 0 or clock_mhz <= 0:

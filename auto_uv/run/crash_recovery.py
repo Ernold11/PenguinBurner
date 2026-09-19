@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 from auto_uv.domain.console_log import log_phase
@@ -298,7 +299,7 @@ def explicit_profile_tier(payload: dict) -> str:
 
 def _int_or_none(value: object) -> int | None:
     try:
-        return int(value)
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return None
 
@@ -584,7 +585,7 @@ def replay_recovered_resume_probe_rows(
 
 def _float_or_negative_infinity(value: object) -> float:
     try:
-        return float(value)
+        return float(cast(Any, value))
     except (TypeError, ValueError):
         return float("-inf")
 
@@ -594,7 +595,7 @@ def _float_or_none(*values: object) -> float | None:
         if value in (None, ""):
             continue
         try:
-            return float(value)
+            return float(cast(Any, value))
         except (TypeError, ValueError):
             continue
     return None

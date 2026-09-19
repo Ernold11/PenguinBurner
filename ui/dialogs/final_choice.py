@@ -496,7 +496,7 @@ def _connect_final_choice_sorting(
 
     header.sectionClicked.connect(sort_by_header_column)
     if default_sort_column is not None:
-        sort_table(sort_column, sort_order)
+        sort_table(default_sort_column, sort_order)
 
 
 def _sortable_table_item_class(QtWidgets, sort_role: int):
@@ -528,11 +528,11 @@ def _sort_value_less(left, right, *, descending: bool = False) -> bool:
     return left_key < right_key
 
 
-def _sort_key(value) -> float | str:
+def _sort_key(value) -> tuple[int, float, str]:
     number = numeric_sort_value(value)
     if number != "":
-        return float(number)
-    return str(value).casefold()
+        return (0, float(number), "")
+    return (1, 0.0, str(value).casefold())
 
 
 def _duration_label(seconds: int) -> str:

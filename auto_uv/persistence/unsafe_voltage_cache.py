@@ -5,6 +5,8 @@ The cache blocks known-crashing voltage/clock bands but keeps controlled low-clo
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
@@ -115,6 +117,7 @@ def unsafe_voltage_block_reason(
         ):
             continue
         unsafe_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
+        assert unsafe_voltage_mv is not None
         unsafe_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
         clock_floor_mhz = unsafe_entry_clock_floor_mhz(
             entry,
@@ -258,6 +261,6 @@ def cache_profile_tier(value: object | None) -> str:
 
 def int_or_none(value: object) -> int | None:
     try:
-        return int(value)
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return None

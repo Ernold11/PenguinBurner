@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from common.atomic_write import atomic_write_text
 from common.penguin_burner_paths import default_user_config_dir
@@ -95,10 +97,10 @@ class OverlayConfig:
 
 
 def default_overlay_config_path(
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> Path:
-    env = os.environ if env is None else env
-    explicit = str(env.get(OVERLAY_CONFIG_ENV) or "").strip()
+    resolved_env = os.environ if env is None else env
+    explicit = str(resolved_env.get(OVERLAY_CONFIG_ENV) or "").strip()
     if explicit:
         return Path(explicit).expanduser()
     return default_user_config_dir() / "overlay.toml"
@@ -236,7 +238,7 @@ def set_overlay_scale(config: OverlayConfig, value: object) -> OverlayConfig:
 def snap_overlay_scale(value: object) -> float:
     """Snap an arbitrary scale to the nearest offered option (0.5/1.0/2.0)."""
     try:
-        parsed = float(value)
+        parsed = float(cast(Any, value))
     except (TypeError, ValueError):
         return DEFAULT_OVERLAY_SCALE
     if parsed <= 0:
@@ -246,7 +248,7 @@ def snap_overlay_scale(value: object) -> float:
 
 def clamp_overlay_update_interval_s(value: object) -> int:
     try:
-        parsed = round(float(value))
+        parsed = round(float(cast(Any, value)))
     except (TypeError, ValueError):
         parsed = DEFAULT_OVERLAY_UPDATE_INTERVAL_S
     return max(

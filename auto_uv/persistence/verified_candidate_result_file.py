@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
 
@@ -262,11 +263,11 @@ def artifact_points(plan: list[dict]) -> list[dict]:
 
 
 def float_or_none(value: object) -> float | None:
-    return None if value is None else float(value)
+    return None if value is None else float(cast(Any, value))
 
 
 def int_or_zero(value: object) -> int:
-    return 0 if value is None else int(value)
+    return 0 if value is None else int(cast(Any, value))
 
 
 def str_or_none(value: object) -> str | None:

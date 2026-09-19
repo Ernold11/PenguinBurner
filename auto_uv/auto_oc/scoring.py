@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from auto_uv.domain.types import AutoUvProbeSummary
 
 
@@ -40,8 +42,8 @@ def auto_oc_probe_key(
 
 
 def _clock_value(value: object | None) -> float:
-    return -1.0 if value is None else float(value)
+    return -1.0 if value is None else float(cast(Any, value))
 
 
 def _cost_value(value: object | None) -> float:
-    return 1_000_000.0 if value is None else float(value)
+    return 1_000_000.0 if value is None else float(cast(Any, value))
