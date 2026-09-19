@@ -246,7 +246,7 @@ def snap_overlay_scale(value: object) -> float:
 
 def clamp_overlay_update_interval_s(value: object) -> int:
     try:
-        parsed = int(round(float(value)))
+        parsed = round(float(value))
     except (TypeError, ValueError):
         parsed = DEFAULT_OVERLAY_UPDATE_INTERVAL_S
     return max(

@@ -83,7 +83,7 @@ def candidate_number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     precision = max(0, min(int(precision), 4))
-    return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
+    return str(round(number)) if precision <= 0 else f"{number:.{precision}f}"
 
 
 def select_final_candidate(
@@ -547,7 +547,7 @@ def _duration_label(seconds: int) -> str:
 
 
 def _minutes(seconds: int) -> int:
-    return max(1, int(round(int(seconds) / 60.0)))
+    return max(1, round(int(seconds) / 60.0))
 
 
 def _seconds(minutes: int) -> int:

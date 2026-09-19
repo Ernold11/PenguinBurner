@@ -38,13 +38,13 @@ def resolve_q2rtx_render_resolution(
     if width is not None:
         return Q2RTXResolutionChoice(
             width=width,
-            height=max(1, int(round(float(width) * 9.0 / 16.0))),
+            height=max(1, round(float(width) * 9.0 / 16.0)),
             reason="manual-width-16:9",
             auto_selected=False,
         )
     if height is not None:
         return Q2RTXResolutionChoice(
-            width=max(1, int(round(float(height) * 16.0 / 9.0))),
+            width=max(1, round(float(height) * 16.0 / 9.0)),
             height=height,
             reason="manual-height-16:9",
             auto_selected=False,

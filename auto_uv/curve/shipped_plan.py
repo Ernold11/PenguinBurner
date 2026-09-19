@@ -6,6 +6,8 @@ rebuild lower points during final selection.
 
 from __future__ import annotations
 
+import itertools
+
 from auto_uv.domain.types import AutoUvError
 
 
@@ -20,7 +22,7 @@ def assert_monotonic_editable_targets(plan: list[dict]) -> None:
         except (KeyError, TypeError, ValueError):
             continue
     points.sort(key=lambda item: item[0])
-    for previous, current in zip(points, points[1:]):
+    for previous, current in itertools.pairwise(points):
         if int(current[1]) < int(previous[1]):
             raise AutoUvError(
                 "refusing to ship non-monotonic V/F curve: "

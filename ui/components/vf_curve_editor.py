@@ -331,7 +331,7 @@ def open_vf_curve_editor_dialog(
 
     def point_handle_values(edit: ManualCurveEdit) -> dict[int, int]:
         values = {}
-        control_voltage_mvs = set(int(value) for value in edit.control_voltage_mvs)
+        control_voltage_mvs = {int(value) for value in edit.control_voltage_mvs}
         anchor_voltage_mv = int(edit.anchor_voltage_mv)
         selected_voltage_mv = (
             None

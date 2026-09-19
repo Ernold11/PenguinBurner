@@ -180,7 +180,7 @@ def _positive_power_limit_w(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(cast(Any, value))))
+        power_limit_w = round(float(cast(Any, value)))
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None

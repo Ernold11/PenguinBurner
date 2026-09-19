@@ -38,7 +38,7 @@ def derive_loaded_voltage_band(
     )
 
     voltages = sorted(
-        int(round(float(read_field(sample, "voltage_mv"))))
+        round(float(read_field(sample, "voltage_mv")))
         for sample in samples
         if read_field(sample, "voltage_mv") is not None
         and sample_is_loaded(
@@ -51,5 +51,5 @@ def derive_loaded_voltage_band(
         return LoadedVoltageBand(None)
 
     return LoadedVoltageBand(
-        average_mv=int(round(sum(voltages) / float(len(voltages)))),
+        average_mv=round(sum(voltages) / float(len(voltages))),
     )

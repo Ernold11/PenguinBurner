@@ -480,8 +480,8 @@ def auto_oc_candidate(
             if endpoint_clock_mhz is not None
             else int(step.target_mhz)
         )
-        limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
-        applied_mhz = int(round(float(step.target_mhz) - baseline_clock))
+        limit_mhz = round(float(endpoint_clock) - baseline_clock)
+        applied_mhz = round(float(step.target_mhz) - baseline_clock)
         metadata.update(
             {
                 "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),

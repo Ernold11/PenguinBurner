@@ -16,7 +16,7 @@ def _coerce_optional_int(value):
     text = str(value).strip()
     if not text:
         return None
-    return int(round(float(text)))
+    return round(float(text))
 
 
 def _coerce_optional_positive_int(value):
@@ -79,7 +79,7 @@ def build_plan(reader, afterburner_points):
             missing_in_afterburner.append(voltage_mv)
             continue
 
-        target_mhz = int(round(ab_point["frequency_mhz"]))
+        target_mhz = round(ab_point["frequency_mhz"])
         new_offset_mhz = target_mhz - base_mhz
         plan.append(
             {

@@ -57,7 +57,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
         if not isinstance(point, (list, tuple)) or len(point) != 2:
             raise LactExportError(f"invalid fan curve point: {point!r}")
         try:
-            temp_c = int(round(float(point[0])))
+            temp_c = round(float(point[0]))
             speed_fraction = _clamp(float(point[1]) / 100.0, 0.0, 1.0)
         except (TypeError, ValueError) as exc:
             raise LactExportError(f"invalid fan curve point: {point!r}") from exc
@@ -65,7 +65,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
 
     auto_threshold = fan.get("auto_restore_temp_c")
     try:
-        auto_threshold_c = int(round(float(auto_threshold or 0)))
+        auto_threshold_c = round(float(auto_threshold or 0))
     except (TypeError, ValueError):
         auto_threshold_c = 0
 
@@ -83,7 +83,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
     lines.extend(
         [
             "      spindown_delay_ms: 0",
-            f"      change_threshold: {int(round(float(fan.get('hysteresis_c', 0.0))))}",
+            f"      change_threshold: {round(float(fan.get('hysteresis_c', 0.0)))}",
             f"      auto_threshold: {auto_threshold_c}",
         ]
     )
@@ -109,7 +109,7 @@ def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return None
 

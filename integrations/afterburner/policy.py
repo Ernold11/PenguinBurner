@@ -13,7 +13,7 @@ MAX_AFTERBURNER_MEM_OFFSET_MHZ = 2000
 def afterburner_offset_khz_to_mhz(offset_khz):
     if offset_khz is None:
         return None
-    return int(round(int(offset_khz) / 1000.0))
+    return round(int(offset_khz) / 1000.0)
 
 
 def clamp_afterburner_mem_offset_mhz(offset_mhz):
@@ -58,7 +58,7 @@ def translate_afterburner_power_limit_pct(
             "power_limit_cap_mode": cap_mode,
         }
 
-    target_w = int(round(float(default_limit_w) * float(power_limit_pct) / 100.0))
+    target_w = round(float(default_limit_w) * float(power_limit_pct) / 100.0)
     min_limit_w = power_limits.get("power_limit_min_w")
     max_limit_w = power_limits.get("power_limit_max_w")
     if min_limit_w is not None:

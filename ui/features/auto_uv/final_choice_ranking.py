@@ -92,7 +92,7 @@ def best_final_choice_candidate_id(candidates: list[dict], auto_uv_mode: object)
 
 def candidate_short_duration_s(candidate: dict) -> int:
     try:
-        duration_s = int(round(float(candidate.get("short_verification_duration_s"))))
+        duration_s = round(float(candidate.get("short_verification_duration_s")))
     except (TypeError, ValueError):
         duration_s = 30
     return max(1, min(3600, duration_s))
@@ -134,5 +134,5 @@ def candidate_oc_mhz(candidate: dict) -> int | None:
         or candidate.get("auto_oc_baseline_clock_mhz")
     )
     if target_clock != "" and baseline_clock != "":
-        return int(round(float(target_clock) - float(baseline_clock)))
+        return round(float(target_clock) - float(baseline_clock))
     return None

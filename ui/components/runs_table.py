@@ -452,7 +452,7 @@ class RunsTable:
                 ratio = 1.0
                 shown_elapsed = float(target)
             bar.setRange(0, 1000)
-            bar.setValue(int(round(ratio * 1000.0)))
+            bar.setValue(round(ratio * 1000.0))
             time_text = _progress_time_text(shown_elapsed, target)
             bar.setFormat(f"{label} {time_text}" if label else time_text)
             bar.setToolTip(
@@ -840,7 +840,7 @@ def _payload_oc_from_measured_baseline(
     )
     if target_clock_mhz is None or baseline_clock_mhz is None:
         return None
-    delta_mhz = int(round(float(target_clock_mhz) - float(baseline_clock_mhz)))
+    delta_mhz = round(float(target_clock_mhz) - float(baseline_clock_mhz))
     return (delta_mhz, delta_mhz)
 
 
@@ -887,7 +887,7 @@ def _format_duration_compact(seconds) -> str:
     if seconds in (None, ""):
         return "n/a"
     try:
-        total_seconds = max(0, int(round(float(seconds))))
+        total_seconds = max(0, round(float(seconds)))
     except (TypeError, ValueError):
         return "n/a"
     if total_seconds < 60:
@@ -898,7 +898,7 @@ def _format_duration_compact(seconds) -> str:
             return f"{minutes}min {remainder_seconds}s"
         return f"{minutes}min"
     hours, remainder_seconds = divmod(total_seconds, 3600)
-    minutes = int(round(remainder_seconds / 60.0))
+    minutes = round(remainder_seconds / 60.0)
     if minutes >= 60:
         hours += 1
         minutes = 0
@@ -962,7 +962,7 @@ def _format_int(value) -> str:
     number = _to_float(value)
     if number is None:
         return ""
-    return str(int(round(number)))
+    return str(round(number))
 
 
 def _format_oc_progress(value: tuple[int, int] | None) -> str:
@@ -972,7 +972,7 @@ def _format_oc_progress(value: tuple[int, int] | None) -> str:
     if value is None:
         return ""
     oc_mhz, _limit_mhz = value
-    return _format_signed_mhz(int(round(float(oc_mhz))))
+    return _format_signed_mhz(round(float(oc_mhz)))
 
 
 def _format_oc_progress_for_payload(

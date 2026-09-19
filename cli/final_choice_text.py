@@ -391,7 +391,7 @@ def _recovery_decision_text(recovery_decision: object) -> str:
 
 def _duration_s(payload: dict) -> int:
     try:
-        return max(1, int(round(float(payload.get("final_verification_duration_s")))))
+        return max(1, round(float(payload.get("final_verification_duration_s"))))
     except (TypeError, ValueError):
         return 1
 
@@ -415,7 +415,7 @@ def _number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     precision = max(0, min(int(precision), 4))
-    return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
+    return str(round(number)) if precision <= 0 else f"{number:.{precision}f}"
 
 
 def _float_or_none(value) -> float | None:

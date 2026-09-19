@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Self
 
 from common.subprocess_locale import stable_subprocess_env
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
@@ -1000,7 +1001,7 @@ class _DaemonServiceInstallTransaction:
                 snapshot.discard()
             raise
 
-    def __enter__(self) -> "_DaemonServiceInstallTransaction":
+    def __enter__(self) -> Self:
         return self
 
     def capture_service_state(self) -> None:

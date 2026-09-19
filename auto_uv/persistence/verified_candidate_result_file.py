@@ -245,7 +245,7 @@ def core_oc_mhz(
 ) -> int | None:
     if base_probe is None or base_probe.avg_core_clock_mhz is None:
         return None
-    return int(round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz)))
+    return round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz))
 
 
 def artifact_points(plan: list[dict]) -> list[dict]:

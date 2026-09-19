@@ -48,12 +48,10 @@ def build_auto_oc_ladder(
         steps: list[AutoOcStep] = []
         for raw_index in range(1, step_count + 1):
             ratio = float(raw_index) / float(step_count)
-            requested_clock_mhz = int(
-                round(
+            requested_clock_mhz = round(
                     float(start_clock)
                     + (float(endpoint_clock - start_clock) * ratio)
                 )
-            )
             target_mhz = bounded_clock(
                 requested_clock_mhz,
                 start_clock_mhz=start_clock,
@@ -92,9 +90,7 @@ def build_auto_oc_ladder(
             endpoint_voltage_mv=endpoint_voltage,
             ratio=ratio,
         )
-        requested_clock_mhz = int(
-            round(float(start_clock) + (float(endpoint_clock - start_clock) * ratio))
-        )
+        requested_clock_mhz = round(float(start_clock) + (float(endpoint_clock - start_clock) * ratio))
         target_mhz = bounded_clock(
             requested_clock_mhz,
             start_clock_mhz=start_clock,

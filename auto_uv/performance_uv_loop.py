@@ -222,8 +222,8 @@ def performance_auto_oc_progress_metadata(
         return {}
     baseline_clock = float(measured_baseline_clock_mhz)
     endpoint_clock = int(endpoint.clock_mhz)
-    limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
-    applied_mhz = int(round(float(selected_clock_mhz) - baseline_clock))
+    limit_mhz = round(float(endpoint_clock) - baseline_clock)
+    applied_mhz = round(float(selected_clock_mhz) - baseline_clock)
     return {
         "auto_oc": True,
         "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),

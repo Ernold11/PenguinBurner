@@ -1671,7 +1671,7 @@ def adaptive_tier_power_limit_w(
         watts = float(scan_request_w) * float(power_limit_pct) / float(balanced_pct)
     else:
         watts = float(baseline_power_limit_w) * float(power_limit_pct) / 100.0
-    return min(int(round(watts)), int(baseline_power_limit_w))
+    return min(round(watts), int(baseline_power_limit_w))
 
 
 def log_lower_voltage_sweep_events(
@@ -2110,7 +2110,7 @@ def run_recovered_previous_crash_selection(
     )
     baseline_lock_clock_mhz = positive_int(
         recovery_record.get("base_lock_clock_mhz")
-    ) or int(round(float(baseline_clock_mhz or recovery_lock_clock_mhz)))
+    ) or round(float(baseline_clock_mhz or recovery_lock_clock_mhz))
     baseline_candidate = VfCurveCandidate(
         label="previous-crash-resume-baseline",
         voltage_mv=int(baseline_voltage_mv),

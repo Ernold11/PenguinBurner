@@ -843,7 +843,7 @@ def _format_number(value, *, precision: int) -> str:
         return ""
     precision = max(0, min(int(precision), 4))
     if precision <= 0:
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{precision}f}"
 
 
@@ -1150,9 +1150,7 @@ def _profile_matches_preference(
     candidate_id = str(profile.get("candidate_id", ""))
     if preferred_profile_id and profile_id == str(preferred_profile_id):
         return True
-    if preferred_candidate_id and candidate_id == str(preferred_candidate_id):
-        return True
-    return False
+    return bool(preferred_candidate_id and candidate_id == str(preferred_candidate_id))
 
 
 def _promote_preferred_profile(

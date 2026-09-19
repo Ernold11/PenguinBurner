@@ -7,6 +7,7 @@ or duplicates profile-selection policy.
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -480,7 +481,7 @@ def _validate_fan_curve(points: list[tuple[float, float]]) -> str:
 def _fan_speed_for_temp(temp_c: float, points: list[tuple[float, float]]) -> float:
     if temp_c <= points[0][0]:
         return points[0][1]
-    for (left_temp, left_speed), (right_temp, right_speed) in zip(points, points[1:]):
+    for (left_temp, left_speed), (right_temp, right_speed) in itertools.pairwise(points):
         if temp_c <= right_temp:
             position = (temp_c - left_temp) / (right_temp - left_temp)
             return left_speed + ((right_speed - left_speed) * position)
@@ -520,7 +521,7 @@ def _normalized_curve(value: Any, fallback: Any) -> list[list[float]]:
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    return int(round(float(value)))
+    return round(float(value))
 
 
 def _optional_float(value: Any) -> float | None:
@@ -542,7 +543,7 @@ def _nonnegative_int(value: Any, *, default: int) -> int:
 
 def _int_or_default(value: Any, default: Any) -> int:
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return int(default)
 

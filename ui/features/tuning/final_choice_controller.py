@@ -99,6 +99,6 @@ def handle_final_choice_request(
 
 def duration_seconds(value, default_s: int) -> int:
     try:
-        return max(1, int(round(float(value))))
+        return max(1, round(float(value)))
     except (TypeError, ValueError):
         return int(default_s)

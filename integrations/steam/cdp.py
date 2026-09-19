@@ -25,6 +25,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 
 from .users import default_steam_root
@@ -291,7 +292,7 @@ class SteamCdpClient:
     def close(self) -> None:
         self._socket.close()
 
-    def __enter__(self) -> SteamCdpClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:

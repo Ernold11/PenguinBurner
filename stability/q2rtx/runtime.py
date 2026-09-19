@@ -418,15 +418,7 @@ def _benchmark_abort_is_immediate(reason: str) -> bool:
         "nvidia-xid-detected",
     }:
         return True
-    if reason.startswith(
-        (
-            "profile-verification-voltage-mismatch",
-            "q2rtx-selected-nvidia-gpu-idle",
-            "telemetry-live-load-lost",
-        )
-    ):
-        return True
-    return False
+    return bool(reason.startswith(("profile-verification-voltage-mismatch", "q2rtx-selected-nvidia-gpu-idle", "telemetry-live-load-lost")))
 
 
 def _fatal_output_abort_reason(

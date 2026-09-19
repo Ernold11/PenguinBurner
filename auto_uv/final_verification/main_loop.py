@@ -460,7 +460,7 @@ def log_final_summary(
 def format_user_duration(duration_s: float | None) -> str:
     if duration_s is None:
         return "n/a"
-    seconds = int(round(float(duration_s)))
+    seconds = round(float(duration_s))
     if seconds < 60:
         return f"{seconds}s"
     minutes, remaining_seconds = divmod(seconds, 60)

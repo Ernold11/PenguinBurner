@@ -227,8 +227,8 @@ def afterburner_profile_target_pair(section: dict) -> tuple[int | None, int | No
     if not isinstance(target, dict):
         return None, None
     try:
-        clock = int(round(float(target["lock_clock_mhz"])))
-        voltage = int(round(float(target["lock_voltage_mv"])))
+        clock = round(float(target["lock_clock_mhz"]))
+        voltage = round(float(target["lock_voltage_mv"]))
     except (KeyError, TypeError, ValueError):
         return None, None
     return clock, voltage
@@ -239,7 +239,7 @@ def afterburner_profile_target_value(section: dict, key: str) -> int | None:
     if not isinstance(target, dict):
         return None
     try:
-        return int(round(float(target[key])))
+        return round(float(target[key]))
     except (KeyError, TypeError, ValueError):
         return None
 

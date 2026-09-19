@@ -53,7 +53,7 @@ def enable_cli_output_wrapping(*, width: int = CLI_OUTPUT_WRAP_COLUMNS) -> None:
 def format_user_duration(seconds: float | None) -> str:
     if seconds is None:
         return "n/a"
-    total = max(0, int(round(float(seconds))))
+    total = max(0, round(float(seconds)))
     minutes, remaining_seconds = divmod(total, 60)
     if minutes <= 0:
         return f"{remaining_seconds} sec"

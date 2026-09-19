@@ -305,17 +305,17 @@ def select_scan_tuning(
                 "Voltage target",
                 "mV",
                 5,
-                "Voltage target for this tier after the normal voltage sweep. The rising "
-                "tail can operate above this anchor; it is not a strict voltage limit.",
+                ("Voltage target for this tier after the normal voltage sweep. The rising "
+                "tail can operate above this anchor; it is not a strict voltage limit."),
             ),
             (
                 "clock",
                 "Core clock target",
                 "MHz",
                 15,
-                "Clock target for this tier. A lower custom target is tested after the "
+                ("Clock target for this tier. A lower custom target is tested after the "
                 "voltage sweep; the two-bin tail adds nominal boost headroom. "
-                "The scan may choose a lower tested clock if the target is unsafe.",
+                "The scan may choose a lower tested clock if the target is unsafe."),
             ),
         ):
             spin = QtWidgets.QSpinBox()
@@ -852,7 +852,7 @@ def _sync_power_limit_controls(controls: dict, info) -> None:
         return
 
     min_w, max_w, default_w = values
-    page_step = max(1, int(round((max_w - min_w) / 6.0)))
+    page_step = max(1, round((max_w - min_w) / 6.0))
     slider.blockSignals(True)
     spin.blockSignals(True)
     slider.setRange(min_w, max_w)
@@ -882,7 +882,7 @@ def _power_limit_control_values(info) -> tuple[int, int, int] | None:
     if default_w is None:
         default_w = _positive_rounded_int(getattr(info, "power_limit_w", None))
     if default_w is None:
-        default_w = int(round((min_w + max_w) / 2.0))
+        default_w = round((min_w + max_w) / 2.0)
     default_w = max(min_w, min(max_w, default_w))
     return min_w, max_w, default_w
 
@@ -891,7 +891,7 @@ def _positive_rounded_int(value) -> int | None:
     if value is None:
         return None
     try:
-        rounded = int(round(float(value)))
+        rounded = round(float(value))
     except (TypeError, ValueError):
         return None
     return rounded if rounded > 0 else None

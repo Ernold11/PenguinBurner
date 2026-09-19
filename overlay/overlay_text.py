@@ -128,7 +128,7 @@ def _ms_number(value: object) -> int | None:
     if text.lower().endswith(" ms"):
         text = text[:-3].strip()
     try:
-        return int(round(float(text)))
+        return round(float(text))
     except ValueError:
         return None
 
@@ -179,7 +179,7 @@ def _signed_value(value: object) -> str:
             text = text[: -len(suffix)].strip()
             break
     try:
-        number = int(round(float(text)))
+        number = round(float(text))
     except ValueError:
         return text
     return f"{number:+d}"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import struct
 from pathlib import Path
 
@@ -228,7 +229,7 @@ def temperature_for_speed(points, target_speed_pct):
     if target_speed_pct <= points[0]["speed_pct"]:
         return float(points[0]["temperature_c"])
 
-    for left, right in zip(points, points[1:]):
+    for left, right in itertools.pairwise(points):
         left_speed = float(left["speed_pct"])
         right_speed = float(right["speed_pct"])
         if target_speed_pct <= right_speed:
@@ -250,7 +251,7 @@ def speed_for_temperature(points, target_temp_c):
     if target_temp_c <= float(points[0]["temperature_c"]):
         return float(points[0]["speed_pct"])
 
-    for left, right in zip(points, points[1:]):
+    for left, right in itertools.pairwise(points):
         left_temp = float(left["temperature_c"])
         right_temp = float(right["temperature_c"])
         if target_temp_c <= right_temp:

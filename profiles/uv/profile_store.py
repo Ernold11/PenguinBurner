@@ -766,7 +766,7 @@ def _display_number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     if precision <= 0:
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{int(precision)}f}"
 
 

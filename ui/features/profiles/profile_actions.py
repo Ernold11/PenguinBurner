@@ -934,7 +934,7 @@ def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:
     seen = set()
     for raw_value in raw_values:
         try:
-            value = int(round(float(raw_value)))
+            value = round(float(raw_value))
         except (TypeError, ValueError):
             continue
         if value in seen:

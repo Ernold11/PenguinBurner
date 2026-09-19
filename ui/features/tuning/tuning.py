@@ -171,18 +171,18 @@ def auto_uv_power_limit_default(
     )
     if pct is None:
         return AutoUvPowerLimitDefault(
-            watts=int(round(base_watts)),
+            watts=round(base_watts),
             pct=100.0,
             gpu_name=detected_name or None,
             gpu_family=None,
             preset_matched=False,
         )
-    watts = int(round(base_watts * (float(pct) / 100.0)))
+    watts = round(base_watts * (float(pct) / 100.0))
     floor_watts = _positive_float(min_w)
     if floor_watts is not None:
-        watts = max(int(round(floor_watts)), watts)
+        watts = max(round(floor_watts), watts)
     if max_watts is not None:
-        watts = min(int(round(max_watts)), watts)
+        watts = min(round(max_watts), watts)
     return AutoUvPowerLimitDefault(
         watts=watts,
         pct=float(pct),

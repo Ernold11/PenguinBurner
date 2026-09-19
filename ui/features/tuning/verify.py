@@ -29,7 +29,7 @@ def progress_percent(elapsed_s, target_s) -> int:
         target = max(1.0, float(target_s))
     except (TypeError, ValueError):
         return 0
-    return max(0, min(100, int(round((elapsed / target) * 100.0))))
+    return max(0, min(100, round((elapsed / target) * 100.0)))
 
 
 def workload_label() -> str:

@@ -92,8 +92,8 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
         lines.extend(
             [
                 "Layer check example:",
-                f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
-                "PENGUIN_BURNER=1 vulkaninfo --summary",
+                (f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
+                "PENGUIN_BURNER=1 vulkaninfo --summary"),
             ]
         )
 

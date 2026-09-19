@@ -135,7 +135,7 @@ def profile_memory_offset_mhz(
         if value in (None, ""):
             continue
         try:
-            offset = max(0, int(round(float(value))))
+            offset = max(0, round(float(value)))
         except (TypeError, ValueError):
             return None
         if limit_mhz is not None:
@@ -149,7 +149,7 @@ def profile_power_limit_w(payload):
     if value in (None, ""):
         return None
     try:
-        power_limit = int(round(float(value)))
+        power_limit = round(float(value))
     except (TypeError, ValueError):
         return None
     return power_limit if power_limit > 0 else None

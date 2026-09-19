@@ -102,7 +102,7 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
 
 
 def _rounded_watts(value) -> int | None:
-    return None if value is None else int(round(float(value)))
+    return None if value is None else round(float(value))
 
 
 def restore_offsets(reader, backup_path, policy_controller=None):

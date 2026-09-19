@@ -87,9 +87,9 @@ def curve_plan_from_values(values) -> list[dict]:
         try:
             item = {
                 "index": int(value["index"]),
-                "voltage_mv": int(round(float(value["voltage_mv"]))),
-                "base_mhz": int(round(float(value["base_mhz"]))),
-                "target_mhz": int(round(float(value["target_mhz"]))),
+                "voltage_mv": round(float(value["voltage_mv"])),
+                "base_mhz": round(float(value["base_mhz"])),
+                "target_mhz": round(float(value["target_mhz"])),
             }
         except (KeyError, TypeError, ValueError):
             continue

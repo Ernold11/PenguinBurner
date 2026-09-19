@@ -52,7 +52,7 @@ def base_vf_plan_from_profile_plan(plan: list[dict]) -> list[dict]:
     for raw in list(plan or []):
         item = dict(raw)
         try:
-            base_mhz = int(round(float(item["base_mhz"])))
+            base_mhz = round(float(item["base_mhz"]))
             item["target_mhz"] = base_mhz
             item["new_offset_mhz"] = 0
         except (KeyError, TypeError, ValueError) as exc:
@@ -178,7 +178,7 @@ def _coerce_positive_int(value) -> int | None:
     number = _float_or_none(value)
     if number is None:
         return None
-    integer = int(round(number))
+    integer = round(number)
     return integer if integer > 0 else None
 
 

@@ -159,8 +159,8 @@ def matching_current_auto_uv_fan_payload(profile: dict) -> dict | None:
 
 def fan_payload_matches_profile(payload: dict, profile: dict) -> bool:
     try:
-        profile_voltage_mv = int(round(float(profile.get("candidate_voltage_mv"))))
-        profile_clock_mhz = int(round(float(profile.get("lock_clock_mhz"))))
+        profile_voltage_mv = round(float(profile.get("candidate_voltage_mv")))
+        profile_clock_mhz = round(float(profile.get("lock_clock_mhz")))
     except (TypeError, ValueError):
         return False
     telemetry = payload.get("telemetry")
@@ -175,8 +175,8 @@ def fan_payload_matches_profile(payload: dict, profile: dict) -> bool:
         if not isinstance(point, dict):
             continue
         try:
-            voltage_mv = int(round(float(point.get("voltage_mv"))))
-            clock_mhz = int(round(float(point.get("clock_mhz"))))
+            voltage_mv = round(float(point.get("voltage_mv")))
+            clock_mhz = round(float(point.get("clock_mhz")))
         except (TypeError, ValueError):
             continue
         if voltage_mv == profile_voltage_mv and clock_mhz == profile_clock_mhz:

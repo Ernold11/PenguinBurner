@@ -390,7 +390,7 @@ def _apply_overlay_enable_alias(env: dict[str, str]) -> None:
 def _remove_mangohud_environment(env: dict[str, str]) -> None:
     for key in tuple(env):
         upper = key.upper()
-        if upper.startswith("MANGOHUD") or upper.startswith("MANGOAPP"):
+        if upper.startswith(("MANGOHUD", "MANGOAPP")):
             env.pop(key, None)
 
     preload = str(env.get("LD_PRELOAD") or "").strip()

@@ -13,7 +13,7 @@ def memory_offset_from_gpu_policy(translated_gpu_policy: dict | None) -> int | N
     if value in (None, ""):
         return None
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return None
 

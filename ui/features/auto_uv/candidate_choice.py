@@ -641,7 +641,7 @@ def candidate_core_oc_mhz(
 ) -> int | None:
     existing = float_or_none(candidate.get("core_oc_mhz"))
     if existing is not None:
-        return int(round(existing))
+        return round(existing)
     baseline = (
         float(base_core_clock_mhz)
         if base_core_clock_mhz is not None
@@ -650,7 +650,7 @@ def candidate_core_oc_mhz(
     lock_clock = float_or_none(candidate.get("lock_clock_mhz"))
     if baseline is None or lock_clock is None:
         return None
-    return int(round(float(lock_clock) - float(baseline)))
+    return round(float(lock_clock) - float(baseline))
 
 
 def matching_probe_for_candidate(
@@ -677,7 +677,7 @@ def candidate_short_verification_duration_s(
     value = candidate.get("short_verification_duration_s")
     if use_recorded_duration and value not in (None, ""):
         try:
-            return max(1, int(round(float(value))))
+            return max(1, round(float(value)))
         except (TypeError, ValueError):
             pass
     return tiered_short_verification_duration_s(
@@ -740,7 +740,7 @@ def coerce_final_choice_duration_s(
     max_duration_s = max(1, int(max_s))
     min_duration_s = min(max(1, int(min_s)), max_duration_s)
     try:
-        duration_s = int(round(float(value)))
+        duration_s = round(float(value))
     except (TypeError, ValueError):
         duration_s = int(default_s)
     return max(min_duration_s, min(max_duration_s, int(duration_s)))
@@ -766,7 +766,7 @@ def float_or_none(value: object) -> float | None:
 def format_user_duration(duration_s: float | None) -> str:
     if duration_s is None:
         return "n/a"
-    seconds = int(round(float(duration_s)))
+    seconds = round(float(duration_s))
     if seconds < 60:
         return f"{seconds}s"
     minutes, remaining_seconds = divmod(seconds, 60)
