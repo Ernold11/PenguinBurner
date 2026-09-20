@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from integrations.heroic import launch_sync as sync
+from integrations.launchers.library import LaunchNotStartedError
 
 
 @pytest.fixture
@@ -86,7 +87,7 @@ def test_busy_launcher_is_neither_stopped_nor_launched_stale(tmp_path, config, m
         return {'launchers': {'41': 'boot:old'}, 'busy': True}
     monkeypatch.setattr(sync, '_probe', probe)
     monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
-    with pytest.raises(RuntimeError, match='is busy'):
+    with pytest.raises(LaunchNotStartedError, match='is busy'):
         sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert calls == []
 
@@ -101,9 +102,18 @@ def test_restart_timeout_does_not_launch_with_old_settings(tmp_path, config, mon
     monkeypatch.setattr(sync, '_probe', probe)
     monkeypatch.setattr(sync, '_RESTART_TIMEOUT_S', 0)
     monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
-    with pytest.raises(RuntimeError, match='did not exit'):
+    with pytest.raises(LaunchNotStartedError, match='did not exit'):
         sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert len(stops) == 1
+    assert not calls
+
+
+def test_malformed_settings_are_a_known_pre_dispatch_failure(tmp_path, config, monkeypatch):
+    (config / 'GamesConfig/Turkey.json').write_text('[]')
+    calls = []
+    monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
+    with pytest.raises(LaunchNotStartedError):
+        sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert not calls
 
 

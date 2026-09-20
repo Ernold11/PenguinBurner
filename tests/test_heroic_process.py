@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 
-from integrations.heroic import process
-from integrations.launchers import host_process as host
+import pytest
+
+from integrations.heroic import paths, process
+
+
+@pytest.fixture(autouse=True)
+def isolated_installation(tmp_path, monkeypatch):
+    resolver = paths.heroic_config_root
+    monkeypatch.setattr(process, "heroic_config_root", lambda home=None: resolver(home or tmp_path))
+    monkeypatch.setattr(paths, "host_has_command", lambda name: process.host_has_command(name))
+    paths.native_heroic_available.cache_clear()
+    yield
+    paths.native_heroic_available.cache_clear()
 
 
 def _installed(monkeypatch, *, native: bool = True):
@@ -102,14 +115,19 @@ def test_a_game_id_with_a_space_survives_the_host_probe(monkeypatch) -> None:
     assert sessions.wrapped == {"Sid Meier": (9,)}
 
 
-def test_stopping_signals_the_wrapper_that_became_the_session(monkeypatch) -> None:
-    """The wrapper execs the game, so its pid is the session's own."""
-    sent: list[int] = []
-    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
-    monkeypatch.setattr(host.os, "kill", lambda pid, _sig: sent.append(pid))
-
-    assert process.stop_heroic_game(4210) is True
-    assert sent == [4210]
+def test_stop_revalidates_the_game_before_signalling() -> None:
+    env = dict(os.environ, PENGUIN_BURNER_GAME_KEY='heroic:StopIdentityProbe',
+               PENGUIN_BURNER_SESSION_ID='stop-identity')
+    with subprocess.Popen(['/bin/sleep', '30'], env=env) as child:
+        try:
+            assert not process.stop_heroic_game(child.pid, 'WrongGame')
+            assert child.poll() is None
+            assert process.stop_heroic_game(child.pid, 'StopIdentityProbe')
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
 
 
 def test_unwrapped_launch_probe_excludes_helpers_and_orphans(tmp_path, monkeypatch):
@@ -149,7 +167,7 @@ def test_external_session_cannot_be_stopped_and_wrapped_session_takes_precedence
     sessions = process.HeroicSessions(external={'Turkey': (20,)})
     monkeypatch.setattr(library_source, 'probe_heroic_sessions', lambda **kwargs: sessions)
     signalled = []
-    monkeypatch.setattr(library_source, 'stop_heroic_game', lambda pid: signalled.append(pid) or True)
+    monkeypatch.setattr(library_source, 'stop_heroic_game', lambda pid, game: signalled.append(pid) or True)
     assert source.running_game_ids() == frozenset({'Turkey'})
     assert source.external_game_ids() == frozenset({'Turkey'})
     assert not source.stop('Turkey')[0]
@@ -194,3 +212,108 @@ finally:
     sessions = process.probe_heroic_sessions()
     assert sessions is not None
     assert 'UnwrappedProbe' not in sessions.external
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_leftover_configs_and_executable_select_the_same_installation(tmp_path, monkeypatch, native):
+    _installed(monkeypatch, native=native)
+    for root in (tmp_path / '.config/heroic', tmp_path / paths.HEROIC_FLATPAK_DIRNAME):
+        root.mkdir(parents=True)
+        (root / 'config.json').write_text('{}')
+    root = paths.heroic_config_root(tmp_path)
+    expected = tmp_path / ('.config/heroic' if native else paths.HEROIC_FLATPAK_DIRNAME)
+    assert root == expected
+    launches = []
+    monkeypatch.setattr(process, 'launch_with_current_settings',
+                        lambda command, **kwargs: launches.append((command, kwargs)) or True)
+    assert process.launch_heroic_game('legendary', 'Turkey', home=tmp_path)
+    assert launches[0][0][0] == ('heroic' if native else 'flatpak')
+    assert launches[0][1]['home'] == tmp_path
+
+
+def test_flatpak_config_does_not_launch_an_unconfigured_native_install(tmp_path, monkeypatch):
+    _installed(monkeypatch)
+    root = tmp_path / paths.HEROIC_FLATPAK_DIRNAME
+    root.mkdir(parents=True)
+    (root / 'config.json').write_text('{}')
+    command = process.launch_command('legendary', 'Turkey', home=tmp_path)
+    assert command is not None and command[:3] == ['flatpak', 'run', process.FLATPAK_APP_ID]
+
+
+def test_missing_selected_executable_never_falls_back_to_other_settings(tmp_path, monkeypatch):
+    _installed(monkeypatch, native=False)
+    root = tmp_path / '.config/heroic'
+    root.mkdir(parents=True)
+    (root / 'config.json').write_text('{}')
+    assert not process.heroic_available(tmp_path)
+    assert process.launch_command('legendary', 'Turkey', home=tmp_path) is None
+
+
+def test_rescan_reselects_installation_after_native_removal(tmp_path, monkeypatch):
+    from integrations.heroic.manager import HeroicIntegrationManager
+
+    _installed(monkeypatch)
+    for root in (tmp_path / '.config/heroic', tmp_path / paths.HEROIC_FLATPAK_DIRNAME):
+        root.mkdir(parents=True)
+        (root / 'config.json').write_text('{}')
+    assert paths.heroic_config_root(tmp_path) == tmp_path / '.config/heroic'
+    _installed(monkeypatch, native=False)
+    HeroicIntegrationManager(home=tmp_path).refresh()
+    assert paths.heroic_config_root(tmp_path) == tmp_path / paths.HEROIC_FLATPAK_DIRNAME
+
+
+def test_stop_reaches_handoff_children_but_not_helpers_or_external_games():
+    from integrations.heroic.library_source import HeroicLibrarySource
+
+    # Simulate a wrapper that forks two successors and a detached PB helper.
+    # All retain its telemetry PID; only the successors retain SESSION_ID.
+    code = '''
+import os, subprocess, sys
+env = dict(os.environ, PENGUIN_BURNER_GAME_KEY='heroic:StopHandoffProbe',
+           PENGUIN_BURNER_TELEMETRY_SESSION=str(os.getpid()),
+           PENGUIN_BURNER_SESSION_ID='stop-handoff-probe')
+for _ in range(2):
+    p = subprocess.Popen(['/bin/sleep', '30'], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(p.pid, flush=True)
+'''
+    children = []
+    helper_env = dict(os.environ, PENGUIN_BURNER_GAME_KEY='heroic:StopHandoffProbe',
+                      PENGUIN_BURNER_TELEMETRY_SESSION='1')
+    helper_env.pop('PENGUIN_BURNER_SESSION_ID', None)
+    with subprocess.Popen(['/bin/sleep', '30'], env=helper_env) as helper:
+        try:
+            parent = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+            children = [int(pid) for pid in parent.stdout.splitlines()]
+            sessions = process.probe_heroic_sessions()
+            assert sessions is not None
+            assert set(sessions.wrapped['StopHandoffProbe']) == set(children)
+            assert helper.pid not in sessions.wrapped['StopHandoffProbe']
+            source = HeroicLibrarySource()
+            import select
+
+            with_fds = [os.pidfd_open(pid) for pid in children]
+            try:
+                assert source.stop('StopHandoffProbe')[0]
+                poller = select.poll()
+                for fd in with_fds:
+                    poller.register(fd, select.POLLIN)
+                ready = set()
+                while len(ready) < len(with_fds):
+                    events = poller.poll(3000)
+                    assert events, 'Stop did not terminate the surviving game children'
+                    for fd, _event in events:
+                        ready.add(fd)
+                        poller.unregister(fd)
+            finally:
+                for fd in with_fds:
+                    os.close(fd)
+            assert helper.poll() is None
+        finally:
+            helper.terminate()
+            helper.wait(timeout=5)
+            for pid in children:
+                try:
+                    os.kill(pid, 15)
+                except ProcessLookupError:
+                    pass

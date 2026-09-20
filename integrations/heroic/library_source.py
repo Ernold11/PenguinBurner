@@ -50,7 +50,7 @@ class HeroicLibrarySource(WrapperLibrarySource):
         return HeroicIntegrationManager(home=home, settings_path=settings_path)
 
     def probe_can_launch(self) -> bool:
-        return heroic_available()
+        return heroic_available(self._home)
 
     def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
         fields = super().fields(game)
@@ -128,14 +128,17 @@ class HeroicLibrarySource(WrapperLibrarySource):
         return False, "FAILED to launch (heroic would not start the game)"
 
     def stop(self, game_id: str) -> tuple[bool, str]:
-        """Signal the game's PenguinBurner wrapper, which is the session itself."""
+        """Signal the wrapped game's surviving session members."""
         running = self._running_sessions()
         if running is None:
             return False, "FAILED to stop (could not tell what is running)"
         pids = running.wrapped.get(str(game_id), ())
         if not pids:
             return False, "FAILED to stop (no running session for this game)"
-        if stop_heroic_game(pids[0]):
+        # Handoffs can leave several identified successors. Stop every wrapped
+        # member, never an external launcher process or detached PB helper.
+        stopped = [stop_heroic_game(pid, str(game_id)) for pid in pids]
+        if all(stopped):
             return True, "stopping…"
         return False, "FAILED to stop (the wrapper would not take the signal)"
 

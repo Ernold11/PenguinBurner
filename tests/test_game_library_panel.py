@@ -20,6 +20,7 @@ from integrations.launchers.library import (
     LauncherBulkAction,
     LauncherField,
     LauncherWriteState,
+    LaunchNotStartedError,
     LibraryGame,
 )
 from ui.components.game_library_panel import (
@@ -1686,7 +1687,7 @@ def test_launcher_refresh_runs_off_gui_thread_and_failure_restores_play(qapp, qt
     def launch(game_id):
         worker_threads.append(threading.get_ident())
         assert release.wait(2)
-        raise RuntimeError('Heroic is busy')
+        raise LaunchNotStartedError('Heroic is busy')
     steam.launch = launch
     panel = _panel(qapp, (steam, lutris))
     panel.ensure_scanned()
@@ -1704,7 +1705,7 @@ def test_launcher_refresh_runs_off_gui_thread_and_failure_restores_play(qapp, qt
         qtbot.waitUntil(lambda: panel._launch_thread is None)
         assert worker_threads == [worker_threads[0]]
         assert worker_threads[0] != threading.get_ident()
-        assert panel.play_button.text() == 'Retry launch…'
+        assert panel.play_button.text() == 'Play'
         assert panel.play_button.isEnabled()
         assert 'Heroic is busy' in panel.status_label.text()
     finally:
@@ -1878,3 +1879,78 @@ def test_retry_rechecks_state_after_modal_confirmation(qapp, monkeypatch, event)
     panel._retry_launch()
     assert steam.launched == ['620']
     panel.widget.close()
+
+
+@pytest.mark.parametrize('failure', ['refused', 'preparation', 'unknown'])
+def test_only_known_undispatched_failures_release_other_games(qapp, failure):
+    steam, lutris = _launchable_pair()
+    steam._inner._games += (_game('steam', '440', 'Team Fortress 2'),)
+
+    def launch(_game_id):
+        if failure == 'preparation':
+            raise LaunchNotStartedError('Heroic is busy')
+        if failure == 'unknown':
+            raise RuntimeError('Lost response after dispatch')
+        return False, 'Launcher could not be started'
+
+    steam.launch = launch
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    _finish_worker(qapp, panel, '_launch_thread')
+    _session_snapshot(panel, [], sequence=1)
+    panel._apply_game_states({'steam': frozenset()})
+    assert panel.play_button.text() == ('Retry launch…' if failure == 'unknown' else 'Play')
+    panel._select_key('steam:440')
+    assert panel.play_button.isEnabled() == (failure != 'unknown')
+    panel.widget.close()
+
+
+def test_refused_retry_preserves_first_attempt_until_its_exit(qapp, monkeypatch):
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    _finish_worker(qapp, panel, '_launch_thread')
+    steam.launch = lambda _: (False, 'Retry could not be dispatched')
+    monkeypatch.setattr(panel, '_confirm', lambda *args: True)
+    panel._retry_launch()
+    _finish_worker(qapp, panel, '_launch_thread')
+    assert panel.play_button.text() == 'Retry launch…'
+    assert len(panel._launch_attempts['steam:620']) == 1
+    _session_snapshot(panel, [], sequence=3, ended=[{
+        'sequence': 3, 'session': {'app_id': 'steam:620', 'session_id': 'first',
+                                 'wrapped': True, 'phase': 'exited'},
+    }])
+    assert panel.play_button.text() == 'Play'
+    assert panel.play_button.isEnabled()
+    panel.widget.close()
+
+
+def test_late_running_event_wins_over_refused_launch_result(qapp, qtbot):
+    steam, lutris = _launchable_pair()
+    release = threading.Event()
+
+    def launch(_game_id):
+        assert release.wait(3)
+        return False, 'Request refused'
+
+    steam.launch = launch
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    try:
+        panel._play_stop_clicked()
+        _session_snapshot(panel, [{'app_id': 'steam:620', 'session_id': 'external-start',
+                                  'wrapped': True, 'phase': 'running'}])
+        release.set()
+        qtbot.waitUntil(lambda: panel._launch_thread is None)
+        assert panel.play_button.text() == 'Stop'
+        assert panel.play_button.isEnabled()
+    finally:
+        release.set()
+        panel.widget.close()

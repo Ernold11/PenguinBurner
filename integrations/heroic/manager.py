@@ -22,7 +22,7 @@ from .config_store import (
 )
 from .flatpak import ensure_integration, sandbox_command, uses_flatpak
 from .library import InstalledHeroicGame, read_heroic_games
-from .paths import game_config_path, heroic_installed
+from .paths import game_config_path, heroic_installed, native_heroic_available
 from .settings import HEROIC_GAME_SETTINGS_STORE
 
 
@@ -42,6 +42,7 @@ class HeroicIntegrationManager(WrapperManager):
         self._global_entries: list[dict] | None = None
 
     def refresh(self) -> tuple[LauncherGameRow, ...]:
+        native_heroic_available.cache_clear()
         # Heroic's global wrappers are one file every game without its own
         # falls back to, so it is read once a pass instead of once a game.
         # A settings change never touches it; the next scan picks up a change

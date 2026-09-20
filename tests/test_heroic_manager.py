@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 
@@ -41,6 +42,33 @@ def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
     assert "wrapperOptions" not in settings["Turkey"]
     row = manager.row("Turkey")
     assert row is not None and row.command == "game-performance"
+
+
+def test_stale_native_config_is_preserved_when_wrapping_flatpak_game(monkeypatch, tmp_path):
+    from integrations.heroic import manager as manager_module
+    from integrations.heroic import paths
+    from integrations.heroic.flatpak import wrapper_path
+
+    _home(tmp_path, game={'Turkey': {'wrapperOptions': [{'exe': 'existing', 'args': ''}]}})
+    native = tmp_path / '.config/heroic'
+    flatpak = tmp_path / paths.HEROIC_FLATPAK_DIRNAME
+    shutil.copytree(native, flatpak)
+    original = {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}
+    monkeypatch.setattr(paths, 'host_has_command', lambda _name: False)
+    monkeypatch.setattr(manager_module, 'ensure_integration', lambda _home: None)
+    manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / 'settings.json')
+    try:
+        manager.refresh()
+        assert manager.set_game_enabled('Turkey', True).ok
+        config = json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())
+        assert str(wrapper_path(tmp_path)) in json.dumps(config['Turkey']['wrapperOptions'])
+        assert {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()} == original
+        assert manager.set_game_enabled('Turkey', False).ok
+        assert json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())['Turkey'] == json.loads(
+            (native / 'GamesConfig/Turkey.json').read_text(),
+        )['Turkey']
+    finally:
+        paths.native_heroic_available.cache_clear()
 
 
 def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp_path):

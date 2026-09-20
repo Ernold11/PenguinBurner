@@ -20,7 +20,6 @@ from pathlib import Path
 
 from integrations.launchers.host_process import (
     host_has_command,
-    host_terminate,
     run_on_host,
     running_in_flatpak,
 )
@@ -28,6 +27,7 @@ from overlay.wrapper_tokens import GAME_KEY_ENV, split_game_key
 from runtime.daemon_client import daemon_status
 
 from .launch_sync import launch_with_current_settings
+from .paths import CONFIG_FILENAME, HEROIC_FLATPAK_DIRNAME, heroic_config_root
 
 LAUNCHER_ID = "heroic"
 COMMAND = "heroic"
@@ -44,8 +44,8 @@ class HeroicSessions:
 
 
 # A stdlib-only host probe: the PenguinBurner package need not be installed
-# outside our Flatpak. Only wrapper session leaders qualify for Stop. Heroic's
-# direct launch children are observable separately when the wrapper is missing.
+# outside our Flatpak. Wrapper leaders and identified successors qualify for
+# Stop. Heroic's direct launch children are observed separately when unwrapped.
 _SESSION_PROBE = """
 import json, os, sys
 from pathlib import Path
@@ -62,7 +62,14 @@ for proc in root.iterdir():
             continue
         fields = (proc / 'environ').read_bytes().split(b'\\0')
         env = dict(field.split(b'=', 1) for field in fields if b'=' in field)
-        if env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode():
+        if (env.get(b'PENGUIN_BURNER_SESSION_ID')
+                or env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode()):
+            # A forked successor inherits the launch identity, but keeps the
+            # original leader's telemetry PID. PB's detached helpers clear
+            # SESSION_ID and therefore do not acquire Stop authority.
+            stat = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+            if stat[0] == 'Z':
+                continue
             key = env.get(sys.argv[2].encode(), b'').decode('utf-8', errors='replace')
             if key:
                 sessions.append([int(proc.name), key])
@@ -90,19 +97,55 @@ print(json.dumps({'sessions': sessions, 'external': external, 'unreadable': unre
 """
 
 
-def heroic_available() -> bool:
+_STOP_SESSION = """
+import os, signal, sys
+from pathlib import Path
+
+pid = int(sys.argv[1])
+try:
+    fd = os.pidfd_open(pid)
+except ProcessLookupError:
+    raise SystemExit(0)  # Already exited between discovery and Stop.
+try:
+    root = Path('/proc') / str(pid)
+    if root.stat().st_uid != os.getuid():
+        raise SystemExit(1)
+    stat = (root / 'stat').read_text().rsplit(')', 1)[1].split()
+    if stat[0] == 'Z':
+        raise SystemExit(0)
+    env = dict(field.split(b'=', 1) for field in (root / 'environ').read_bytes().split(b'\\0') if b'=' in field)
+    if (env.get(b'PENGUIN_BURNER_GAME_KEY') != sys.argv[2].encode()
+            or not (env.get(b'PENGUIN_BURNER_SESSION_ID')
+                    or env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == str(pid).encode())):
+        raise SystemExit(1)
+    signal.pidfd_send_signal(fd, signal.SIGTERM)
+except (FileNotFoundError, ProcessLookupError):
+    pass
+finally:
+    os.close(fd)
+"""
+
+
+def heroic_available(home: Path | None = None) -> bool:
     """Whether Heroic can be asked to start a game on this machine.
 
     Distinct from having a Heroic configuration: a machine can carry the
     library of a Heroic that is no longer installed, and those games are still
     worth listing and configuring -- just not startable.
     """
-    return _launcher_command() is not None
+    return _launcher_command(home) is not None
 
 
-def _launcher_command() -> list[str] | None:
-    if host_has_command(COMMAND):
+def _launcher_command(home: Path | None = None) -> list[str] | None:
+    root = heroic_config_root(home)
+    configured = (root / CONFIG_FILENAME).is_file()
+    flatpak = root == (home if home is not None else Path.home()) / HEROIC_FLATPAK_DIRNAME
+    # Once a library/configuration was selected, launch only that installation.
+    # Falling back to the other executable would silently ignore saved settings.
+    if (not configured or not flatpak) and host_has_command(COMMAND):
         return [COMMAND]
+    if configured and not flatpak:
+        return None
     if host_has_command("flatpak"):
         installed = run_on_host(["flatpak", "info", FLATPAK_APP_ID])
         if installed is not None and installed.returncode == 0:
@@ -110,7 +153,7 @@ def _launcher_command() -> list[str] | None:
     return None
 
 
-def launch_command(runner: str, app_name: str) -> list[str] | None:
+def launch_command(runner: str, app_name: str, *, home: Path | None = None) -> list[str] | None:
     """The command that asks Heroic to start one game, or None if unusable."""
     app_name = str(app_name or "").strip()
     runner = str(runner or "").strip()
@@ -121,13 +164,13 @@ def launch_command(runner: str, app_name: str) -> list[str] | None:
     # running one, whose own argv was parsed at ITS startup -- the flag alone
     # would raise the window over the game every time Heroic was already open.
     url = f"heroic://launch/{runner}/{app_name}?gui=false"
-    launcher = _launcher_command()
+    launcher = _launcher_command(home)
     return None if launcher is None else [*launcher, "--no-gui", url]
 
 
 def launch_heroic_game(runner: str, app_name: str, *, home: Path | None = None) -> bool:
     """Ask Heroic to start a game after refreshing its cached settings."""
-    command = launch_command(runner, app_name)
+    command = launch_command(runner, app_name, home=home)
     return command is not None and launch_with_current_settings(command, home=home)
 
 
@@ -179,6 +222,11 @@ def probe_heroic_sessions(
     return HeroicSessions(running, external)
 
 
-def stop_heroic_game(pid: int) -> bool:
-    """One SIGTERM to the wrapper, which is the game session after its exec."""
-    return host_terminate(pid)
+def stop_heroic_game(pid: int, game_id: str) -> bool:
+    """Pin and recheck a wrapped member before signalling; never signal a reused PID."""
+    python = (
+        os.environ.get("PENGUIN_BURNER_HOST_PYTHON") or "/usr/bin/python3"
+        if running_in_flatpak() else sys.executable
+    )
+    result = run_on_host([python, "-c", _STOP_SESSION, str(pid), f"heroic:{game_id}"])
+    return result is not None and result.returncode == 0

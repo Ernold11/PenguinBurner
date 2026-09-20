@@ -25,6 +25,7 @@ from integrations.launchers.library import (
     SORT_LAUNCHER,
     SORT_PLAYTIME,
     SORT_RECENT,
+    LaunchNotStartedError,
     LibraryGame,
     sorted_library_games,
 )
@@ -303,7 +304,7 @@ class GameLibraryPanel:
         self._stop_thread: threading.Thread | None = None
         self._stop_result: tuple[bool, str] | None = None
         self._launch_thread: threading.Thread | None = None
-        self._launch_result: tuple[bool, str] | None = None
+        self._launch_result: tuple[bool | None, str] | None = None
         self._tracked: dict[str, _TrackedGame] = {}
         self._poll_thread: threading.Thread | None = None
         self._poll_result: dict[str, frozenset[str] | None] = {}
@@ -2328,8 +2329,10 @@ class GameLibraryPanel:
             try:
                 with self._library_lock:
                     self._launch_result = source.launch(game.game_id)
-            except Exception as error:  # noqa: BLE001 - launcher boundary
+            except LaunchNotStartedError as error:
                 self._launch_result = (False, f"Launch failed: {error}")
+            except Exception as error:  # noqa: BLE001 - launcher boundary
+                self._launch_result = (None, f"Launch status unknown: {error}")
 
         self._launch_thread = self._worker("launch", run, lambda: self._collect_launch(game))
         self._set_game_state(game_key(game), "launching")
@@ -2341,13 +2344,30 @@ class GameLibraryPanel:
     def _collect_launch(self, game: LibraryGame) -> None:
         if self._launch_thread is not None and self._launch_thread.is_alive():
             return
-        started, message = self._launch_result or (False, "Launch returned no result.")
+        started, message = self._launch_result or (None, "Launch returned no result.")
         self._launch_thread = None
         self._launch_result = None
-        if (not started and game_key(game) not in self._session_keys
-                and self._tracked_state(game_key(game)) in ("launching", "unconfirmed")):
-            self._set_game_state(game_key(game), "unconfirmed")
-            self._tracked[game_key(game)].note = "Launch request was not confirmed. Check the launcher before retrying."
+        key = game_key(game)
+        attempts = self._launch_attempts.get(key, [])
+        if started is False:
+            # Remove only this refused request. An earlier dispatched attempt
+            # can still start late, including while a retry is being refused.
+            if attempts and not attempts[-1].session_id:
+                attempts.pop()
+            if len(attempts) <= 1 or all(attempt.session_id for attempt in attempts):
+                self._ambiguous_launches.discard(key)
+            if attempts:
+                self._launch_sequences[key] = (attempts[-1].epoch, attempts[-1].sequence)
+            else:
+                self._launch_sequences.pop(key, None)
+        if (not started and key not in self._session_keys
+                and self._tracked_state(key) in ("launching", "unconfirmed")):
+            uncertain = started is None or any(not attempt.session_id for attempt in attempts)
+            self._set_game_state(key, "unconfirmed" if uncertain else "stopped")
+            if uncertain:
+                self._tracked[key].note = "Launch request was not confirmed. Check the launcher before retrying."
+            else:
+                self._tracked[key].warning = message
         self._sync_play_button(self._selected_game())
         self._sync_status(f"{game.name}: {message}")
         if self._events is not None:

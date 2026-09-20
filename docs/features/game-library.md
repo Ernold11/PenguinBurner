@@ -64,12 +64,17 @@ external session shows **Running — PBurn unconfirmed** and disables Play. Miss
 wrapper or GPU-profile evidence is a neutral status, not a failure warning.
 Wrapper registration confirms the launch wrapper, not that the HUD has rendered.
 
+If launch preparation fails before a request is sent, **Play** becomes available
+again and other games remain launchable. A refused retry does not clear an earlier
+launch whose status is still unknown. Errors after possible dispatch continue to
+require **Retry launch…** confirmation.
+
 If the daemon disconnects, the last known session is retained until recovery.
 Reconnection only restores observation: it does not apply a skipped GPU profile
 later. File-change notifications refresh library entries and saved settings;
 background worker completion uses Qt signals. Bounded transport waits, reconnect
-backoff, periodic recovery scans, and the daemon's existing GPU restoration grace
-remain; none is used to classify a launch as failed or unwrapped.
+backoff, and periodic recovery scans remain; none is used to classify a launch
+as failed or unwrapped.
 
 For a diagnostic snapshot, run:
 

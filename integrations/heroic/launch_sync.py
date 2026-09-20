@@ -20,6 +20,7 @@ from integrations.launchers.host_process import (
     running_in_flatpak,
     start_on_host,
 )
+from integrations.launchers.library import LaunchNotStartedError
 
 from .config_store import entries_command, read_global_entries
 from .paths import heroic_config_root
@@ -172,30 +173,34 @@ def launch_with_current_settings(command: list[str], *, home: Path | None = None
     one fresh start, further launches reuse it until wrapper settings change.
     Never terminate a game or a busy launcher, and never escalate to SIGKILL.
     """
-    root = heroic_config_root(home)
-    config_dir = home / ".config/PenguinBurner" if home is not None else default_user_config_dir()
-    receipt_path = config_dir / "heroic-launch-receipt.json"
-    fingerprint = _settings_fingerprint(root, home)
-    state = _probe(root)
     try:
-        receipt = json.loads(receipt_path.read_text())
-    except (OSError, ValueError):
-        receipt = {}
-    if state["launchers"] and receipt == {
-        "root": str(root), "launchers": state["launchers"], "settings": fingerprint,
-    }:
-        return start_on_host(command)
-    if state["launchers"]:
-        if state["busy"]:
-            raise RuntimeError(
-                "Heroic needs to reload changed settings but is busy. "
-                "Finish its game, download or other operation, then press Play again."
-            )
-        stopped = _probe(root, stop=state["launchers"])
-        if stopped["launchers"] or _probe(root)["launchers"]:
-            raise RuntimeError("Heroic did not exit or was restarted elsewhere; try Play again.")
+        root = heroic_config_root(home)
+        config_dir = home / ".config/PenguinBurner" if home is not None else default_user_config_dir()
+        receipt_path = config_dir / "heroic-launch-receipt.json"
+        fingerprint = _settings_fingerprint(root, home)
+        state = _probe(root)
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except (OSError, ValueError):
+            receipt = {}
+        fresh = bool(state["launchers"]) and receipt == {
+            "root": str(root), "launchers": state["launchers"], "settings": fingerprint,
+        }
+        if state["launchers"] and not fresh:
+            if state["busy"]:
+                raise RuntimeError(
+                    "Heroic needs to reload changed settings but is busy. "
+                    "Finish its game, download or other operation, then press Play again."
+                )
+            stopped = _probe(root, stop=state["launchers"])
+            if stopped["launchers"] or _probe(root)["launchers"]:
+                raise RuntimeError("Heroic did not exit or was restarted elsewhere; try Play again.")
+    except Exception as error:  # Preparation has not dispatched a launch.
+        raise LaunchNotStartedError(str(error)) from error
     if not start_on_host(command):
         return False
+    if fresh:
+        return True
     # Receipt creation is an optimization. A launcher without a readiness API
     # cannot be declared ready by waiting an arbitrary number of milliseconds.
     # Record only a process already observed after dispatch; otherwise the next

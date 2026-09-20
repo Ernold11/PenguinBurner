@@ -9,6 +9,12 @@ If you launch directly from Heroic after editing settings in PenguinBurner,
 fully exit and reopen Heroic first. Overlay visibility also updates live in an
 already wrapped game.
 
+Settings and Play use the same Heroic installation. If native and Flatpak
+configuration both exist, native is preferred while its executable is available;
+otherwise Flatpak is selected. **Rescan** refreshes this choice after installing
+or removing Heroic. An unavailable selected installation cannot fall back to
+another installation with different settings.
+
 See [per-game settings](game-library.md#per-game-settings) for profiles,
 Adaptive targets, GPU selection, and overlay controls. DLC entries are not
 listed: Heroic shows them beside their game but never launches them.
@@ -68,9 +74,10 @@ program to run. See [latency and FPS](latency-fg.md) for the sources.
 
 **Play** goes through Heroic's own `heroic://launch/<runner>/<app name>` link,
 so Heroic starts the game with its selected runner. Wrapped sessions use the
-game identity and session PID carried in the process environment, including
-when no saved profile can be applied. Only those sessions can be stopped from
-PenguinBurner. Helper processes are excluded from session detection and Stop.
+game and launch identities carried in the process environment, including when
+no saved profile can be applied. If the original wrapper exits after starting
+child processes, **Stop** reaches the surviving wrapped processes.
+PenguinBurner's detached telemetry helpers and unwrapped games are excluded.
 
 If a Heroic game process appears before its wrapper is confirmed, Game Library
 shows **Running — PBurn unconfirmed**. This is a neutral observation: it does not

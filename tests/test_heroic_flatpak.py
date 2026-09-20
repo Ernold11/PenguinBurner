@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 import subprocess
 import zipfile
+from pathlib import Path
 
 import pytest
 
-from integrations.heroic import flatpak
+from integrations.heroic import flatpak, paths
 from overlay.wrapper_tokens import strip_penguin_burner_tokens, wrapper_present
 
 
@@ -80,7 +80,9 @@ def test_probe_failure_is_reported(monkeypatch, tmp_path, payload):
         flatpak.ensure_integration(tmp_path)
 
 
-def test_config_location_selects_flatpak(tmp_path):
+@pytest.mark.parametrize("native_installed", [False, True])
+def test_config_location_selects_flatpak(tmp_path, monkeypatch, native_installed):
+    monkeypatch.setattr(paths, "native_heroic_available", lambda: native_installed)
     root = tmp_path / flatpak.HEROIC_FLATPAK_DIRNAME
     root.mkdir(parents=True)
     (root / "config.json").write_text("{}")
@@ -88,4 +90,4 @@ def test_config_location_selects_flatpak(tmp_path):
     native = tmp_path / ".config/heroic"
     native.mkdir(parents=True)
     (native / "config.json").write_text("{}")
-    assert not flatpak.uses_flatpak(tmp_path)
+    assert flatpak.uses_flatpak(tmp_path) is not native_installed
