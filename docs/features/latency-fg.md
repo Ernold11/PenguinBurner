@@ -197,6 +197,17 @@ This distinction matters:
 - `raw-present-fps-avg=120` means the output present stream averaged about
   120 FPS, which can include generated frames.
 
+Adaptive uses the same slowdown protection for base-frame markers and ordinary
+present pacing. Before immediately jumping to Performance, it checks that the
+median frame time also exceeds the target and at least half the measured frames
+miss the badly-slow deadline. A short slow tail, such as during a desktop switch,
+instead goes through the normal sustained-slowdown confirmation. Returning to a
+lower tier still requires sustained headroom.
+
+Generated output is not a base-frame sample set. When only an inferred base FPS
+is available, the controller keeps its existing fallback; it does not use the
+faster displayed-frame median or miss ratio to veto a needed promotion.
+
 ## Frame-Generation Detection
 
 PenguinBurner is conservative about showing `FG`.

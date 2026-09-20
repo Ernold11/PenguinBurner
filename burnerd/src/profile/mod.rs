@@ -9,6 +9,7 @@ mod apply;
 mod ceiling;
 mod cpu;
 mod fan;
+mod frametime;
 mod guard;
 mod latency_rx;
 mod logfmt;
@@ -86,18 +87,17 @@ pub(crate) fn floor_div(a: i64, b: i64) -> i64 {
 #[derive(Debug, Clone, Default)]
 pub struct LatencySnapshot {
     pub base_present_frametime_p95_ms: Option<f64>,
-    /// Median of the same accepted marker set as the p95 above, so the two are
-    /// comparable. Only present when a marker stream supplied the p95 -- the
-    /// present-pacing fallback derives its p95 from a smoothed FPS estimate,
-    /// not from a set this could be a median of.
+    /// Median of the accepted marker set. Kept separate from output pacing so
+    /// cap/probe comparisons cannot silently switch between telemetry sources.
     pub base_present_frametime_p50_ms: Option<f64>,
-    /// Median of the presented frames themselves. Not comparable with the p95
-    /// above, so it is kept apart and used only where a median is compared
-    /// with another median -- which is most games, since most have no markers.
+    /// Median of presented frames, including any generated output. Cap/probe
+    /// comparisons use this stream only against itself; promotion_stats below
+    /// contains its statistics only when it also measures base-frame cadence.
     pub present_pacing_p50_ms: Option<f64>,
-    /// Share of the marker window that missed the deadline. Reported only off
-    /// the same accepted set as the p95, for the same reason as the median.
-    pub base_present_frametime_miss_ratio: Option<f64>,
+    /// Comparable base-frame statistics for the shared immediate-promotion
+    /// guard. Markers and non-generated present pacing supply the same type;
+    /// inferred frame-generation cadence has no matching sample set.
+    pub promotion_stats: Option<frametime::FrametimeStats>,
     pub present_fps: Option<String>,
     pub fps_source: Option<String>,
     pub raw_present_fps_stats_avg: Option<String>,
