@@ -63,9 +63,11 @@ def test_native_overlay_env_false_still_disables_enabled_config(tmp_path: Path) 
     assert result.stdout.strip() == ""
 
 
-@pytest.mark.parametrize("config_enabled", [False, True, None])
-def test_native_overlay_switches_on_and_off_in_same_process(tmp_path, config_enabled):
-    from overlay.state import OVERLAY_OVERRIDE_ENV, write_overlay_override
+@pytest.mark.parametrize("launcher,config_enabled", [("steam", False), ("lutris", True), ("heroic", None)])
+def test_native_overlay_switches_on_and_off_in_same_process(tmp_path, monkeypatch, launcher, config_enabled):
+    from integrations.launchers.registry import build_sources
+    from integrations.launchers.wrapper_manager import ApplyResult
+    from overlay.state import OVERLAY_OVERRIDE_ENV
 
     binary = _build_native_overlay_probe(tmp_path)
     config_path = tmp_path / "overlay.toml"
@@ -76,13 +78,21 @@ def test_native_overlay_switches_on_and_off_in_same_process(tmp_path, config_ena
     override = tmp_path / "overlay-override"
     env = _probe_env(config_path, pb_overlay="0")
     env[OVERLAY_OVERRIDE_ENV] = str(override)
+    env["PENGUIN_BURNER_GAME_KEY"] = f"{launcher}:native-probe"
+    env["PENGUIN_BURNER_SESSION_ID"] = "overlay-contract-test"
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    source = next(source for source in build_sources(home=tmp_path) if source.launcher_id == launcher)
+    monkeypatch.setattr(source, "running_game_ids", lambda: frozenset({"native-probe"}))
     with subprocess.Popen(
         [str(binary), "--live"], env=env, stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, text=True,
     ) as process:
         assert process.stdout.readline().strip() == ""
         for enabled in (True, False, True):
-            assert write_overlay_override(enabled, override)
+            monkeypatch.setattr(source, "saved_overlay", lambda _id, enabled=enabled: enabled)
+            result = (source.after_setting_write("native-probe", "set_game_overlay") if enabled else
+                      source.after_bulk_write("set_all_games_overlay", ApplyResult(True, "saved", applied_game_ids=("native-probe",))))
+            assert result.ok
             process.stdin.write("tick\n")
             process.stdin.flush()
             text = process.stdout.readline().strip()

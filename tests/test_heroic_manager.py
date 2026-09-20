@@ -357,6 +357,12 @@ def test_the_global_wrappers_are_read_once_a_scan_not_once_a_game(
     assert {row.command for row in rows} == {"game-performance"}
 
 
+@pytest.fixture(autouse=True)
+def _wrapped_overlay_identity(monkeypatch):
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys",
+                        lambda: frozenset({"heroic:Turkey", "heroic:Other", "lutris:27"}))
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_overlay_toggle_updates_running_heroic_session(tmp_path, monkeypatch, enabled):
     from integrations.heroic import library_source
@@ -403,6 +409,8 @@ def test_overlay_toggle_does_not_claim_live_update_without_wrapped_session(
     monkeypatch.setattr(
         library_source, "probe_heroic_sessions", lambda **kwargs: sessions[state]
     )
+    if state == "external":
+        monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", frozenset)
     override = tmp_path / "overlay-override"
     override.write_text("0")
     monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
@@ -502,21 +510,31 @@ def test_heroic_target_qt_edit_applies_saved_target_live(qapp, qtbot, tmp_path, 
 
 
 @pytest.mark.parametrize("bulk", [False, True])
-def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch, bulk):
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+def test_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch, bulk, launcher):
     from integrations.heroic import library_source
     from integrations.heroic.process import HeroicSessions
     from overlay.state import OVERLAY_OVERRIDE_ENV
     from ui.components.game_library_panel import GameLibraryPanel
     from ui.qt import import_qt
 
-    manager = _manager(tmp_path)
-    assert manager.set_game_enabled("Turkey", True).ok
-    source = HeroicLibrarySource(manager, home=tmp_path)
+    if launcher == "heroic":
+        manager = _manager(tmp_path)
+        game_id = "Turkey"
+        source = HeroicLibrarySource(manager, home=tmp_path)
+        monkeypatch.setattr(library_source, "probe_heroic_sessions",
+                            lambda **kwargs: HeroicSessions(wrapped={game_id: (42,)}))
+    else:
+        from test_lutris_manager import _manager as lutris_manager
+
+        from integrations.lutris.library_source import LutrisLibrarySource
+
+        manager = lutris_manager(tmp_path)
+        game_id = "27"
+        source = LutrisLibrarySource(manager, home=tmp_path)
+        monkeypatch.setattr(source, "running_game_ids", lambda: frozenset({game_id}))
+    assert manager.set_game_enabled(game_id, True).ok
     monkeypatch.setattr(source, "probe_can_launch", lambda: True)
-    monkeypatch.setattr(
-        library_source, "probe_heroic_sessions",
-        lambda **kwargs: HeroicSessions(wrapped={"Turkey": (42,)}),
-    )
     override = tmp_path / "overlay-override"
     monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
     QtCore, QtGui, QtWidgets, _pg = import_qt()
@@ -526,7 +544,7 @@ def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, 
     qtbot.addWidget(panel.widget)
     panel.ensure_scanned()
     qtbot.waitUntil(lambda: bool(panel._games), timeout=5000)
-    panel._select_key("heroic:Turkey")
+    panel._select_key(f"{launcher}:{game_id}")
 
     panel._confirm = lambda *_args: True
     for enabled in (True, False):
@@ -540,7 +558,7 @@ def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, 
             panel.overlay_switch.click()
         qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
         assert override.read_text() == ("1" if enabled else "0")
-        assert _stored(tmp_path).overlay is enabled
+        assert source.saved_overlay(game_id) is enabled
         assert "live" in panel.status_label.text()
 
 

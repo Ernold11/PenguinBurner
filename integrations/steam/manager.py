@@ -63,6 +63,7 @@ class ApplyResult:
     ok: bool
     message: str
     launch_options: str = ""
+    applied_game_ids: tuple[str, ...] = ()
 
 
 class SteamIntegrationManager:
@@ -284,18 +285,18 @@ class SteamIntegrationManager:
 
     def set_game_mode(self, app_id: str, mode: str) -> ApplyResult:
         mode = normalize_game_mode(mode)
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(app_id, replace(setting, mode=mode))
 
     def set_game_gpu(self, app_id: str, gpu_uuid: str) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(setting, gpu_uuid=str(gpu_uuid or "").strip()),
         )
 
     def set_game_enabled(self, app_id: str, enabled: bool) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(
@@ -306,11 +307,11 @@ class SteamIntegrationManager:
         )
 
     def set_game_overlay(self, app_id: str, overlay: bool) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(app_id, replace(setting, overlay=bool(overlay)))
 
     def set_game_target_fps(self, app_id: str, target_fps: float | None) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(setting, target_fps=normalize_game_target_fps(target_fps)),
@@ -331,10 +332,10 @@ class SteamIntegrationManager:
             app_ids,
             lambda app_id: self.set_game_overlay(app_id, bool(overlay)),
             "overlay shown" if overlay else "overlay hidden",
-            live_overlay=True,
+            reapply_profile=False,
         )
 
-    def _apply_to_games(self, app_ids, action, label: str, *, live_overlay: bool = False) -> ApplyResult:
+    def _apply_to_games(self, app_ids, action, label: str, *, reapply_profile: bool = True) -> ApplyResult:
         ids = [str(app_id) for app_id in app_ids]
         failed: list[str] = []
         for app_id in ids:
@@ -345,25 +346,18 @@ class SteamIntegrationManager:
         # One daemon-status probe instead of one per game: only games the
         # daemon is currently watching can pick the change up live.
         applied = set(ids) - set(failed)
-        live_problems: list[str] = []
-        if live_overlay:
-            for app_id in (self.running_game_ids() or frozenset()) & applied:
-                result = self.hot_reapply_overlay(app_id)
-                if result is not None and not result.ok:
-                    live_problems.append(result.message)
-        else:
+        if reapply_profile:
             for app_id in self._watched_running_app_ids() & applied:
                 self.hot_reapply(app_id)
         games_word = "game" if changed == 1 else "games"
         message = f"PenguinBurner {label} for {changed} {games_word}."
-        if live_problems:
-            message += " " + " ".join(live_problems)
         if failed:
             return ApplyResult(
                 False,
                 f"{message} Failed for {len(failed)}: {', '.join(failed[:5])}.",
+                applied_game_ids=tuple(app_id for app_id in ids if app_id in applied),
             )
-        return ApplyResult(not live_problems, message)
+        return ApplyResult(True, message, applied_game_ids=tuple(ids))
 
     def _watched_running_app_ids(self) -> frozenset[str]:
         """Steam games the daemon is watching right now, as Steam app ids.
@@ -438,7 +432,7 @@ class SteamIntegrationManager:
         write = self._write_launch_options(app_id, text)
         if not write.ok:
             return write
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         state = injection_state(text)
         if state.wrapped:
             self._store(
@@ -506,7 +500,7 @@ class SteamIntegrationManager:
         ]
         if not pids:
             return None
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         argv = profile_argv_for_setting(setting)
         profile_mode_requested = setting.enabled and setting.mode not in {
             GAME_MODE_DEFAULT,
@@ -562,18 +556,6 @@ class SteamIntegrationManager:
             reason = str(result.get("reason") or "daemon did not start the profile")
             return ApplyResult(False, f"live profile re-apply skipped: {reason}")
         return ApplyResult(True, "Profile re-applied to the running game.")
-
-    def hot_reapply_overlay(self, app_id: str) -> ApplyResult | None:
-        """Update the native layer only when this game's session is running."""
-        from overlay.state import write_overlay_override
-
-        running = self.running_game_ids()
-        if running is None or str(app_id) not in running:
-            return None
-        enabled = self._setting(app_id).overlay
-        if not write_overlay_override(enabled):
-            return ApplyResult(False, "Overlay saved, but live visibility update failed.")
-        return ApplyResult(True, f"Overlay switched {'on' if enabled else 'off'} live.")
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
         # Marker capture is an Adaptive prerequisite, not a second preference
@@ -667,7 +649,8 @@ class SteamIntegrationManager:
             display_name=user.display_name if user is not None else "",
         )
 
-    def _setting(self, app_id: str) -> SteamGameSetting:
+    def game_setting(self, app_id: str) -> SteamGameSetting:
+        """Read the saved preference for the active Steam account."""
         user = self.active_user()
         if user is None:
             return SteamGameSetting()

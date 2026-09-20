@@ -190,12 +190,31 @@ def test_the_launcher_order_is_the_declared_one() -> None:
     assert available_sources((first, second)) == (first, second)
 
 
-def test_both_real_sources_satisfy_the_contract() -> None:
-    from integrations.lutris.library_source import LutrisLibrarySource
-    from integrations.steam.library_source import SteamLibrarySource
+def test_all_registered_sources_satisfy_live_overlay_contract(tmp_path, monkeypatch) -> None:
+    from integrations.launchers import live_overlay
+    from integrations.launchers.registry import build_sources
+    from integrations.launchers.wrapper_manager import ApplyResult
 
-    for source in (SteamLibrarySource(), LutrisLibrarySource()):
+    override = tmp_path / "overlay-override"
+    monkeypatch.setenv("PENGUIN_BURNER_OVERLAY_OVERRIDE", str(override))
+    for source in build_sources(home=tmp_path):
         assert isinstance(source, LauncherSource)
+        assert isinstance(source, live_overlay.LiveOverlaySource)
+        assert type(source).after_bulk_write is live_overlay.LiveOverlaySource.after_bulk_write
+        monkeypatch.setattr(source, "running_game_ids", lambda: frozenset({"game"}))
+        monkeypatch.setattr(live_overlay, "wrapped_game_keys",
+                            lambda source=source: frozenset({f"{source.launcher_id}:game"}))
+        for enabled in (True, False):
+            monkeypatch.setattr(source, "saved_overlay", lambda _id, enabled=enabled: enabled)
+            result = source.after_setting_write("game", "set_game_overlay")
+            assert result.ok and override.read_text() == str(int(enabled))
+            override.unlink()
+            result = source.after_bulk_write("set_all_games_overlay",
+                                            ApplyResult(True, "saved", applied_game_ids=("game",)))
+            assert result.ok and override.read_text() == str(int(enabled))
+            override.unlink()
+        assert source.after_bulk_write("set_all_games_overlay", ApplyResult(False, "failed")) is None
+        assert not override.exists()
 
 
 def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
@@ -618,7 +637,6 @@ class _SteamStub:
     def __init__(self, *, marker=True, running=True, cdp=True, user="Ernold"):
         self._marker, self._running, self._cdp, self._user = marker, running, cdp, user
         self.reapplied: list[str] = []
-        self.overlays_reapplied: list[str] = []
 
     def marker_present(self):
         return self._marker
@@ -643,8 +661,8 @@ class _SteamStub:
     def hot_reapply(self, app_id):
         self.reapplied.append(app_id)
 
-    def hot_reapply_overlay(self, app_id):
-        self.overlays_reapplied.append(app_id)
+    def running_game_ids(self):
+        return frozenset()
 
 
 def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
@@ -666,7 +684,6 @@ def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
         source.after_setting_write("620", setter)
 
     assert manager.reapplied == ["620", "620", "620"]
-    assert manager.overlays_reapplied == ["620"]
 
 
 def _row(

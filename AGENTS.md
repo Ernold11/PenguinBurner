@@ -84,6 +84,12 @@ Anything that needs root belongs behind its socket API.
   GUI labels, CLI help, errors, and user docs.
 - When moving code, update imports, package metadata, tests, docs, and
   user-visible command strings in the same change; scan for stale paths.
+- Every new launcher must implement the shared `LauncherSource` contract and
+  inherit `LiveOverlaySource` (through `WrapperLibrarySource` for config-file
+  launchers). Single and bulk overlay changes must use the shared live handler;
+  do not add launcher-specific overlay writers or silently save for next launch.
+  Bulk results must report successfully saved game IDs. Extend the registered
+  launcher contract tests, including unknown/unwrapped sessions and failures.
 - Preserve visible integrations and saved configuration unless removal or
   migration is explicitly part of the request.
 - If overlay-visible fields change, keep Python formatting and the native layer
