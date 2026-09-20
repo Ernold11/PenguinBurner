@@ -104,6 +104,13 @@ class _TrackedGame:
 
 
 @dataclass
+class _LaunchAttempt:
+    epoch: str
+    sequence: int
+    session_id: str = ""
+
+
+@dataclass
 class _SettingWriteOutcome:
     """Worker result handed back to the Qt thread."""
 
@@ -316,6 +323,7 @@ class GameLibraryPanel:
         self._session_sequence = -1
         self._launch_sequences: dict[str, tuple[str, int]] = {}
         self._ambiguous_launches: set[str] = set()
+        self._launch_attempts: dict[str, list[_LaunchAttempt]] = {}
         self._session_epoch = ""
         self._library_change_pending = False
         if self._events is not None:
@@ -790,7 +798,36 @@ class GameLibraryPanel:
                 track.note = "Session connection lost; game status will be confirmed after reconnecting."
         self._sync_play_button(self._selected_game())
 
+    def _resolve_launch_attempts(self, snapshot: dict) -> None:
+        """Count distinct wrapper identities, never handoff PIDs or repeated events.
+
+        Launcher URLs cannot carry our attempt ID. Keep a retry uncertain until
+        enough distinct launches have appeared to account for every request.
+        Terminal history also accounts for attempts that start and exit between
+        snapshots, without allowing one old failure to finish a newer retry.
+        """
+        epoch = str(snapshot.get("epoch") or "")
+        evidence = [(entry.get("sequence", -1), entry.get("session", {}))
+                    for entry in snapshot.get("ended", [])]
+        evidence.extend((snapshot.get("sequence", -1), session)
+                        for session in snapshot.get("sessions", []))
+        for sequence, session in sorted(evidence, key=lambda item: item[0]):
+            key = str(session.get("app_id", ""))
+            identity = str(session.get("session_id", ""))
+            attempts = self._launch_attempts.get(key, [])
+            if (not session.get("wrapped") or not identity or not attempts
+                    or any(attempt.session_id == identity for attempt in attempts)):
+                continue
+            for attempt in attempts:
+                if (not attempt.session_id and attempt.epoch in ("", epoch)
+                        and sequence > attempt.sequence):
+                    attempt.session_id = identity
+                    break
+            if all(attempt.session_id for attempt in attempts):
+                self._ambiguous_launches.discard(key)
+
     def _apply_session_snapshot(self, snapshot: dict) -> None:
+        self._resolve_launch_attempts(snapshot)
         epoch = str(snapshot.get("epoch") or "")
         sessions = snapshot.get("sessions", [])
         current: set[str] = set()
@@ -2254,11 +2291,19 @@ class GameLibraryPanel:
 
     def _retry_launch(self) -> None:
         game = self._selected_game()
-        if (game is not None and self._tracked_state(self._selected_key) in ("launching", "unconfirmed")
-                and not self._other_active_game() and self._confirm(
-                    "Retry launch", "The previous game's status is unknown. Launching again may start "
-                    "a second instance. Retry anyway?",
-                )):
+        if (game is None or self._tracked_state(game_key(game)) not in ("launching", "unconfirmed")
+                or self._other_active_game()):
+            return
+        if not self._confirm(
+            "Retry launch", "The previous game's status is unknown. Launching again may start "
+            "a second instance. Retry anyway?",
+        ):
+            return
+        # Modal dialogs run a nested Qt event loop: the game may have started,
+        # exited, or another game may have appeared while confirmation was open.
+        if (self._selected_key == game_key(game)
+                and self._tracked_state(game_key(game)) in ("launching", "unconfirmed")
+                and not self._other_active_game()):
             self._play_game(game)
 
     def _play_game(self, game: LibraryGame) -> None:
@@ -2273,6 +2318,10 @@ class GameLibraryPanel:
             self._ambiguous_launches.add(game_key(game))
         else:
             self._ambiguous_launches.discard(game_key(game))
+            self._launch_attempts[game_key(game)] = []
+        self._launch_attempts.setdefault(game_key(game), []).append(
+            _LaunchAttempt(self._session_epoch, self._session_sequence),
+        )
         self._launch_sequences[game_key(game)] = (self._session_epoch, self._session_sequence)
 
         def run() -> None:

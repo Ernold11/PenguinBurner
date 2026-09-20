@@ -1804,3 +1804,77 @@ def test_older_failed_attempt_cannot_override_running_retry(qapp):
     ])
     assert panel.play_button.text() == "Stop"
     assert panel.launch_warning_label.isHidden()
+
+
+@pytest.mark.parametrize('coalesced', [False, True])
+def test_all_retry_attempts_exiting_release_the_library(qapp, monkeypatch, coalesced):
+    steam, lutris = _launchable_pair()
+    steam._inner._games += (_game('steam', '440', 'Team Fortress 2'),)
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    monkeypatch.setattr(panel, '_confirm', lambda *args: True)
+    panel._retry_launch()
+    sessions = [{'app_id': 'steam:620', 'session_id': identity,
+                 'wrapped': True, 'phase': 'running'} for identity in ('first', 'retry')]
+    if not coalesced:
+        _session_snapshot(panel, sessions, sequence=2)
+        assert panel.play_button.text() == 'Stop'
+    ended = [{'sequence': 3 + index, 'session': dict(session, phase='exited')}
+             for index, session in enumerate(sessions)]
+    _session_snapshot(panel, [], sequence=4, ended=ended)
+    assert panel.play_button.text() == 'Play'
+    panel._select_key('steam:440')
+    assert panel.play_button.isEnabled()
+    panel.widget.close()
+
+
+def test_handoff_and_replayed_history_do_not_account_for_pending_retry(qapp, monkeypatch):
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    monkeypatch.setattr(panel, '_confirm', lambda *args: True)
+    panel._retry_launch()
+    session = {'app_id': 'steam:620', 'session_id': 'first', 'wrapped': True, 'phase': 'running'}
+    _session_snapshot(panel, [dict(session, pid=11), dict(session, pid=12)], sequence=2)
+    ended = [{'sequence': 3, 'session': dict(session, phase='exited')}]
+    _session_snapshot(panel, [], sequence=3, ended=ended)
+    _session_snapshot(panel, [], sequence=4, ended=ended)
+    assert panel.play_button.text() == 'Retry launch…'
+    assert panel.launch_warning_label.isHidden()
+    panel.widget.close()
+
+
+@pytest.mark.parametrize('event', ['running', 'exited', 'other-game', 'selection'])
+def test_retry_rechecks_state_after_modal_confirmation(qapp, monkeypatch, event):
+    steam, lutris = _launchable_pair()
+    steam._inner._games += (_game('steam', '440', 'Team Fortress 2'),)
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key('steam:620')
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+
+    def confirm(*args):
+        if event == 'selection':
+            panel._select_key('steam:440')
+        elif event == 'exited':
+            _session_snapshot(panel, [], sequence=2, ended=[{
+                'sequence': 2, 'session': {'app_id': 'steam:620', 'session_id': 'first',
+                                         'wrapped': True, 'phase': 'exited'},
+            }])
+        else:
+            key = 'steam:440' if event == 'other-game' else 'steam:620'
+            _session_snapshot(panel, [{'app_id': key, 'session_id': 'first',
+                                       'wrapped': True, 'phase': 'running'}])
+        return True
+
+    monkeypatch.setattr(panel, '_confirm', confirm)
+    panel._retry_launch()
+    assert steam.launched == ['620']
+    panel.widget.close()

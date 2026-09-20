@@ -35,6 +35,7 @@ struct Registry {
     ended: VecDeque<Value>,
     subscribers: BTreeMap<u64, UnixStream>,
     next_subscriber: u64,
+    lifetimes: BTreeMap<(String, String), (UnixStream, UnixStream)>,
 }
 
 impl Registry {
@@ -53,6 +54,7 @@ impl Registry {
             ended: VecDeque::new(),
             subscribers: BTreeMap::new(),
             next_subscriber: 0,
+            lifetimes: BTreeMap::new(),
         }
     }
 
@@ -79,6 +81,14 @@ impl Registry {
             .is_some_and(|s| s.session_id == session_id)
         {
             if let Some(mut session) = self.sessions.remove(&pid) {
+                if !self.sessions.values().any(|other| {
+                    other.app_id == session.app_id && other.session_id == session.session_id
+                }) {
+                    // Closing the writer ends GPU ownership only after handoff
+                    // discovery has attached every surviving process.
+                    self.lifetimes
+                        .remove(&(session.app_id.clone(), session.session_id.clone()));
+                }
                 if session.phase != "failed" {
                     session.phase = "exited".into();
                 }
@@ -103,6 +113,28 @@ pub fn snapshot() -> Value {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .snapshot()
+}
+
+/// A readable/closed handle means the entire registered launch has ended.
+/// The registry owns lifetime observation; consumers need no independent
+/// process scan or grace period to guess whether a handoff is complete.
+pub fn watch_lifetime(pid: u32) -> Result<Option<OwnedFd>, String> {
+    let mut state = registry().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = state.sessions.get(&pid).filter(|s| s.wrapped) else {
+        return Ok(None);
+    };
+    let key = (session.app_id.clone(), session.session_id.clone());
+    let handles = match state.lifetimes.entry(key) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(UnixStream::pair().map_err(|e| e.to_string())?)
+        }
+    };
+    handles
+        .0
+        .try_clone()
+        .map(|fd| Some(fd.into()))
+        .map_err(|e| e.to_string())
 }
 
 fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {

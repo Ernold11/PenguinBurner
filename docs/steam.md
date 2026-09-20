@@ -44,6 +44,13 @@ applies the game profile through the root daemon without an admin prompt.
 On exit it restores the standing profile. For a different target GPU, it first
 restores that card's saved state, or stock if none is known.
 
+Steam, Lutris and Heroic share session tracking. If the wrapper hands off to a
+child process, the game profile remains active until the final tracked process
+exits. Restoration and relaunch no longer wait for a fixed three-second grace.
+If you retry an unconfirmed launch, the library keeps unresolved attempts
+pending; distinct wrapper sessions and their exit events resolve them. A game
+confirmed running while the retry dialog is open cancels that retry.
+
 If the daemon is unavailable, the game still starts. A second concurrent game
 can start too, but its runtime request does not replace the first game's
 monitoring ownership.

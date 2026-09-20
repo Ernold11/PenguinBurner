@@ -3265,6 +3265,7 @@ def request(**payload):
     s.sendall(json.dumps(payload).encode() + b'\n')
     assert json.loads(s.makefile().readline())['ok']
 request(method='register_launcher_session', app_id='steam:handoff', session_id=identity)
+request(method='start_game_runtime_profile', spec=json.loads(sys.argv[2]), watch_pid=os.getpid(), app_id='steam:handoff')
 request(method='update_launcher_session', session_id=identity, phase='running', profile='applied')
 env = dict(os.environ, PENGUIN_BURNER_SESSION_ID=identity, PENGUIN_BURNER_GAME_KEY='steam:handoff')
 child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.readline()'], env=env)
@@ -3272,6 +3273,7 @@ print(child.pid, flush=True)
 "#,
         ])
         .arg(&daemon.socket)
+        .arg(test_runtime_spec().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -3292,6 +3294,13 @@ print(child.pid, flush=True)
             break;
         }
     }
+    // Outlive the former test-only 50 ms restoration grace. A UI handoff
+    // alone must not leave the game running without its GPU runtime owner.
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        daemon.request(r#"{"method":"status"}"#)["result"]["game_runtime"]["active"],
+        true
+    );
     drop(input); // EOF terminates the controlled child; pidfd delivers its exit.
     loop {
         let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
@@ -3304,6 +3313,14 @@ print(child.pid, flush=True)
             break;
         }
     }
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["game_runtime"].is_null() && status["result"]["active_job"].is_null() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("game runtime did not end after the final child exit");
 }
 
 #[test]
