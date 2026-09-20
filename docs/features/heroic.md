@@ -72,12 +72,13 @@ game identity and session PID carried in the process environment, including
 when no saved profile can be applied. Only those sessions can be stopped from
 PenguinBurner. Helper processes are excluded from session detection and Stop.
 
-If Heroic starts a game without the wrapper, Game Library shows **Running in
-Heroic** instead of waiting for the two-minute startup timeout. Close that
-game in Heroic or in the game itself. Its launch process is checked every
-1.5 seconds; two successful checks confirming exit return the button to
-**Play**. A configured game that started without PenguinBurner also shows
-relaunch instructions: its overlay and GPU profiles were not activated.
+If a Heroic game process appears before its wrapper is confirmed, Game Library
+shows **Running — PBurn unconfirmed**. This is a neutral observation: it does not
+claim that the overlay or GPU profile failed. Close external sessions in Heroic
+or in the game itself. Wrapper registration and kernel process-exit notifications
+update the state; a slow start or missed recovery scan never becomes a failure
+because a fixed amount of time elapsed. **Retry launch…** asks before attempting
+a possible second instance when the previous launch remains unconfirmed.
 If a tracked session cannot be inspected, its state is held until it can be
 confirmed again; daemon-tracked sessions remain visible even when their
 environment cannot be read. Play requires either the native Heroic command or
@@ -85,9 +86,9 @@ the installed Heroic Flatpak application.
 
 ## Troubleshooting
 
-- **Running in Heroic:** close the game, then use **Play** in Game Library
-  to launch with the saved settings. Relaunch instructions remain visible
-  after the game exits and clear on a new launch.
+- **Running — PBurn unconfirmed:** the game process is visible, but wrapper
+  evidence is still missing. Wait for confirmation, or close the game and use
+  **Play** in Game Library to launch with the saved settings.
 - **Heroic is busy:** finish its game, download or other operation, then press
   **Play** again. PenguinBurner only restarts an idle launcher and never forces
   it to exit. Refreshing the launcher runs in the background so the GUI remains

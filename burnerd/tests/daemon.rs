@@ -3142,3 +3142,186 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     assert!(parked, "fd-scan fallback never parked the runtime");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn launcher_session_events_do_not_require_a_gpu_profile() {
+    let daemon = Daemon::start(&[]);
+    let mut stream = daemon.connect();
+    stream
+        .write_all(b"{\"method\":\"subscribe_launcher_sessions\"}\n")
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let initial: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+    assert_eq!(initial["ok"], true);
+    let initial_sequence = initial["result"]["sequence"].as_u64().unwrap();
+    let mut child = Command::new("/usr/bin/python3").args(["-c", r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendall(b'{"method":"register_launcher_session","app_id":"heroic:event-test","session_id":"independent"}\n')
+r = json.loads(s.makefile().readline())
+assert r['ok'], r
+print('registered', flush=True)
+sys.stdin.readline()
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendall(b'{"method":"update_launcher_session","session_id":"independent","phase":"failed","profile":"unconfirmed"}\n')
+assert json.loads(s.makefile().readline())['ok']
+"#]).arg(&daemon.socket).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child_out = BufReader::new(child.stdout.take().unwrap());
+    assert_eq!(read_line(&mut child_out).unwrap().trim(), "registered");
+    let registered: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+    let session = registered["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == "independent")
+        .unwrap();
+    assert_eq!(session["pid"], child.id()); // SO_PEERCRED, not user-supplied PID
+    assert_eq!(session["profile"], "unconfirmed");
+    assert_eq!(session["wrapped"], true);
+    assert!(registered["result"]["sequence"].as_u64().unwrap() > initial_sequence);
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["active_job"], Value::Null);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"independent","phase":"running","profile":"applied"}"#)["ok"], false);
+    child.stdin.take().unwrap().write_all(b"exit\n").unwrap();
+    assert!(child.wait().unwrap().success());
+    loop {
+        let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+        if let Some(ended) = event["result"]["ended"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["session"]["session_id"] == "independent")
+        {
+            assert_eq!(ended["session"]["phase"], "failed");
+            break;
+        }
+    }
+    // A new subscriber atomically receives the latest terminal state, even if
+    // registration, failure and exit were coalesced by a slow consumer.
+    let recovered = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    assert!(recovered["result"]["ended"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["session"]["session_id"] == "independent"));
+}
+
+#[test]
+fn launcher_session_recovers_without_replaying_gpu_writes() {
+    let mut game = Command::new("/usr/bin/python3")
+        .args([
+            "-c",
+            "import sys; print('ready', flush=True); sys.stdin.readline()",
+        ])
+        .env("PENGUIN_BURNER_SESSION_ID", "restart-recovery-test")
+        .env("PENGUIN_BURNER_GAME_KEY", "lutris:recovery")
+        // A daemon-down Flatpak launch may only know its namespace-local PID.
+        .env("PENGUIN_BURNER_TELEMETRY_SESSION", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(game.stdout.take().unwrap());
+    assert_eq!(read_line(&mut output).unwrap().trim(), "ready");
+    let daemon = Daemon::start(&[]);
+    let snapshot = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    let recovered = snapshot["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == "restart-recovery-test")
+        .unwrap();
+    assert_eq!(recovered["pid"], game.id());
+    assert_eq!(recovered["phase"], "running");
+    assert_eq!(recovered["profile"], "unconfirmed");
+    assert_eq!(
+        daemon.request(r#"{"method":"status"}"#)["result"]["active_job"],
+        Value::Null
+    );
+    drop(game.stdin.take());
+    assert!(game.wait().unwrap().success());
+}
+
+#[test]
+fn launcher_session_follows_exec_child_handoff() {
+    let daemon = Daemon::start(&[]);
+    let mut stream = daemon.connect();
+    stream
+        .write_all(b"{\"method\":\"subscribe_launcher_sessions\"}\n")
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    read_line(&mut reader).unwrap();
+    let mut parent = Command::new("/usr/bin/python3")
+        .args([
+            "-c",
+            r#"
+import json, os, socket, subprocess, sys
+identity = 'handoff-event-test'
+def request(**payload):
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(sys.argv[1])
+    s.sendall(json.dumps(payload).encode() + b'\n')
+    assert json.loads(s.makefile().readline())['ok']
+request(method='register_launcher_session', app_id='steam:handoff', session_id=identity)
+request(method='update_launcher_session', session_id=identity, phase='running', profile='applied')
+env = dict(os.environ, PENGUIN_BURNER_SESSION_ID=identity, PENGUIN_BURNER_GAME_KEY='steam:handoff')
+child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.readline()'], env=env)
+print(child.pid, flush=True)
+"#,
+        ])
+        .arg(&daemon.socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(parent.stdout.take().unwrap());
+    let successor: u32 = read_line(&mut output).unwrap().trim().parse().unwrap();
+    let input = parent.stdin.take().unwrap();
+    assert!(parent.wait().unwrap().success());
+    loop {
+        let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+        let sessions = event["result"]["sessions"].as_array().unwrap();
+        assert!(sessions
+            .iter()
+            .any(|s| s["session_id"] == "handoff-event-test"));
+        if let Some(child) = sessions.iter().find(|s| s["pid"] == successor) {
+            assert_eq!(child["phase"], "running");
+            assert_eq!(child["profile"], "applied");
+            break;
+        }
+    }
+    drop(input); // EOF terminates the controlled child; pidfd delivers its exit.
+    loop {
+        let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+        if !event["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["session_id"] == "handoff-event-test")
+        {
+            break;
+        }
+    }
+}
+
+#[test]
+fn launcher_session_duplicate_and_regressive_updates_are_idempotent() {
+    let daemon = Daemon::start(&[]);
+    let register = r#"{"method":"register_launcher_session","app_id":"heroic:ordered","session_id":"ordered"}"#;
+    assert_eq!(daemon.request(register)["ok"], true);
+    let before = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    assert_eq!(daemon.request(register)["ok"], true);
+    assert_eq!(daemon.request(r#"{"method":"launcher_sessions"}"#), before);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"ordered","phase":"running","profile":"applied"}"#)["ok"], true);
+    let running = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"ordered","phase":"running","profile":"unconfirmed"}"#)["ok"], true);
+    assert_eq!(daemon.request(r#"{"method":"launcher_sessions"}"#), running);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"ordered","phase":"starting","profile":"unconfirmed"}"#)["ok"], true);
+    assert_eq!(daemon.request(r#"{"method":"launcher_sessions"}"#), running);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"ordered","phase":"failed","profile":"applied"}"#)["ok"], true);
+    let failed = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    assert_eq!(daemon.request(r#"{"method":"update_launcher_session","session_id":"ordered","phase":"running","profile":"applied"}"#)["ok"], true);
+    assert_eq!(daemon.request(r#"{"method":"launcher_sessions"}"#), failed);
+}

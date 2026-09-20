@@ -29,6 +29,14 @@ class LutrisLibrarySource(WrapperLibrarySource):
     command_field_subtitle = "prefix_command in the Lutris config"
     command_noun = "launch command"
 
+    def watch_paths(self) -> tuple[Path, ...]:
+        from .paths import lutris_config_root, lutris_library_db
+
+        root = lutris_config_root(self._home)
+        database = lutris_library_db(self._home)
+        return (root, root / "games", root / "runners", database,
+                database.with_name(database.name + "-wal"))
+
     def build_manager(self, *, home, settings_path) -> LutrisIntegrationManager:
         return LutrisIntegrationManager(home=home, settings_path=settings_path)
 
@@ -122,3 +130,12 @@ class LutrisLibrarySource(WrapperLibrarySource):
             str(row.game.game_id): str(row.game.display_name or "")
             for row in self._rows
         }
+
+    def observed_processes(self) -> dict[str, tuple[int, ...]] | None:
+        titles = self._titles_by_id()
+        running = running_lutris_games(titles.values())
+        if running is None:
+            return None
+        # A title shared by two entries cannot identify either game safely.
+        return {key: running[title] for key, title in titles.items()
+                if title in running and list(titles.values()).count(title) == 1}

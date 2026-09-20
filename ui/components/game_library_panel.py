@@ -10,7 +10,6 @@ the part they share.
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -78,25 +77,17 @@ _ROW_HEIGHT = 58
 #: The launcher badge, drawn into the corner of the art.
 _BADGE = 18
 
-# Per-game launch lifecycle, tracked only for games started from this tab.
-# "launching" -- Play clicked, session not seen yet -- reads as Running: it
-# exists so a slow start is not mistaken for an exit.
-_GAME_STATE_POLL_MS = 1500
-_PENDING_LAUNCH_S = 120.0  # for the launcher's session to appear after Play
-_PENDING_STOP_S = 30.0  # for a stop request to take effect
-_CONFIRMED_GONE_POLLS = 2  # consecutive not-running polls before Stopped
-_ACTIVE_GAME_STATES = ("launching", "running", "external", "stopping")
+# Launch intent and observed sessions, including games started elsewhere.
+_ACTIVE_GAME_STATES = ("launching", "running", "external", "stopping", "unconfirmed")
 
-#: Re-read every library on a timer, so a game installed while the tab is open
-#: turns up without the user pressing anything. The cheap pass, not the deep
-#: one: this runs forever, where the deep read is a scan the user asked for.
-_LIBRARY_SYNC_MS = 10000
+#: Reconcile unsupported launcher notifications and missed filesystem events.
+_RECONCILE_MS = 30000  # recovery for missed events; never establishes failure
 #: Roughly three wrapped lines of a launch command.
 _MULTILINE_HEIGHT = 78
 #: Wide enough for a full Proton build name without eliding it.
 _CHOICE_MIN_WIDTH = 220
 #: How long the first collect waits for the worker before handing off to a
-#: timer. Every launcher but a running Steam reads in well under this, and
+#: completion signal. Every launcher but a running Steam reads in well under this, and
 #: landing in the same tick spares the user a blink of empty list.
 _SCAN_JOIN_S = 0.05
 _SCAN_FEEDBACK_DELAY_MS = 500
@@ -107,9 +98,9 @@ class _TrackedGame:
     """Launch lifecycle of one game started from this tab."""
 
     state: str
-    deadline: float = 0.0  # monotonic grace cutoff while launching/stopping
-    misses: int = 0  # consecutive polls that did not see the session
     warning: str = ""
+    note: str = ""
+    confirmed: bool = False
 
 
 @dataclass
@@ -312,6 +303,25 @@ class GameLibraryPanel:
         self._poll_external: dict[str, frozenset[str]] = {}
 
         self.widget = QtWidgets.QWidget()
+        from ui.features.integrations.launcher_events import (
+            LauncherEvents,
+            WorkerEvents,
+        )
+
+        self._workers = WorkerEvents(self.widget)
+        self._events = LauncherEvents(self.widget) if sources is None else None
+        self._session_keys: set[str] = set()
+        self._session_ids: dict[str, set[str]] = {}
+        self._poll_sequence = ("", -1)
+        self._session_sequence = -1
+        self._launch_sequences: dict[str, tuple[str, int]] = {}
+        self._ambiguous_launches: set[str] = set()
+        self._session_epoch = ""
+        self._library_change_pending = False
+        if self._events is not None:
+            self._events.snapshot.connect(self._apply_session_snapshot)
+            self._events.disconnected.connect(self._session_stream_lost)
+            self._events.library_changed.connect(self._library_changed)
         layout = QtWidgets.QVBoxLayout(self.widget)
         layout.setContentsMargins(12, 18, 12, 12)
         layout.setSpacing(10)
@@ -364,15 +374,15 @@ class GameLibraryPanel:
         self._loading_delay_timer.setSingleShot(True)
         self._loading_delay_timer.timeout.connect(self._show_scan_feedback)
 
-        # Only ticks while something this tab started is still alive; the
-        # lifecycle stops it again as soon as nothing is.
+        # Recovery for launchers without complete process notifications. Normal
+        # wrapper lifecycle is delivered by the daemon subscription.
         self._state_timer = QtCore.QTimer(self.widget)
-        self._state_timer.setInterval(_GAME_STATE_POLL_MS)
+        self._state_timer.setInterval(_RECONCILE_MS)
         self._state_timer.timeout.connect(self._poll_game_states)
 
         # Starts with the first scan, so a tab nobody has opened costs nothing.
         self._library_timer = QtCore.QTimer(self.widget)
-        self._library_timer.setInterval(_LIBRARY_SYNC_MS)
+        self._library_timer.setInterval(_RECONCILE_MS)
         self._library_timer.timeout.connect(
             lambda: self.rescan(deep=False, quiet=True)
         )
@@ -530,12 +540,20 @@ class GameLibraryPanel:
         self.play_button.setProperty("playState", "idle")
         self.play_button.clicked.connect(self._play_stop_clicked)
         hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
+        self.retry_launch_button = self.QtWidgets.QPushButton("Retry launch…")
+        self.retry_launch_button.clicked.connect(self._retry_launch)
+        self.retry_launch_button.hide()
+        hero.addWidget(self.retry_launch_button, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
         self.launch_warning_label = self.QtWidgets.QLabel("")
         self.launch_warning_label.setObjectName("gameLaunchWarning")
         self.launch_warning_label.setWordWrap(True)
         self.launch_warning_label.hide()
         page.addWidget(self.launch_warning_label)
+        self.launch_note_label = self.QtWidgets.QLabel("")
+        self.launch_note_label.setWordWrap(True)
+        self.launch_note_label.hide()
+        page.addWidget(self.launch_note_label)
         self.compatibility_label = self.QtWidgets.QLabel("")
         self.compatibility_label.setObjectName("gameCompatibility")
         self.compatibility_label.setWordWrap(True)
@@ -750,6 +768,118 @@ class GameLibraryPanel:
 
     # -- scanning ------------------------------------------------------------
 
+    def _worker(self, kind, work, done):
+        def collect():
+            if getattr(self, f"_{kind}_thread") is worker:
+                done()
+
+        worker = self._workers.worker(work, collect)
+        return worker
+
+    def _library_changed(self) -> None:
+        self._library_change_pending = True
+        if not self._scan_active and not self._write_busy and not self._pending_field:
+            self._library_change_pending = False
+            self.rescan(deep=False, quiet=True)
+            self._poll_game_states()
+
+    def _session_stream_lost(self) -> None:
+        for key in self._session_keys:
+            track = self._tracked.get(key)
+            if track is not None:
+                track.note = "Session connection lost; game status will be confirmed after reconnecting."
+        self._sync_play_button(self._selected_game())
+
+    def _apply_session_snapshot(self, snapshot: dict) -> None:
+        epoch = str(snapshot.get("epoch") or "")
+        sessions = snapshot.get("sessions", [])
+        current: set[str] = set()
+        identities: dict[str, set[str]] = {}
+        for session in sessions:
+            if isinstance(session, dict):
+                identities.setdefault(str(session.get("app_id", "")), set()).add(
+                    str(session.get("session_id", "")),
+                )
+        # Wrapper evidence wins over an outer launcher process for the same
+        # app. Keep observing BOTH lifetimes so a handoff cannot end the game.
+        wrapped_by_key: dict[str, dict] = {}
+        phase_order = {"running": 2, "starting": 1, "failed": 0}
+        for session in sessions:
+            if isinstance(session, dict) and session.get("wrapped"):
+                key = str(session.get("app_id", ""))
+                previous = wrapped_by_key.get(key)
+                if (previous is None or phase_order.get(str(session.get("phase")), -1)
+                        > phase_order.get(str(previous.get("phase")), -1)):
+                    wrapped_by_key[key] = session
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            key = str(session.get("app_id") or "")
+            if key.partition(":")[0] not in self._by_launcher:
+                continue
+            current.add(key)
+            if not session.get("wrapped"):
+                if key in wrapped_by_key:
+                    continue
+                track = self._tracked.setdefault(key, _TrackedGame("external"))
+                same_session = bool(identities.get(key, set()) & self._session_ids.get(key, set()))
+                track.confirmed = track.confirmed and epoch == self._session_epoch and same_session
+                track.state = "external"
+                track.note = (
+                    "PenguinBurner wrapper exited; the launcher still has a game process."
+                    if track.confirmed else
+                    "Game process detected. PenguinBurner integration is not yet confirmed."
+                )
+                track.warning = ""
+                continue
+            if session is not wrapped_by_key.get(key):
+                continue
+            track = self._tracked.setdefault(key, _TrackedGame("launching"))
+            track.confirmed = True
+            phase = session.get("phase")
+            if phase == "failed":
+                track.warning = "PenguinBurner could not execute the game's launch command."
+            else:
+                track.warning = ""
+                if track.state != "stopping":
+                    track.state = "launching" if phase == "starting" else "running"
+            track.note = (
+                "PenguinBurner connected; GPU profile application is unconfirmed."
+                if session.get("profile") != "applied" else ""
+            )
+        for key in self._session_keys - current:
+            track = self._tracked.get(key)
+            if track is not None:
+                if epoch == self._session_epoch and key not in self._ambiguous_launches:
+                    track.state = "stopped"
+                    track.note = ""
+                else:
+                    track.state = "unconfirmed"
+                    track.note = "A requested launch is still unconfirmed. Check the launcher before retrying."
+        # Bounded terminal history preserves very short launches/failures even
+        # when multiple events coalesce into a single snapshot. Do not replay
+        # an old failure when reopening the library or explicitly retrying.
+        for ended in snapshot.get("ended", []):
+            session = ended.get("session", {})
+            key = session.get("app_id", "")
+            requested = self._launch_sequences.get(key)
+            if (key in current or key in self._ambiguous_launches or requested is None
+                    or requested[0] not in ("", epoch)
+                    or ended.get("sequence", -1) <= requested[1]):
+                continue
+            track = self._tracked.get(key)
+            if track is not None:
+                track.state, track.note = "stopped", ""
+                track.warning = (
+                    "PenguinBurner could not execute the game's launch command."
+                    if session.get("phase") == "failed" else ""
+                )
+        self._session_keys = current
+        self._session_ids = identities
+        self._session_sequence = int(snapshot.get("sequence", -1))
+        self._session_epoch = epoch
+        self._sync_play_button(self._selected_game())
+
     def _show_scan_feedback(self) -> None:
         thread = self._scan_thread
         if not self._scan_active or self._scan_quiet or thread is None or not thread.is_alive():
@@ -782,12 +912,17 @@ class GameLibraryPanel:
         if self._scanned:
             return
         self._scanned = True
+        if self._events is not None:
+            self._events.start()
         self.rescan()
         # Only from here on: a tab nobody has opened polls nothing. The scan
         # itself reads; the one write it may make is the Steam manager
         # re-adopting a wrapped game whose settings entry went missing --
         # repairing our bookkeeping, never a launcher's config.
         self._library_timer.start()
+        self._state_timer.start()
+        if self._events is not None:
+            self._poll_game_states()
 
     def rescan(self, *, deep: bool = True, quiet: bool = False) -> None:
         """Re-read every launcher, off the GUI thread.
@@ -804,7 +939,7 @@ class GameLibraryPanel:
             return
         if quiet:
             # The timer must neither steal nor force-save a half-typed edit;
-            # it simply comes back in ten seconds.
+            # a completion event or recovery scan tries again.
             if self._pending_field:
                 return
         elif not self._flush_pending_field_edit():
@@ -840,7 +975,7 @@ class GameLibraryPanel:
             )
             self._scan_result = (installed, problems, self._read_gpu_choices())
 
-        self._scan_thread = threading.Thread(target=run, daemon=True)
+        self._scan_thread = self._worker("scan", run, lambda: self._collect_scan(quiet=quiet, first=False))
         self._scan_thread.start()
         self._collect_scan(quiet=quiet)
 
@@ -860,14 +995,12 @@ class GameLibraryPanel:
                 self.loading_sources_label.setText(
                     ", ".join(str(source.display_name) for source in self._scan_sources)
                 )
-            self.QtCore.QTimer.singleShot(
-                100, lambda: self._collect_scan(quiet=quiet, first=False)
-            )
             return
         result = self._scan_result
         if result is None:
             return
         self._scan_result = None
+        self._scan_thread = None
         installed, problems, gpu_choices = result
         self._apply_sources(installed)
         gpu_changed = self._apply_gpu_choices(gpu_choices)
@@ -887,6 +1020,13 @@ class GameLibraryPanel:
         elif not quiet:
             self._sync_status()
         self._finish_scan_feedback()
+        if self._events is not None:
+            self._events.watch(
+                path for source in self._sources
+                for path in getattr(source, "watch_paths", lambda: ())()
+            )
+        if self._library_change_pending:
+            self._library_changed()
 
     def _apply_sources(self, installed) -> None:
         installed = tuple(installed)
@@ -1024,7 +1164,7 @@ class GameLibraryPanel:
             with self._library_lock:
                 self._action_result = action()
 
-        self._action_thread = threading.Thread(target=run, daemon=True)
+        self._action_thread = self._worker("action", run, lambda: self._collect_write_action(first=False))
         self._action_thread.start()
         self._collect_write_action()
 
@@ -1035,12 +1175,10 @@ class GameLibraryPanel:
             # lands in this tick instead of a timer later.
             thread.join(_SCAN_JOIN_S)
         if thread is not None and thread.is_alive():
-            self.QtCore.QTimer.singleShot(
-                200, lambda: self._collect_write_action(first=False)
-            )
             return
         result = self._action_result
         self._action_result = None
+        self._action_thread = None
         self.write_action_button.setEnabled(True)
         self.rescan()
         self._sync_status(str(getattr(result, "message", "") or ""))
@@ -1218,6 +1356,8 @@ class GameLibraryPanel:
                 self.title_label.setText("Select a game")
                 self.metadata_label.setText("")
                 self.play_button.setVisible(False)
+                self.retry_launch_button.hide()
+                self.launch_note_label.hide()
                 self.launch_warning_label.hide()
                 self.compatibility_label.hide()
                 self._set_gated(False)
@@ -1405,7 +1545,7 @@ class GameLibraryPanel:
         if setter is None:
             self._setting_thread = None
             self._setting_result = _SettingWriteOutcome(game=game)
-            self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
+            self._collect_setting_write()
             return
         source = self._by_launcher.get(game.launcher)
         self._setting_result = None
@@ -1439,12 +1579,11 @@ class GameLibraryPanel:
                     error=f"{type(error).__name__}: {error}",
                 )
 
-        self._setting_thread = threading.Thread(target=run, daemon=True)
+        self._setting_thread = self._worker("setting", run, self._collect_setting_write)
         self._setting_thread.start()
         # Never join here, even briefly: ToggleSwitch starts its 130 ms
         # animation in the same signal delivery, and Qt needs this callback to
         # return before it can paint the first frame.
-        self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
 
     def _set_write_busy(self, busy: bool) -> None:
         """Gate structural actions that could race the launcher worker.
@@ -1467,7 +1606,6 @@ class GameLibraryPanel:
         """Finish a launcher write on the Qt thread."""
         thread = self._setting_thread
         if thread is not None and thread.is_alive():
-            self.QtCore.QTimer.singleShot(100, self._collect_setting_write)
             return
         outcome = self._setting_result
         self._setting_thread = None
@@ -1491,6 +1629,10 @@ class GameLibraryPanel:
             self._start_setting_write(request)
             return
         self._set_write_busy(False)
+        if self._scan_result is not None:
+            self._collect_scan(quiet=self._scan_quiet, first=False)
+        elif self._library_change_pending:
+            self._library_changed()
         problems = "; ".join(self._write_problems)
         self._write_problems.clear()
         if outcome is None:
@@ -1700,9 +1842,8 @@ class GameLibraryPanel:
                 game=game, result=_BulkWriteResult(ok, "; ".join(messages))
             )
 
-        self._setting_thread = threading.Thread(target=run, daemon=True)
+        self._setting_thread = self._worker("setting", run, self._collect_setting_write)
         self._setting_thread.start()
-        self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
 
     def _needs_gpu_choice(self, games) -> bool:
         """Enabling games at once needs each of them to have a card first.
@@ -2038,17 +2179,21 @@ class GameLibraryPanel:
         return ""
 
     def _sync_play_button(self, game: LibraryGame | None) -> None:
-        """One mutating button: Play -> Starting… -> Stop -> Stopping… -> Play.
-
-        The button is the state display, so a click can only mean what the
-        label shows; transitional states keep it disabled, and the grace
-        deadlines in _apply_game_states guarantee they resolve back.
-        """
+        """Expose only actions justified by the observed state."""
         track = self._tracked.get(self._selected_key) if game is not None else None
         warning = track.warning if track else ""
         self.launch_warning_label.setText(warning)
         self.launch_warning_label.setVisible(bool(warning))
+        note = track.note if track else ""
+        self.launch_note_label.setText(note)
+        self.launch_note_label.setVisible(bool(note))
+        self.retry_launch_button.setVisible(
+            bool(game) and self._tracked_state(self._selected_key) == "launching"
+            and self._launch_thread is None
+        )
+        self.retry_launch_button.setEnabled(not self._write_busy and not self._other_active_game())
         if not self._can_launch(game):
+            self.retry_launch_button.hide()
             self.play_button.setVisible(False)
             return
         self.play_button.setVisible(True)
@@ -2059,8 +2204,12 @@ class GameLibraryPanel:
         elif state == "running":
             text, enabled, play_state = "Stop", True, "running"
         elif state == "external":
-            source = self._by_launcher[self._selected_key.partition(":")[0]]
-            text, enabled, play_state = f"Running in {source.display_name}", False, "external"
+            source = self._by_launcher.get(game.launcher) if game is not None else None
+            text = (f"Running in {source.display_name}" if track and track.confirmed and source
+                    else "Running — PBurn unconfirmed")
+            enabled, play_state = False, "external"
+        elif state == "unconfirmed":
+            text, enabled, play_state = "Retry launch…", not blocking, "idle"
         elif state == "stopping":
             # Live, not greyed out. A launcher's stop is a request its game may
             # shrug off -- Lutris passes one SIGTERM on and only insists when
@@ -2098,7 +2247,18 @@ class GameLibraryPanel:
             # Pressed again while a stop is pending: ask once more rather than
             # ignore it. Which signal that turns into is the launcher's affair.
             self._stop_game(game)
+        elif state == "unconfirmed":
+            self._retry_launch()
         elif state not in _ACTIVE_GAME_STATES and not self._other_active_game():
+            self._play_game(game)
+
+    def _retry_launch(self) -> None:
+        game = self._selected_game()
+        if (game is not None and self._tracked_state(self._selected_key) in ("launching", "unconfirmed")
+                and not self._other_active_game() and self._confirm(
+                    "Retry launch", "The previous game's status is unknown. Launching again may start "
+                    "a second instance. Retry anyway?",
+                )):
             self._play_game(game)
 
     def _play_game(self, game: LibraryGame) -> None:
@@ -2106,6 +2266,14 @@ class GameLibraryPanel:
         if source is None or self._launch_thread is not None or self._write_busy:
             return
         self._launch_result = None
+        if self._tracked_state(game_key(game)) in ("launching", "unconfirmed"):
+            # Launcher URLs cannot carry an attempt id through an already-open
+            # third-party client. An older attempt's exit must not finish a
+            # newer retry whose wrapper has not appeared yet.
+            self._ambiguous_launches.add(game_key(game))
+        else:
+            self._ambiguous_launches.discard(game_key(game))
+        self._launch_sequences[game_key(game)] = (self._session_epoch, self._session_sequence)
 
         def run() -> None:
             try:
@@ -2114,7 +2282,7 @@ class GameLibraryPanel:
             except Exception as error:  # noqa: BLE001 - launcher boundary
                 self._launch_result = (False, f"Launch failed: {error}")
 
-        self._launch_thread = threading.Thread(target=run, daemon=True)
+        self._launch_thread = self._worker("launch", run, lambda: self._collect_launch(game))
         self._set_game_state(game_key(game), "launching")
         self._sync_status(f"{game.name}: preparing launch…")
         self._launch_thread.start()
@@ -2123,15 +2291,18 @@ class GameLibraryPanel:
 
     def _collect_launch(self, game: LibraryGame) -> None:
         if self._launch_thread is not None and self._launch_thread.is_alive():
-            self.QtCore.QTimer.singleShot(100, lambda: self._collect_launch(game))
             return
         started, message = self._launch_result or (False, "Launch returned no result.")
         self._launch_thread = None
         self._launch_result = None
-        if not started:
-            self._set_game_state(game_key(game), "stopped")
+        if (not started and game_key(game) not in self._session_keys
+                and self._tracked_state(game_key(game)) in ("launching", "unconfirmed")):
+            self._set_game_state(game_key(game), "unconfirmed")
+            self._tracked[game_key(game)].note = "Launch request was not confirmed. Check the launcher before retrying."
         self._sync_play_button(self._selected_game())
         self._sync_status(f"{game.name}: {message}")
+        if self._events is not None:
+            self._poll_game_states()
 
     def _stop_game(self, game: LibraryGame) -> None:
         source = self._by_launcher.get(game.launcher)
@@ -2147,15 +2318,13 @@ class GameLibraryPanel:
             except Exception as error:  # noqa: BLE001 - launcher boundary
                 self._stop_result = (False, f"Stop failed ({type(error).__name__}: {error})")
 
-        self._stop_thread = threading.Thread(target=run, daemon=True)
+        self._stop_thread = self._worker("stop", run, lambda: self._collect_stop(game, previous))
         self._set_game_state(key, "stopping")
         self._sync_status(f"{game.name}: requesting stop…")
         self._stop_thread.start()
-        self.QtCore.QTimer.singleShot(0, lambda: self._collect_stop(game, previous))
 
     def _collect_stop(self, game: LibraryGame, previous: str) -> None:
         if self._stop_thread is not None and self._stop_thread.is_alive():
-            self.QtCore.QTimer.singleShot(100, lambda: self._collect_stop(game, previous))
             return
         stopped, message = self._stop_result or (False, "Stop returned no result.")
         self._stop_thread = None
@@ -2168,10 +2337,10 @@ class GameLibraryPanel:
         self._sync_status(f"{game.name}: {message}")
 
     def _set_game_state(self, key: str, state: str) -> None:
-        grace = {"launching": _PENDING_LAUNCH_S, "stopping": _PENDING_STOP_S}
-        self._tracked[key] = _TrackedGame(
-            state, time.monotonic() + grace.get(state, 0.0)
-        )
+        if key in self._tracked and state == "stopping":
+            self._tracked[key].state = state
+        else:
+            self._tracked[key] = _TrackedGame(state)
         if state in _ACTIVE_GAME_STATES and not self._state_timer.isActive():
             self._state_timer.start()
         self._sync_play_button(self._selected_game())
@@ -2191,29 +2360,52 @@ class GameLibraryPanel:
             if getattr(source, "can_launch", False)
             and hasattr(source, "running_game_ids")
         ]
+        self._poll_sequence = (self._session_epoch, self._session_sequence)
         self._poll_result = {}
         self._poll_external = {}
 
         def run() -> None:
+            if self._events is not None and self._events.available:
+                from runtime.daemon_client import reconcile_launcher_sessions
+
+                try:
+                    reconcile_launcher_sessions()
+                except (RuntimeError, OSError, ValueError):
+                    pass
             for source in sources:
                 try:
                     self._poll_result[source.launcher_id] = source.running_game_ids()
                     external: Any = getattr(source, "external_game_ids", None)
                     if callable(external):
                         self._poll_external[source.launcher_id] = cast(frozenset[str], external())
+                    observe = getattr(source, "observed_processes", None)
+                    if self._events is not None and self._events.available and callable(observe):
+                        from runtime.daemon_client import observe_launcher_session
+
+                        titles = {g.game_id: g.name for g in source.games()}
+                        for game_id, pids in cast(dict[str, tuple[int, ...]], observe() or {}).items():
+                            for pid in pids:
+                                try:
+                                    observe_launcher_session(
+                                        pid, f"{source.launcher_id}:{game_id}",
+                                        title=titles.get(game_id, ""),
+                                    )
+                                except (RuntimeError, OSError, ValueError):
+                                    pass  # An exited/inaccessible process is unconfirmed.
                 except Exception:  # noqa: BLE001 - isolate failed launcher probes
                     self._poll_result[source.launcher_id] = None
 
-        self._poll_thread = threading.Thread(target=run, daemon=True)
+        self._poll_thread = self._worker("poll", run, self._collect_poll)
         self._poll_thread.start()
         self._collect_poll()
 
     def _collect_poll(self) -> None:
         thread = self._poll_thread
         if thread is not None and thread.is_alive():
-            self.QtCore.QTimer.singleShot(100, self._collect_poll)
             return
-        self._apply_game_states(dict(self._poll_result), dict(self._poll_external))
+        self._poll_thread = None
+        if self._poll_sequence == (self._session_epoch, self._session_sequence):
+            self._apply_game_states(dict(self._poll_result), dict(self._poll_external))
 
     def _apply_game_states(
         self, running_by_launcher: dict, external_by_launcher: dict | None = None,
@@ -2224,60 +2416,31 @@ class GameLibraryPanel:
         one of its states rather than misread a stalled probe as every game
         having exited.
         """
-        now = time.monotonic()
-        for key, track in self._tracked.items():
-            if track.state not in _ACTIVE_GAME_STATES:
-                continue
-            launcher, _, game_id = key.partition(":")
-            running = running_by_launcher.get(launcher)
+        # Recovery probes report observations, never infer wrapper/profile
+        # failure from a missing process or declare a slow launch dead.
+        for launcher, running in running_by_launcher.items():
             if running is None:
                 continue
-            if game_id in running:
-                track.misses = 0
+            for game_id in running:
+                key = f"{launcher}:{game_id}"
+                if key in self._session_keys:
+                    continue
+                track = self._tracked.setdefault(key, _TrackedGame("unconfirmed"))
                 if game_id in (external_by_launcher or {}).get(launcher, ()):
-                    # Heroic's runner can briefly outlive the wrapped session
-                    # during shutdown; that does not mean it launched unwrapped.
-                    if track.state in ("running", "stopping"):
-                        continue
-                    was_external = track.state == "external"
                     track.state = "external"
-                    source = self._by_launcher[launcher]
-                    game = self._game_for_key(key)
-                    if game is not None and game.wrapped:
-                        track.warning = (
-                            "This game started without PenguinBurner. Its overlay and "
-                            "per-game GPU settings were not applied. "
-                            "Close the game, then relaunch with Play in Game Library."
-                        )
-                    else:
-                        track.warning = f"Close this game in {source.display_name} or in the game itself."
-                    if not was_external:
-                        self._state_message(key, f"running in {source.display_name}")
-                elif track.state in ("launching", "external"):
+                elif track.state != "stopping":
                     track.state = "running"
+                track.warning = ""
+                track.note = "Game process detected. PenguinBurner integration is not yet confirmed."
+            for key, track in self._tracked.items():
+                if key.partition(":")[0] != launcher or key in self._session_keys:
+                    continue
+                if key.partition(":")[2] not in running and track.state in (
+                    "running", "external", "stopping",
+                ):
+                    track.state = "unconfirmed"
                     track.warning = ""
-                elif track.state == "stopping" and now > track.deadline:
-                    # The launcher declined to stop it (a save dialog, a hung
-                    # shutdown): say so and re-arm Stop.
-                    track.state = "running"
-                    self._state_message(key, "did not stop; still running")
-                continue
-            track.misses += 1
-            if track.state == "launching":
-                # Not appearing yet is normal while a game spins up; only an
-                # expired grace window means the launch is dead.
-                if now > track.deadline:
-                    track.state = "stopped"
-                    self._state_message(key, "never started")
-            elif track.misses >= _CONFIRMED_GONE_POLLS:
-                # Consecutive polls agree, so one failed check cannot
-                # misreport a live game as gone.
-                track.state = "stopped"
-                self._state_message(key, "stopped")
-        if not any(
-            track.state in _ACTIVE_GAME_STATES for track in self._tracked.values()
-        ):
-            self._state_timer.stop()
+                    track.note = "Game status is unconfirmed. Refresh status before launching again."
         self._sync_play_button(self._selected_game())
 
     def _state_message(self, key: str, event: str) -> None:

@@ -176,11 +176,10 @@ def fake_steam():
             )
             return None
         if "SetAppLaunchOptions(" in expression:
-            app_id, _, value = expression.partition("SetAppLaunchOptions(")[2].rpartition(
-                ")"
-            )[0].partition(",")
-            state["launch_options"][app_id.strip()] = json.loads(value.strip())
-            return None
+            app_id = expression.partition("const appId = ")[2].partition(";")[0]
+            value, _ = json.JSONDecoder().raw_decode(expression.partition("const expected = ")[2])
+            state["launch_options"][app_id] = value
+            return True
         if "RegisterForAppDetails(" in expression:
             app_ids = json.loads(
                 expression.partition("Promise.all(")[2].partition(".map(")[0]
@@ -394,3 +393,43 @@ def test_marker_management(tmp_path) -> None:
     assert ensure_cdp_marker(tmp_path)
     assert marker.exists()
     assert ensure_cdp_marker(tmp_path)  # idempotent
+
+
+@pytest.mark.parametrize("behavior, expected", [
+    ("sync", True), ("async", True), ("already", True), ("silent", False), ("error", False),
+])
+def test_write_confirmation_uses_details_event_and_unsubscribes(monkeypatch, behavior, expected):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the Steam subscription fixture")
+    client = object.__new__(SteamCdpClient)
+    observed = {}
+
+    def evaluate(expression):
+        script = f"const behavior = {json.dumps(behavior)};" + """
+let callback = null, removed = 0, writes = 0;
+globalThis.SteamClient = {Apps: {
+    RegisterForAppDetails(id, cb) {
+        callback = cb;
+        cb({strLaunchOptions: behavior === 'already' ? 'new command' : 'old command'});
+        return {unregister() { removed++; }};
+    },
+    SetAppLaunchOptions(id, command) {
+        writes++;
+        if (behavior === 'error') throw new Error('write rejected');
+        if (behavior === 'sync') callback({strLaunchOptions: command});
+        if (behavior === 'async') setImmediate(() => callback({strLaunchOptions: command}));
+    }
+}};
+""" + f"""
+const value = await ({expression});
+console.log(JSON.stringify({{value, removed, writes}}));
+"""
+        result = subprocess.run([node, "--input-type=module"], input=script,
+                                text=True, capture_output=True, timeout=5, check=True)
+        observed.update(json.loads(result.stdout))
+        return observed["value"]
+    monkeypatch.setattr(client, "evaluate", evaluate)
+    assert client.set_app_launch_options("620", "new command", verify_timeout_s=0.1) is expected
+    assert observed["writes"] == 1
+    assert observed["removed"] == 1

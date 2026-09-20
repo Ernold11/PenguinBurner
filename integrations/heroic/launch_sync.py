@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 from common.atomic_write import atomic_write_text
@@ -31,7 +30,7 @@ _RESTART_TIMEOUT_S = 10.0
 # the same PID namespace. Only same-user Heroic main processes for this config
 # root can be stopped; Electron renderers and other profiles are not targets.
 _LAUNCHER_PROBE = r'''
-import json, os, signal, sys
+import json, os, selectors, signal, sys, time
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -95,8 +94,31 @@ if expected:
         raise RuntimeError('Heroic changed while preparing to restart; try Play again.')
     if busy:
         raise RuntimeError('Heroic is busy. Finish its game, download or other operation, then press Play again.')
-    for pid in launchers:
-        os.kill(int(pid), signal.SIGTERM)
+    handles = []
+    try:
+        # Pin process identities before revalidating or delivering signals.
+        for pid, identity in launchers.items():
+            fd = os.pidfd_open(int(pid))
+            handles.append(fd)
+            current = (Path('/proc') / pid / 'stat').read_text().rsplit(')', 1)[1].split()
+            if f'{boot}:{current[19]}' != identity:
+                raise RuntimeError('Heroic process identity changed; try Play again.')
+        with selectors.DefaultSelector() as selector:
+            for fd in handles:
+                selector.register(fd, selectors.EVENT_READ)
+            for fd in handles:
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+            deadline = time.monotonic() + float(sys.argv[3] if len(sys.argv) > 3 else 10)
+            while selector.get_map():
+                events = selector.select(max(0, deadline - time.monotonic()))
+                if not events:
+                    raise RuntimeError('Heroic did not exit; try Play again.')
+                for key, _ in events:
+                    selector.unregister(key.fd)
+        launchers = {}
+    finally:
+        for fd in handles:
+            os.close(fd)
 print(json.dumps({'launchers': launchers, 'busy': busy}))
 '''
 
@@ -107,8 +129,8 @@ def _probe(root: Path, stop: dict | None = None) -> dict:
         if running_in_flatpak() else sys.executable
     )
     result = run_on_host(
-        [python, "-c", _LAUNCHER_PROBE, str(root), json.dumps(stop or {})],
-        capture=True,
+        [python, "-c", _LAUNCHER_PROBE, str(root), json.dumps(stop or {}), str(_RESTART_TIMEOUT_S)],
+        capture=True, timeout=_RESTART_TIMEOUT_S + 3 if stop else 3.0,
     )
     if result is None or result.returncode:
         raise RuntimeError("Could not safely refresh Heroic's running launcher. Try Play again.")
@@ -169,34 +191,25 @@ def launch_with_current_settings(command: list[str], *, home: Path | None = None
                 "Heroic needs to reload changed settings but is busy. "
                 "Finish its game, download or other operation, then press Play again."
             )
-        _probe(root, stop=state["launchers"])
-        deadline = time.monotonic() + _RESTART_TIMEOUT_S
-        while _probe(root)["launchers"]:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Heroic did not exit; the game was not launched with stale settings.")
-            time.sleep(0.1)
+        stopped = _probe(root, stop=state["launchers"])
+        if stopped["launchers"] or _probe(root)["launchers"]:
+            raise RuntimeError("Heroic did not exit or was restarted elsewhere; try Play again.")
     if not start_on_host(command):
         return False
-    deadline = time.monotonic() + _RESTART_TIMEOUT_S
-    while time.monotonic() < deadline:
+    # Receipt creation is an optimization. A launcher without a readiness API
+    # cannot be declared ready by waiting an arbitrary number of milliseconds.
+    # Record only a process already observed after dispatch; otherwise the next
+    # launch conservatively refreshes its settings again.
+    try:
+        state = _probe(root)
+    except RuntimeError:
+        return True
+    if state["launchers"]:
         try:
-            state = _probe(root)
-        except RuntimeError:
-            # The request already succeeded. Missing a cache receipt must not
-            # turn a launched game into a failed launch in the UI.
-            return True
-        if state["launchers"]:
-            # Record the pre-launch fingerprint, never bless a settings write
-            # that raced the start of this launcher.
-            try:
-                config_dir.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(receipt_path, json.dumps({
-                    "root": str(root), "launchers": state["launchers"], "settings": fingerprint,
-                }), durable=True)
-            except OSError:
-                pass  # A receipt is an optimization, not a launch requirement.
-            return True
-        time.sleep(0.1)
-    # The launch request was delivered, but no persistent launcher was found.
-    # Do not create a receipt that would claim any future cache is fresh.
+            config_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(receipt_path, json.dumps({
+                "root": str(root), "launchers": state["launchers"], "settings": fingerprint,
+            }), durable=True)
+        except OSError:
+            pass
     return True

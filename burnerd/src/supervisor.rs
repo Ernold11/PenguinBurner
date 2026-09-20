@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -304,6 +305,8 @@ pub struct Supervisor {
     child_generation: u64,
     stop_timeout: Duration,
     game_runtime: GameRuntimeState,
+    game_watch_wake: UnixStream,
+    game_watch_receiver: Option<UnixStream>,
     last_applied_specs: BTreeMap<String, RuntimeSpec>,
     boot_replay: Vec<Value>,
 }
@@ -316,12 +319,20 @@ impl Default for Supervisor {
 
 impl Supervisor {
     pub fn new() -> Self {
+        let (receiver, wake) = UnixStream::pair().expect("game watch wake socket");
+        receiver
+            .set_nonblocking(true)
+            .expect("nonblocking game watch receiver");
+        wake.set_nonblocking(true)
+            .expect("nonblocking game watch wakeup");
         Supervisor {
             profile: None,
             child: None,
             child_generation: 0,
             stop_timeout: ENGINE_STOP_TIMEOUT,
             game_runtime: GameRuntimeState::default(),
+            game_watch_wake: wake,
+            game_watch_receiver: Some(receiver),
             last_applied_specs: BTreeMap::new(),
             boot_replay: Vec::new(),
         }
@@ -513,11 +524,68 @@ impl Supervisor {
 /// guards against PID reuse where the kernel supports it; the `/proc` start time
 /// is the fallback on older kernels.
 pub fn start_game_watch_monitor(sup: &Arc<Mutex<Supervisor>>) {
+    let Some(mut wake) = guard(sup).game_watch_receiver.take() else {
+        return;
+    };
     let weak = Arc::downgrade(sup);
     thread::Builder::new()
         .name("penguin-burner-game-watch".to_string())
         .spawn(move || loop {
-            thread::sleep(game_watch_interval());
+            let (handles, timeout) = {
+                let Some(sup) = weak.upgrade() else {
+                    return;
+                };
+                let supervisor = guard(&sup);
+                let mut handles = Vec::new();
+                let mut timeout: Option<Duration> = None;
+                for watch in supervisor.game_runtime.watches.values() {
+                    if let Some(exited) = watch.exited_at {
+                        let remaining = game_restore_grace().saturating_sub(exited.elapsed());
+                        timeout = Some(timeout.map_or(remaining, |old| old.min(remaining)));
+                    } else if let Some(fd) = &watch.pidfd {
+                        match fd.try_clone() {
+                            Ok(fd) => handles.push(fd),
+                            Err(_) => {
+                                let fallback = game_watch_interval();
+                                timeout = Some(timeout.map_or(fallback, |old| old.min(fallback)));
+                            }
+                        }
+                    } else {
+                        // Older kernels lack pidfd: retain identity-checked
+                        // reconciliation there, not on the normal event path.
+                        let fallback = game_watch_interval();
+                        timeout = Some(timeout.map_or(fallback, |old| old.min(fallback)));
+                    }
+                }
+                (handles, timeout)
+            };
+            let mut fds = vec![libc::pollfd {
+                fd: wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }];
+            fds.extend(handles.iter().map(|fd| libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }));
+            let timeout_ms =
+                timeout.map_or(-1, |d| d.as_millis().clamp(1, i32::MAX as u128) as i32);
+            // SAFETY: all descriptors are owned above and fds remains valid.
+            let result =
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+            if result < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                logging::error("game-watch event wait failed");
+                return;
+            }
+            if fds[0].revents & libc::POLLHUP != 0 {
+                return;
+            }
+            let mut bytes = [0; 256];
+            while wake.read(&mut bytes).is_ok_and(|n| n > 0) {}
             let Some(sup) = weak.upgrade() else {
                 return;
             };
@@ -1261,6 +1329,7 @@ pub fn start_game_runtime_profile(
                 supervisor.game_runtime.restore_spec = restore_spec;
             }
             supervisor.game_runtime.watches.insert(watch_pid, watch);
+            let _ = supervisor.game_watch_wake.write(&[1]);
             supervisor.game_runtime.override_active = true;
             Ok(serde_json::json!({
                 "started": true,

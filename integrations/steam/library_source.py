@@ -40,6 +40,16 @@ class SteamLibrarySource:
     desktop_icon_name = "steam"
     #: Steam exposes an API for starting a game; the tab offers Play for it.
     can_launch = True
+
+    def watch_paths(self) -> tuple[Path, ...]:
+        from overlay.telemetry.steam_game_setup import default_steamapps_dirs
+
+        root = default_steam_root(self._home) or (self._home or Path.home()) / ".local/share/Steam"
+        return (root / "config", root / "userdata",
+                *root.glob("userdata/*/config"),
+                *root.glob("userdata/*/config/localconfig.vdf"),
+                *default_steamapps_dirs(self._home),
+                *(row.game.steamapps_dir for row in self._rows))
     _LIVE_PROFILE_SETTERS = frozenset(
         {
             "set_game_enabled",
@@ -341,3 +351,8 @@ class SteamLibrarySource:
         every game having exited.
         """
         return self.manager.running_game_ids()
+
+    def observed_processes(self) -> dict[str, tuple[int, ...]] | None:
+        from .process import running_steam_processes
+
+        return running_steam_processes()

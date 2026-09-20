@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from integrations.launchers.library import LauncherField, LibraryGame
 from integrations.launchers.library_source import WrapperLibrarySource
@@ -33,6 +34,17 @@ class HeroicLibrarySource(WrapperLibrarySource):
     command_noun = "wrapper command"
     _running_pids: tuple[int, ...] = ()
     _external_games: frozenset[str] = frozenset()
+
+    def watch_paths(self) -> tuple[Path, ...]:
+        from .paths import (
+            heroic_config_root,
+            installed_store_paths,
+            library_cache_paths,
+        )
+
+        root = heroic_config_root(self._home)
+        return (*installed_store_paths(self._home), *library_cache_paths(self._home),
+                root / "store", root / "GamesConfig", root / "config.json")
 
     def build_manager(self, *, home, settings_path) -> HeroicIntegrationManager:
         return HeroicIntegrationManager(home=home, settings_path=settings_path)
@@ -139,6 +151,10 @@ class HeroicLibrarySource(WrapperLibrarySource):
     def external_game_ids(self) -> frozenset[str]:
         """Observed games that must be closed in Heroic, from the latest poll."""
         return self._external_games
+
+    def observed_processes(self) -> dict[str, tuple[int, ...]] | None:
+        sessions = self._running_sessions()
+        return None if sessions is None else sessions.external
 
     def _running_sessions(self) -> HeroicSessions | None:
         running = probe_heroic_sessions(known_pids=self._running_pids)

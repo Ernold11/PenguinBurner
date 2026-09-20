@@ -194,3 +194,19 @@ def test_flatpak_main_with_flattened_title_uses_parent_environment(tmp_path, con
     result = subprocess.run([sys.executable, '-c', script, str(config), '{}'],
                             capture_output=True, text=True, check=True)
     assert json.loads(result.stdout) == {'launchers': {'41': 'test-boot:123'}, 'busy': False}
+
+
+def test_real_restart_wait_timeout_preserves_unresponsive_launcher(tmp_path, config, monkeypatch):
+    code = "import signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); sys.stdin.readline()"
+    env = dict(os.environ, XDG_CONFIG_HOME=str(config.parent))
+    with subprocess.Popen(['heroic', '-c', code], executable=sys.executable, env=env,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert child.stdout.readline().strip() == 'ready'
+            state = sync._probe(config)
+            monkeypatch.setattr(sync, '_RESTART_TIMEOUT_S', 0.05)
+            with pytest.raises(RuntimeError):
+                sync._probe(config, stop=state['launchers'])
+            assert child.poll() is None
+        finally:
+            child.communicate('\n', timeout=5)
