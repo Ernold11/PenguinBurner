@@ -27,6 +27,7 @@ from integrations.launchers.library import (
     LibraryGame,
     library_bulk_actions,
 )
+from integrations.launchers.live_overlay import LiveOverlaySource
 
 from .identity import STEAM_LAUNCHER_ID
 from .launch_options import injection_state
@@ -36,7 +37,7 @@ from .process import launch_steam_game, restart_steam
 from .users import default_steam_root
 
 
-class SteamLibrarySource:
+class SteamLibrarySource(LiveOverlaySource):
     launcher_id = STEAM_LAUNCHER_ID
     display_name = "Steam"
     #: Shipped fallback, used when the machine has no Steam icon of its own.
@@ -242,6 +243,9 @@ class SteamLibrarySource:
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
         return library_bulk_actions()
 
+    def saved_overlay(self, game_id: str) -> bool:
+        return self.manager.game_setting(game_id).overlay
+
     def after_setting_write(self, game_id: str, setter: str):
         """Push profile changes into a Steam game that is already running.
 
@@ -249,10 +253,8 @@ class SteamLibrarySource:
         visibility is separate from the daemon profile. The remaining common
         profile controls can be re-issued to the daemon in place.
         """
-        if setter == "set_game_overlay":
-            return self.manager.hot_reapply_overlay(game_id)
         if setter not in self._LIVE_PROFILE_SETTERS:
-            return None
+            return super().after_setting_write(game_id, setter)
         return self.manager.hot_reapply(game_id)
 
     # -- launching -----------------------------------------------------------

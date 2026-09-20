@@ -538,7 +538,9 @@ def test_overlay_change_updates_live_override(manager, monkeypatch, tmp_path, en
     manager.refresh()
     assert manager.set_game_enabled(APP_ID, True).ok
     assert manager.set_game_overlay(APP_ID, enabled).ok
-    result = manager.hot_reapply_overlay(APP_ID)
+    from integrations.steam.library_source import SteamLibrarySource
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({GAME_KEY}))
+    result = SteamLibrarySource(manager).after_setting_write(APP_ID, "set_game_overlay")
     assert result is not None and result.ok
     assert override.read_text() == ("1" if enabled else "0")
 
@@ -553,7 +555,9 @@ def test_overlay_edit_for_idle_game_does_not_touch_live_override(
     override.write_text("1")
     monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
     monkeypatch.setattr(manager, "running_game_ids", lambda: running)
-    assert manager.hot_reapply_overlay(APP_ID) is None
+    from integrations.steam.library_source import SteamLibrarySource
+    result = SteamLibrarySource(manager).after_setting_write(APP_ID, "set_game_overlay")
+    assert (result is not None and not result.ok) if running is None else result is None
     assert override.read_text() == "1"
 
 
@@ -567,12 +571,18 @@ def test_bulk_overlay_updates_live_visibility_without_reapplying_profile(
     monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({APP_ID}))
     manager.refresh()
     assert manager.set_game_enabled(APP_ID, True).ok
-    assert manager.set_all_games_overlay([APP_ID], True).ok
+    from integrations.steam.library_source import SteamLibrarySource
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({GAME_KEY}))
+    source = SteamLibrarySource(manager)
+    result = manager.set_all_games_overlay([APP_ID], True)
+    assert result.ok
+    assert source.after_bulk_write("set_all_games_overlay", result).ok
     assert override.read_text() == "1"
     monkeypatch.setattr("overlay.state.write_overlay_override", lambda _enabled: False)
     result = manager.set_all_games_overlay([APP_ID], False)
-    assert not result.ok
-    assert "live visibility update failed" in result.message
+    followup = source.after_bulk_write("set_all_games_overlay", result)
+    assert result.ok and not followup.ok
+    assert "live visibility update failed" in followup.message
 
 
 @pytest.mark.parametrize("watched_id", [GAME_KEY, APP_ID])
@@ -880,8 +890,30 @@ def test_enabling_reads_the_original_off_the_live_line_not_a_stale_snapshot(
 
     manager._apply("620", replace(stale, enabled=True))
 
-    stored = manager._setting("620")
+    stored = manager.game_setting("620")
     assert stored.original_launch_options == live
     # And the line Steam now carries is that same command, wrapped.
     written = manager._launch_options["620"]
     assert injection_state(written).wrapped is True
+
+
+@pytest.mark.parametrize("running_id", [APP_ID, "failed"])
+def test_bulk_overlay_live_followup_excludes_failed_steam_writes(manager, monkeypatch, tmp_path, running_id):
+    from integrations.steam.library_source import SteamLibrarySource
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    manager.refresh()
+    assert manager.set_game_enabled(APP_ID, True).ok
+    original = manager.set_game_overlay
+    monkeypatch.setattr(manager, "set_game_overlay", lambda app_id, enabled:
+                        manager_module.ApplyResult(False, "refused") if app_id == "failed" else original(app_id, enabled))
+    monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({running_id}))
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({f"steam:{running_id}"}))
+    path = tmp_path / "overlay-override"
+    path.write_text("0")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(path))
+    result = manager.set_all_games_overlay(["failed", APP_ID], True)
+    assert not result.ok and result.applied_game_ids == (APP_ID,)
+    followup = SteamLibrarySource(manager).after_bulk_write("set_all_games_overlay", result)
+    assert (followup is not None) == (running_id == APP_ID)
+    assert path.read_text() == ("1" if running_id == APP_ID else "0")

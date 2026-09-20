@@ -1213,7 +1213,7 @@ fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {
 /// watched launcher/game process exits.
 pub fn start_game_runtime_profile(
     sup: &Mutex<Supervisor>,
-    spec: RuntimeSpec,
+    mut spec: RuntimeSpec,
     watch_pid: u32,
     app_id: String,
 ) -> Result<Value, String> {
@@ -1291,6 +1291,33 @@ pub fn start_game_runtime_profile(
     } else {
         None
     };
+    // Game presets select V/F policy, not a new fan policy. Their default
+    // disabled fan payload must not drop the user's active silent curve.
+    // Resolve this under the supervisor lock, including hot target updates,
+    // and only inherit state belonging to the game's target GPU. Explicit
+    // Stock remains a request for factory control, including automatic fans.
+    if spec.mode_name() != "stock" && !spec.fan.enabled {
+        let current = previous_spec
+            .as_ref()
+            .filter(|current| current.gpu.uuid == spec.gpu.uuid);
+        // A temporary Stock game mode has automatic fans. When leaving it,
+        // recover the target GPU's standing fan policy, not Stock's override.
+        let fan_source = if supervisor.game_runtime.override_active
+            && current.is_some_and(|current| current.mode_name() == "stock")
+        {
+            supervisor
+                .game_runtime
+                .standing_spec
+                .as_ref()
+                .filter(|standing| standing.gpu.uuid == spec.gpu.uuid)
+                .or(supervisor.game_runtime.restore_spec.as_ref())
+        } else {
+            current.or(restore_spec.as_ref())
+        };
+        if let Some(source) = fan_source {
+            spec.fan = source.fan.clone();
+        }
+    }
     let failed_target_restore_spec = previous_spec
         .as_ref()
         .filter(|previous| previous.gpu.uuid != spec.gpu.uuid)
@@ -2989,6 +3016,139 @@ mod tests {
             "stock"
         );
         drop(running);
+        shutdown(&sup);
+    }
+
+    #[test]
+    fn game_profiles_preserve_target_gpu_fan_policy_on_launch_and_reapply() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Standing fan, target GPU, remembered target, Stock, explicit fan,
+        // expected game fan. Never copy another GPU's curve or enable a fan
+        // policy the user has not applied.
+        for (enabled, target, remembered, stock, explicit, expected) in [
+            (true, "GPU-A", false, false, false, true),
+            (false, "GPU-A", false, false, false, false),
+            (true, "GPU-B", false, false, false, false),
+            (false, "GPU-B", true, false, false, true),
+            (true, "GPU-A", false, true, false, false),
+            (false, "GPU-A", false, false, true, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let state_path = dir.path().join("active-runtime.json");
+            let _state_guard = StateEnvGuard::new(&state_path);
+            let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+            let sup = Mutex::new(Supervisor::new());
+            let mut standing = RuntimeSpec::test_static("GPU-A", "standing");
+            standing.fan.enabled = enabled;
+            standing.fan.config.hysteresis_c = 4.0;
+            if remembered {
+                let mut other = RuntimeSpec::test_static("GPU-B", "other");
+                other.fan = standing.fan.clone();
+                other.fan.enabled = true;
+                apply_runtime_spec(&sup, other).unwrap();
+            }
+            apply_runtime_spec(&sup, standing.clone()).unwrap();
+            let persisted = fs::read(&state_path).unwrap();
+            for reapply in [false, true] {
+                let mut game = if stock {
+                    RuntimeSpec::test_stock(target)
+                } else {
+                    RuntimeSpec::test_static(target, if reapply { "updated" } else { "game" })
+                };
+                // Only the first request explicitly enables a fan; the live
+                // update must retain its complete config without another flag.
+                game.fan.enabled = explicit && !reapply;
+                if explicit {
+                    game.fan.config.hysteresis_c = 4.0;
+                }
+                start_game_runtime_profile(
+                    &sup,
+                    game,
+                    std::process::id(),
+                    "heroic:fan-test".into(),
+                )
+                .unwrap();
+                let running = guard(&sup);
+                let fan = &running.profile.as_ref().unwrap().spec.fan;
+                assert_eq!(fan.enabled, expected, "target={target}, reapply={reapply}");
+                if expected {
+                    assert_eq!(fan.config.hysteresis_c, 4.0);
+                }
+                assert_eq!(fs::read(&state_path).unwrap(), persisted);
+            }
+            if !stock && !explicit {
+                start_game_runtime_profile(
+                    &sup,
+                    RuntimeSpec::test_stock(target),
+                    std::process::id(),
+                    "heroic:fan-test".into(),
+                )
+                .unwrap();
+                assert!(!guard(&sup).profile.as_ref().unwrap().spec.fan.enabled);
+                start_game_runtime_profile(
+                    &sup,
+                    RuntimeSpec::test_static(target, "back-from-stock"),
+                    std::process::id(),
+                    "heroic:fan-test".into(),
+                )
+                .unwrap();
+                let running = guard(&sup);
+                let fan = &running.profile.as_ref().unwrap().spec.fan;
+                assert_eq!(fan.enabled, expected, "Stock round trip, target={target}");
+                if expected {
+                    assert_eq!(fan.config.hysteresis_c, 4.0);
+                }
+            }
+            {
+                let mut running = guard(&sup);
+                let watch = running
+                    .game_runtime
+                    .watches
+                    .get_mut(&std::process::id())
+                    .unwrap();
+                watch.lifetime_fd = None;
+                watch.process_start_time = Some(0);
+            }
+            reap_game_watches(&sup);
+            {
+                let running = guard(&sup);
+                let restored = &running.profile.as_ref().unwrap().spec;
+                assert_eq!(
+                    serde_json::to_value(restored).unwrap(),
+                    serde_json::to_value(&standing).unwrap()
+                );
+            }
+            shutdown(&sup);
+        }
+    }
+
+    #[test]
+    fn explicit_fan_disable_during_game_survives_next_game_update() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let _state_guard = StateEnvGuard::new(&dir.path().join("active-runtime.json"));
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        let sup = Mutex::new(Supervisor::new());
+        let mut standing = RuntimeSpec::test_static("GPU-A", "standing");
+        standing.fan.enabled = true;
+        apply_runtime_spec(&sup, standing.clone()).unwrap();
+        start_game_runtime_profile(
+            &sup,
+            RuntimeSpec::test_static("GPU-A", "game"),
+            std::process::id(),
+            "42".into(),
+        )
+        .unwrap();
+        standing.fan.enabled = false;
+        apply_runtime_spec(&sup, standing).unwrap();
+        start_game_runtime_profile(
+            &sup,
+            RuntimeSpec::test_static("GPU-A", "updated"),
+            std::process::id(),
+            "42".into(),
+        )
+        .unwrap();
+        assert!(!guard(&sup).profile.as_ref().unwrap().spec.fan.enabled);
         shutdown(&sup);
     }
 

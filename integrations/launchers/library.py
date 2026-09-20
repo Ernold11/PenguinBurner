@@ -285,12 +285,19 @@ class LauncherSource(Protocol):
         ...
 
     def after_setting_write(self, game_id: str, setter: str) -> object | None:
-        """Optional launcher-owned follow-up after a successful setting write.
+        """Required follow-up after a successful setting write.
 
-        Runs on the same worker as the write. Launchers without a live runtime
-        action return None; Steam uses it to re-apply profile settings to a
-        game the daemon is already watching.
+        Inherit LiveOverlaySource so overlay changes reach running wrapped
+        games. Extend via super() for launcher-specific profile updates.
         """
+        ...
+
+    def after_bulk_write(self, setter: str, result) -> object | None:
+        """Inherit shared live overlay handling for successfully saved ids."""
+        ...
+
+    def saved_overlay(self, game_id: str) -> bool:
+        """Return the just-saved preference, not the previous library snapshot."""
         ...
 
 

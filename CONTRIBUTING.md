@@ -67,6 +67,19 @@ python -m pytest tests/test_docs_cli_flags.py
 - Lint with `ruff` before opening a PR.
 - Keep user docs in `docs/features/` concise; internal notes stay outside the tracked repo.
 
+## Adding a launcher
+
+Implement `LauncherSource` and register it in `integrations/launchers/registry.py`.
+Config-file launchers extend `WrapperLibrarySource`; other adapters inherit
+`LiveOverlaySource`. Supply `saved_overlay(game_id)` and `running_game_ids()`;
+extend setting follow-ups through `super()` and inherit the bulk follow-up.
+Use the standard wrapper with its namespaced game identity.
+Return successfully saved IDs in bulk results, including partial failures.
+The shared handler owns live visibility writes and wrapper checks for all
+launchers. Do not duplicate it or silently fall back to next-launch-only updates.
+Unknown or unwrapped sessions must report that live application is unconfirmed.
+Keep the registered-launcher contract test and real Qt workflow tests passing.
+
 ## Pull requests
 
 - Branch from `main`, keep PRs focused, and describe what you changed and why.

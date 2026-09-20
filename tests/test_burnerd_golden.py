@@ -447,6 +447,63 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
             game.wait(timeout=5)
 
 
+@pytest.mark.parametrize("app_id", ["1089130", "heroic:fan-test", "lutris:42"])
+def test_game_launch_and_live_update_preserve_silent_fan_over_socket(make_daemon, app_id):
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    standing["fan"]["enabled"] = True
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    game_spec = _runtime_spec()
+    game_spec["mode"] = "static"
+    game_spec["static_profile"] = {
+        "profile_id": "game-profile",
+        "plan": [{"index": 12, "voltage_mv": 900, "base_mhz": 2500,
+                  "target_mhz": 2600, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2600,
+        "candidate_voltage_mv": 900,
+        "memory_offset_mhz": None,
+        "power_limit_w": None,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2600,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 1100,
+                           "tail_point_count": 6, "ceiling_clock_mhz": None,
+                           "tail_rise_bins": 0},
+    }
+    game = _short_game(30)
+    try:
+        for profile_id in ("game-profile", "live-update"):
+            game_spec["static_profile"]["profile_id"] = profile_id
+            result = start_game_runtime_spec(
+                game_spec, watch_pid=game.pid, app_id=app_id,
+                socket_path=daemon.socket_path,
+            )
+            assert result["started"] is True
+            active = daemon_status(socket_path=daemon.socket_path)["active_job"]
+            assert active["profile_id"] == profile_id
+            assert active["silent_fan_curve"] is True
+        start_game_runtime_spec(
+            _runtime_spec(), watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is False
+        start_game_runtime_spec(
+            game_spec, watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        assert json.loads(daemon.state_file.read_text()) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
 def test_game_runtime_exit_stays_idle_without_a_standing_action(make_daemon):
     daemon = make_daemon()
     game = _short_game()

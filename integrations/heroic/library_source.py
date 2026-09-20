@@ -7,7 +7,7 @@ from pathlib import Path
 
 from integrations.launchers.library import LauncherField, LibraryGame
 from integrations.launchers.library_source import WrapperLibrarySource
-from integrations.launchers.wrapper_manager import ApplyResult, LauncherGameRow
+from integrations.launchers.wrapper_manager import LauncherGameRow
 from overlay.render_api import overlay_support
 
 from .flatpak import uses_flatpak, wrapper_path
@@ -86,45 +86,6 @@ class HeroicLibrarySource(WrapperLibrarySource):
         )
 
     # -- launching -------------------------------------------------------------
-
-    def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
-        """Deliver targets to the daemon and visibility to the loaded layer."""
-        if setter != "set_game_overlay":
-            return super().after_setting_write(game_id, setter)
-        return self._reapply_overlay((game_id,))
-
-    def after_bulk_write(self, setter: str, result: ApplyResult) -> ApplyResult | None:
-        if setter == "set_all_games_overlay":
-            return self._reapply_overlay(result.applied_game_ids)
-        return None
-
-    def _reapply_overlay(self, game_ids: tuple[str, ...]) -> ApplyResult | None:
-        if not game_ids:
-            return None
-        running = self._running_sessions()
-        if running is None:
-            return ApplyResult(
-                False, "Overlay saved, but the running game could not be checked for a live update."
-            )
-        wrapped = set(game_ids).intersection(running.wrapped)
-        external = set(game_ids).intersection(running.external)
-        messages: list[str] = []
-        if wrapped:
-            from overlay.state import write_overlay_override
-
-            row = self.manager.row(next(iter(wrapped)))
-            if row is None or not write_overlay_override(row.setting.overlay):
-                return ApplyResult(False, "Overlay saved, but live visibility update failed.")
-            messages.append(
-                f"Overlay switched {'on' if row.setting.overlay else 'off'} live (within one second)."
-            )
-        if external:
-            messages.append(
-                "Overlay saved; a game started without PenguinBurner. "
-                "Close the game, then relaunch with Play in Game Library. "
-                "Overlay visibility can change live after that."
-            )
-        return ApplyResult(not external, " ".join(messages)) if messages else None
 
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Heroic to start a game. Returns (started, what to tell the user)."""

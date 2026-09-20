@@ -17,10 +17,11 @@ from .library import (
     LibraryGame,
     library_bulk_actions,
 )
-from .wrapper_manager import ApplyResult, LauncherGameRow, WrapperManager
+from .live_overlay import LiveOverlaySource
+from .wrapper_manager import LauncherGameRow, WrapperManager
 
 
-class WrapperLibrarySource:
+class WrapperLibrarySource(LiveOverlaySource):
     launcher_id = ""
     display_name = ""
     #: Shipped fallback, used when the machine has no icon of the launcher's own.
@@ -143,10 +144,16 @@ class WrapperLibrarySource:
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
         return library_bulk_actions()
 
-    def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
+    def saved_overlay(self, game_id: str) -> bool:
+        row = self.manager.row(game_id)
+        if row is None:
+            raise ValueError("Unknown game.")
+        return row.setting.overlay
+
+    def after_setting_write(self, game_id: str, setter: str) -> object | None:
         """Launchers can deliver supported changes to an existing session."""
         if setter not in ("set_game_target_fps", "set_game_mode"):
-            return None
+            return super().after_setting_write(game_id, setter)
         from .runtime_profile import hot_reapply_game_profile
 
         row = self.manager.row(game_id)

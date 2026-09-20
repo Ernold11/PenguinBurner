@@ -47,10 +47,9 @@ but cannot be newly selected.
 Existing launch options, command prefixes and wrapper rows are preserved.
 Adaptive FPS targets update live for running wrapped Steam, Lutris, and Heroic
 games, including switching back to the system-wide target. Tier changes still
-wait for sustained frame-time headroom. Other Lutris changes apply on the next
-launch. Heroic's Play action refreshes saved
-launch settings automatically, restarting an idle launcher when necessary. Heroic overlay visibility also updates live
-in an already wrapped game.
+wait for sustained frame-time headroom. Heroic's Play action refreshes saved
+launch settings automatically, restarting an idle launcher when necessary. Overlay visibility also updates live
+in already wrapped Heroic and Lutris games.
 Steam supports live mode, target, and overlay updates
 for a running wrapped game; changing its GPU requires a relaunch.
 
@@ -73,7 +72,9 @@ preserves saved modes and overlay choices; new games default to overlay off.
 Show skips games whose renderer cannot display the overlay. Other per-game
 settings stay intact, and failures are reported while remaining games update.
 Each action shows the affected count before confirmation. Overlay changes reach
-already wrapped Steam and Heroic sessions live; Lutris uses them on next launch.
+already wrapped Steam, Heroic, and Lutris sessions live through the same handler.
+The overlay layer must already be loaded; unconfirmed sessions require a relaunch.
+The visibility override is shared by concurrently running overlays.
 
 ## Runtime behavior
 
@@ -81,6 +82,12 @@ The wrapper asks `penguin-burnerd` to apply the game profile, then restores your
 standing profile when the game exits. If the daemon is unavailable, the game
 still launches. Only one game can own the daemon's active monitoring and
 Adaptive engine at a time; concurrent games do not replace that owner.
+
+Adaptive and fixed-tier game profiles preserve the target GPU's active fan
+policy, including its silent fan curve. Changing the Adaptive FPS target during
+a game also preserves that policy. **Stock** restores automatic fan control for
+the game. Switching back from Stock restores the target GPU's standing fan
+policy; exiting restores the standing profile and its fan settings.
 
 Game status follows wrapper registration and kernel process-exit events for
 Steam, Lutris and Heroic. Opening Game Library during a game reconnects to the
