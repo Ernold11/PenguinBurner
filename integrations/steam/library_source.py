@@ -25,6 +25,7 @@ from integrations.launchers.library import (
     LauncherField,
     LauncherWriteState,
     LibraryGame,
+    library_bulk_actions,
 )
 
 from .identity import STEAM_LAUNCHER_ID
@@ -239,57 +240,7 @@ class SteamLibrarySource:
         return restart_steam()
 
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
-        # ``affects`` and ``enabled_only`` are what let the tab grey out a
-        # direction that would change nothing -- "enable all" when everything
-        # already is -- without knowing what any of these actions mean.
-        return (
-            LauncherBulkAction(
-                key="enable_all",
-                label="Enable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=True,
-                affects="enabled",
-                confirm=(
-                    "Add the PenguinBurner wrapper to the launch command of "
-                    "{count} {games}?\n\nThe In-Game overlay stays off, and "
-                    "MangoHud is disabled in wrapped games. \"Disable "
-                    "PenguinBurner for all games\" restores each game's own "
-                    "launch command."
-                ),
-            ),
-            LauncherBulkAction(
-                key="disable_all",
-                label="Disable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=False,
-                affects="enabled",
-                confirm=(
-                    "Remove the PenguinBurner wrapper from {count} {games} and "
-                    "restore their own launch command?"
-                ),
-            ),
-            LauncherBulkAction(
-                key="overlay_all",
-                label="Show In-Game overlay for enabled games",
-                setter="set_all_games_overlay",
-                value=True,
-                affects="overlay",
-                enabled_only=True,
-                confirm=(
-                    "Show the In-Game overlay in {count} PenguinBurner-enabled "
-                    "{games}?"
-                ),
-            ),
-            LauncherBulkAction(
-                key="overlay_none",
-                label="Hide In-Game overlay for all games",
-                setter="set_all_games_overlay",
-                value=False,
-                affects="overlay",
-                enabled_only=True,
-                confirm="Hide the In-Game overlay in {count} {games}?",
-            ),
-        )
+        return library_bulk_actions()
 
     def after_setting_write(self, game_id: str, setter: str):
         """Push profile changes into a Steam game that is already running.

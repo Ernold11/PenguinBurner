@@ -60,8 +60,12 @@ Sort by launcher, name, recently played, or most played. **Rescan** refreshes
 discovery without clearing settings. Scans and bulk writes run in the background.
 
 The **All games** menu enables or disables wrapping, or shows or hides overlays
-for enabled games. Bulk enable keeps the overlay off and preserves saved modes.
-Each action shows the affected count before confirmation.
+for enabled games across Steam, Lutris, and native or Flatpak Heroic. Bulk enable
+preserves saved modes and overlay choices; new games default to overlay off.
+Show skips games whose renderer cannot display the overlay. Other per-game
+settings stay intact, and failures are reported while remaining games update.
+Each action shows the affected count before confirmation. Overlay changes reach
+already wrapped Steam and Heroic sessions live; Lutris uses them on next launch.
 
 ## Runtime behavior
 

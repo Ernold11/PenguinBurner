@@ -106,7 +106,6 @@ def test_enabling_repairs_the_host_wrapper_before_writing(
     """The written line execs PENGUIN_BURNER on the host, so inside a Flatpak
     the wrapper must be made real before a config names it -- a Lutris-only
     host otherwise gets a prefix_command that stops the game launching."""
-    import integrations.lutris.manager as manager_module
     from integrations.launchers import wrapper_manager
 
     calls: list[bool] = []
@@ -120,7 +119,6 @@ def test_enabling_repairs_the_host_wrapper_before_writing(
 
 
 def test_a_failed_wrapper_repair_blocks_the_write(tmp_path, monkeypatch) -> None:
-    import integrations.lutris.manager as manager_module
     from integrations.launchers import wrapper_manager
 
     def boom() -> None:
@@ -732,3 +730,26 @@ def test_library_scan_cannot_revert_a_setting_before_the_next_edit(
     assert stored.enabled is True
     assert stored.gpu_uuid == "GPU-test"
     assert "PENGUIN_BURNER" in _config(tmp_path)["system"]["prefix_command"]
+
+
+def test_bulk_overlay_preserves_lutris_prefix_and_adaptive_settings(tmp_path):
+    manager = _manager(tmp_path, prefix_command="game-performance")
+    assert manager.set_game_enabled("27", True).ok
+    assert manager.set_game_mode("27", GAME_MODE_ADAPTIVE).ok
+    assert manager.set_game_target_fps("27", 72).ok
+    for enabled in (True, False):
+        result = manager.set_all_games_overlay(("missing", "27"), enabled)
+        assert not result.ok and "1 game(s) updated" in result.message
+        assert result.applied_game_ids == ("27",)
+        row = manager.row("27")
+        assert row.setting.overlay is enabled
+        assert row.setting.mode == GAME_MODE_ADAPTIVE
+        assert row.setting.target_fps == 72
+        assert "game-performance" in row.command
+        assert f"--pb-overlay={int(enabled)}" in row.command
+        assert _config(tmp_path)["game"] == {"exe": "game.exe"}
+    assert "PB_INGAME_LATENCY=1" in row.command
+    assert manager.set_game_enabled("27", False).ok
+    before = _config(tmp_path)
+    assert manager.set_all_games_overlay(("27",), True).applied_game_ids == ()
+    assert _config(tmp_path) == before

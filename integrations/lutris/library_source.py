@@ -27,7 +27,6 @@ class LutrisLibrarySource(WrapperLibrarySource):
 
     command_field_key = "prefix_command"
     command_field_subtitle = "prefix_command in the Lutris config"
-    command_noun = "launch command"
 
     def watch_paths(self) -> tuple[Path, ...]:
         from .paths import lutris_config_root, lutris_library_db

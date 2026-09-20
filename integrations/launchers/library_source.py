@@ -15,6 +15,7 @@ from .library import (
     LauncherField,
     LauncherWriteState,
     LibraryGame,
+    library_bulk_actions,
 )
 from .wrapper_manager import ApplyResult, LauncherGameRow, WrapperManager
 
@@ -38,8 +39,6 @@ class WrapperLibrarySource:
     #: Named as the launcher's own UI names it, with and without inheritance.
     command_field_subtitle = ""
     command_field_inherited_subtitle = "{name} — inherited from {source}"
-    #: How the library-wide confirmations refer to it.
-    command_noun = "launch command"
 
     def __init__(
         self,
@@ -142,35 +141,7 @@ class WrapperLibrarySource:
         return LauncherWriteState()
 
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
-        # Keys shared with the other launchers on purpose: the tab shows one
-        # "disable everything" and means it across the whole library.
-        return (
-            LauncherBulkAction(
-                key="enable_all",
-                label="Enable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=True,
-                affects="enabled",
-                confirm=(
-                    "Add the PenguinBurner wrapper to the launch command of "
-                    "{count} {games}?\n\nThe In-Game overlay stays off, and "
-                    "MangoHud is disabled in wrapped games. \"Disable "
-                    "PenguinBurner for all games\" restores each game's own "
-                    f"{self.command_noun}."
-                ),
-            ),
-            LauncherBulkAction(
-                key="disable_all",
-                label="Disable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=False,
-                affects="enabled",
-                confirm=(
-                    "Remove the PenguinBurner wrapper from {count} {games} and "
-                    f"restore their own {self.command_noun}?"
-                ),
-            ),
-        )
+        return library_bulk_actions()
 
     def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
         """Launchers can deliver supported changes to an existing session."""

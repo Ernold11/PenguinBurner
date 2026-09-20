@@ -6,7 +6,7 @@ Steam keeps its own manager because its live client owns launch options."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,7 @@ class ApplyResult:
     ok: bool
     message: str
     command: str = ""
+    applied_game_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,21 +219,41 @@ class WrapperManager:
         return self._sync_game(row, replace(row.setting, **changes))
 
     def set_all_games_enabled(self, game_ids, enabled: bool) -> ApplyResult:
+        return self._apply_to_games(
+            game_ids, lambda game_id: self.set_game_enabled(game_id, enabled),
+            f"PenguinBurner {'enabled' if enabled else 'disabled'}",
+        )
+
+    def set_all_games_overlay(self, game_ids, overlay: bool) -> ApplyResult:
+        # Never enable a wrapper as a side effect of changing HUD visibility.
+        enabled_ids = [
+            game_id for game_id in game_ids
+            if (row := self.row(game_id)) is None or row.setting.enabled
+        ]
+        return self._apply_to_games(
+            enabled_ids, lambda game_id: self.set_game_overlay(game_id, overlay),
+            f"Overlay {'shown' if overlay else 'hidden'}",
+        )
+
+    def _apply_to_games(
+        self, game_ids: Iterable[str], action: Callable[[str], ApplyResult], label: str,
+    ) -> ApplyResult:
         failures: list[str] = []
-        changed = 0
-        for game_id in list(game_ids):
-            result = self.set_game_enabled(game_id, enabled)
+        applied: list[str] = []
+        for game_id in dict.fromkeys(game_ids):
+            try:
+                result = action(game_id)
+            except (OSError, ValueError, RuntimeError) as error:
+                result = ApplyResult(False, str(error))
             if result.ok:
-                changed += 1
+                applied.append(game_id)
             else:
-                failures.append(result.message)
-        if failures:
-            return ApplyResult(
-                False,
-                f"{changed} game(s) updated; {len(failures)} failed: {failures[0]}",
-            )
-        word = "enabled" if enabled else "disabled"
-        return ApplyResult(True, f"PenguinBurner {word} for {changed} game(s).")
+                failures.append(f"{game_id}: {result.message}")
+        message = (
+            f"{len(applied)} game(s) updated; {len(failures)} failed: {failures[0]}"
+            if failures else f"{label} for {len(applied)} game(s)."
+        )
+        return ApplyResult(not failures, message, applied_game_ids=tuple(applied))
 
     def set_game_command(self, game_id: str, text: str) -> ApplyResult:
         """Write the game's launch command exactly as the user typed it.
