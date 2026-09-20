@@ -33,7 +33,7 @@ class WrapperLibrarySource:
     #: cannot live in the constructor the window builds tabs with.
     can_launch = False
 
-    #: The one field only this launcher has: where its wrapper command lives.
+    #: The launcher's wrapper command field.
     command_field_key = "command"
     #: Named as the launcher's own UI names it, with and without inheritance.
     command_field_subtitle = ""
@@ -94,8 +94,8 @@ class WrapperLibrarySource:
 
     def refresh(self, *, deep: bool = True) -> None:
         self.manager.refresh()
-        if deep:
-            self.manager.refresh_compat_tools()
+        if deep and self.manager.compatibility is not None:
+            self.manager.compatibility.refresh()
         self._rows = tuple(self.manager.rows())
         # Renderer inspection belongs on the scan worker, never in games() or
         # selection handling: it walks a game's install directory. A deep
@@ -122,8 +122,8 @@ class WrapperLibrarySource:
             subtitle = self.command_field_inherited_subtitle.format(
                 name=self.command_field_key, source=row.source_label
             )
-        compatibility = self.manager.compat_tool_field(game.game_id)
-        return ((compatibility,) if compatibility is not None else ()) + (
+        compatibility = self.manager.compatibility
+        return ((compatibility.field(row.game),) if compatibility is not None else ()) + (
             LauncherField(
                 key=self.command_field_key,
                 kind=FIELD_TEXT,

@@ -29,7 +29,6 @@ from profiles.game_profile import (
 
 from .compatibility import CompatibilityTools
 from .game_settings import GameSettingsError, GameSettingsStore, LauncherGameSetting
-from .library import LauncherField
 from .wrapper_command import inject_wrapper, remove_wrapper
 
 #: The game's own level, as opposed to anything it inherits from.
@@ -93,16 +92,6 @@ class WrapperManager:
     """Read a launcher's games, and own its wrapper and optional compatibility settings."""
 
     compatibility: CompatibilityTools | None = None
-
-    def refresh_compat_tools(self) -> None:
-        if self.compatibility is not None:
-            self.compatibility.refresh()
-
-    def compat_tool_field(self, game_id: str) -> LauncherField | None:
-        row = self.row(game_id)
-        if self.compatibility is None or row is None:
-            return None
-        return self.compatibility.field(row.game)
 
     def set_game_compat_tool(self, game_id: str, value: str) -> ApplyResult:
         row = self.row(game_id)

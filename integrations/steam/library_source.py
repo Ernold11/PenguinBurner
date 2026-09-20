@@ -10,9 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.flatpak_wrappers import ensure_host_integration
+from integrations.launchers.compatibility import (
+    CompatibilitySelection,
+    CompatibilityTool,
+    compatibility_field,
+)
 from integrations.launchers.desktop_icons import desktop_icon
 from integrations.launchers.library import (
-    FIELD_CHOICE,
     FIELD_MULTILINE,
     GROUP_COMMAND,
     WRITE_NEEDS_SETUP,
@@ -133,7 +137,7 @@ class SteamLibrarySource:
             detail=row,
         )
 
-    # -- what only Steam has -------------------------------------------------
+    # -- launcher fields -----------------------------------------------------
 
     def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
         row = game.detail
@@ -145,52 +149,30 @@ class SteamLibrarySource:
         )
 
     def _compat_tool_field(self, row: SteamGameRow) -> LauncherField:
-        """Proton, chosen through Steam itself.
-
-        Only reachable while Steam is up and answering on CDP: the selection
-        lives in Steam's own state, not in a file we could edit, so with the
-        client down there is nothing to change and nothing to list.
-        """
+        """Steam's live compatibility settings, rendered by the shared picker."""
         live = bool(self._probe.get("cdp_ready"))
         # A game Steam calls native has nothing to pick a Proton for -- unless
         # the user already forced one, in which case they keep the way back.
         native = bool(getattr(row.game, "is_native_linux", False)) and not row.game.compat_tool
-        choices: list[tuple[str, str]] = [("", self._compat_default_label(row))]
-        if live:
-            choices.extend(self.manager.available_compat_tools(row.game.app_id))
-        selected = str(row.game.compat_tool or "")
-        if selected and selected not in {name for name, _label in choices}:
-            # Steam is using something we could not list -- a hand-installed
-            # Proton build. Show it rather than silently reading as "default".
-            choices.append((selected, selected))
-        return LauncherField(
-            key="compat_tool",
-            kind=FIELD_CHOICE,
-            title="Compatibility tool",
-            subtitle=(
+        choices = self.manager.available_compat_tools(row.game.app_id) if live else ()
+        return compatibility_field(
+            CompatibilitySelection(
+                value=str(row.game.compat_tool or ""),
+                default_label=self._compat_default_label(row),
+                supported=not native,
+            ),
+            tuple(CompatibilityTool(value, label) for value, label in choices),
+            guidance=(
                 "Keeps Steam's current choice by default. Selecting another "
                 "entry uses Steam's own compatibility-tool setting for this game."
-                if live and not native
-                else "Steam reports this game as native Linux; it runs without "
-                "a compatibility tool."
-                if native
-                else "Needs live apply: Proton is Steam's own setting, so the "
-                "client has to be running and connected to change it."
             ),
-            setter="set_game_compat_tool",
-            value=selected,
-            choices=tuple(choices),
-            enabled=live and not native,
-            group=GROUP_COMMAND,
+            error=("" if live else "Needs live apply: Proton is Steam's own setting, so the "
+                   "client has to be running and connected to change it."),
         )
 
     @staticmethod
     def _compat_default_label(row: SteamGameRow) -> str:
-        """What the empty choice means for this game, spelled out.
-
-        "Steam default" alone tells the user nothing about what will actually
-        run, so name the tool Steam would pick -- or say the game needs none.
-        """
+        """Describe Steam's effective default without changing its override."""
         if row.game.compat_tool:
             return "Steam default"
         effective = str(getattr(row.game, "effective_compat_tool_label", "") or "")
@@ -323,9 +305,6 @@ class SteamLibrarySource:
         return self.manager.hot_reapply(game_id)
 
     # -- launching -----------------------------------------------------------
-    #
-    # Steam is the only launcher here that can start a game on our behalf, so
-    # everything about it lives in this adapter rather than in the library tab.
 
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Steam to start a game. Returns (started, what to tell the user)."""

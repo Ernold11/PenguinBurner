@@ -246,7 +246,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
         game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)
     )
     manager = SimpleNamespace(
-        refresh=lambda: None, rows=lambda: [row], refresh_compat_tools=lambda: None,
+        refresh=lambda: None, rows=lambda: [row], compatibility=None,
     )
     source = lutris_source.LutrisLibrarySource(manager=manager)
     monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
@@ -740,7 +740,7 @@ def test_a_proton_build_steam_will_not_list_is_still_shown() -> None:
 
     field = _field(source, _row(compat_tool="GE-Proton9-20"), "compat_tool")
 
-    assert ("GE-Proton9-20", "GE-Proton9-20") in field.choices
+    assert ("GE-Proton9-20", "GE-Proton9-20 (not listed)") in field.choices
     assert field.value == "GE-Proton9-20"
 
 

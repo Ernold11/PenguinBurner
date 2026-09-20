@@ -28,6 +28,30 @@ class CompatibilityBackend(Protocol):
     def write(self, game: Any, tool: CompatibilityTool | None) -> None: ...
 
 
+def compatibility_field(
+    selected: CompatibilitySelection,
+    tools: tuple[CompatibilityTool, ...],
+    *,
+    guidance: str,
+    error: str = "",
+) -> LauncherField:
+    """One picker contract for live-client and config-file launchers alike."""
+    choices = [("", selected.default_label)]
+    choices.extend(
+        (tool.value, selected.label if tool.value == selected.value and selected.label else tool.label)
+        for tool in tools
+    )
+    if selected.value and selected.value not in {value for value, _ in choices}:
+        choices.append((selected.value, f"{selected.label or selected.value} (not listed)"))
+    return LauncherField(
+        key="compat_tool", kind=FIELD_CHOICE, title="Compatibility tool",
+        setter="set_game_compat_tool", value=selected.value, choices=tuple(choices),
+        enabled=selected.supported and not error,
+        subtitle=("This game does not use Wine or Proton." if not selected.supported
+                  else error or guidance),
+    )
+
+
 class CompatibilityTools:
     """Cache discovery off the GUI thread and validate again before a write."""
 
@@ -52,20 +76,7 @@ class CompatibilityTools:
         except (OSError, ValueError, TypeError, RuntimeError) as problem:
             selected = CompatibilitySelection()
             error = str(problem)
-        choices = [("", selected.default_label)]
-        choices.extend(
-            (tool.value, selected.label if tool.value == selected.value and selected.label else tool.label)
-            for tool in self._tools
-        )
-        if selected.value and selected.value not in {value for value, _ in choices}:
-            choices.append((selected.value, f"{selected.label or selected.value} (not listed)"))
-        return LauncherField(
-            key="compat_tool", kind=FIELD_CHOICE, title="Compatibility tool",
-            setter="set_game_compat_tool", value=selected.value, choices=tuple(choices),
-            enabled=selected.supported and not error,
-            subtitle=("This game does not use Wine or Proton." if not selected.supported
-                      else error or self.guidance),
-        )
+        return compatibility_field(selected, self._tools, guidance=self.guidance, error=error)
 
     def save(self, game: Any, value: str) -> str:
         """Raise on refusal; return user-facing next-launch instructions on success."""

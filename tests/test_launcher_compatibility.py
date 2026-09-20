@@ -59,11 +59,11 @@ def read_config(path):
 
 def test_selection_and_default_preserve_other_settings(setup):
     manager, source, game_id, value, path, original = setup
-    field = manager.compat_tool_field(game_id)
+    field = manager.compatibility.field(manager.row(game_id).game)
     assert field.enabled and field.value == ''
     assert value in dict(field.choices)
     assert manager.set_game_compat_tool(game_id, value).ok
-    assert manager.compat_tool_field(game_id).value == value
+    assert manager.compatibility.field(manager.row(game_id).game).value == value
     changed = read_config(path)
     if source.launcher_id == 'heroic':
         record = changed[game_id].pop('wineVersion')
@@ -91,8 +91,8 @@ def test_discovery_failure_disables_picker_without_losing_selection(setup, monke
     def fail():
         raise ValueError('Catalogue unavailable')
     monkeypatch.setattr(manager.compatibility.backend, 'discover', fail)
-    manager.refresh_compat_tools()
-    field = manager.compat_tool_field(game_id)
+    manager.compatibility.refresh()
+    field = manager.compatibility.field(manager.row(game_id).game)
     assert not field.enabled and field.value == value
     assert value in dict(field.choices)
     assert 'Catalogue unavailable' in field.subtitle
@@ -109,7 +109,7 @@ def test_invalid_document_is_never_overwritten(setup, broken):
     result = manager.set_game_compat_tool(game_id, value)
     assert not result.ok
     assert path.read_text() == broken
-    assert not manager.compat_tool_field(game_id).enabled
+    assert not manager.compatibility.field(manager.row(game_id).game).enabled
 
 
 def test_native_games_disable_version_selection(setup):
@@ -118,7 +118,7 @@ def test_native_games_disable_version_selection(setup):
     game = replace(row.game, **({'platform': 'linux'} if source.launcher_id == 'heroic' else {'runner': 'linux'}))
     manager._rows[game_id] = replace(row, game=game)
     before = path.read_bytes()
-    assert not manager.compat_tool_field(game_id).enabled
+    assert not manager.compatibility.field(manager.row(game_id).game).enabled
     assert not manager.set_game_compat_tool(game_id, value).ok
     assert path.read_bytes() == before
 
@@ -139,7 +139,7 @@ def test_both_launchers_use_existing_qt_picker(setup, qapp, qtbot):
     assert combo.isEnabled()
     combo.setCurrentIndex(combo.findData(value))
     qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
-    assert manager.compat_tool_field(game_id).value == value
+    assert manager.compatibility.field(manager.row(game_id).game).value == value
     assert 'next launch' in panel.status_label.text()
     combo.setCurrentIndex(combo.findData(''))
     qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
@@ -231,7 +231,7 @@ def test_stale_native_config_does_not_capture_flatpak_version_write(tmp_path, mo
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / 'pb-settings.json')
     try:
         manager.refresh()
-        manager.refresh_compat_tools()
+        manager.compatibility.refresh()
         assert manager.set_game_compat_tool('Turkey', str(binary)).ok
         saved = json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())
         assert saved['Turkey']['wineVersion']['bin'] == str(binary)
@@ -246,11 +246,11 @@ def test_lutris_default_resumes_runner_inheritance(tmp_path, monkeypatch):
     runner.parent.mkdir(parents=True)
     runner.write_text(yaml.safe_dump({'wine': {'version': 'Runner-GE'}}))
     monkeypatch.setattr(manager.compatibility.backend, 'discover', lambda: (CompatibilityTool('Game-GE', 'Game-GE'),))
-    manager.refresh_compat_tools()
-    assert 'Runner-GE' in manager.compat_tool_field('27').choices[0][1]
+    manager.compatibility.refresh()
+    assert 'Runner-GE' in manager.compatibility.field(manager.row('27').game).choices[0][1]
     assert manager.set_game_compat_tool('27', 'Game-GE').ok
     assert manager.set_game_compat_tool('27', '').ok
-    assert 'Runner-GE' in manager.compat_tool_field('27').choices[0][1]
+    assert 'Runner-GE' in manager.compatibility.field(manager.row('27').game).choices[0][1]
     assert 'version' not in read_config(manager.row('27').game.config_path).get('wine', {})
 
 
