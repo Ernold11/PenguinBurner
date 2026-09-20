@@ -13,6 +13,10 @@ See [per-game settings](game-library.md#per-game-settings) for profiles,
 Adaptive targets, GPU selection, and overlay controls. DLC entries are not
 listed: Heroic shows them beside their game but never launches them.
 
+**Recently installed** uses the completion date of the latest successful install
+in Heroic's download history. Updates and failed downloads do not change that
+date. Games without retained install history appear after games with known dates.
+
 ## Wrapper command
 
 PenguinBurner adds its wrapper to the game's `wrapperOptions`, in

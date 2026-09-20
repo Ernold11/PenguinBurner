@@ -36,6 +36,7 @@ INSTALLED_STORE_PATHS = {
     "nile": Path("nile_config") / "nile" / "installed.json",
 }
 TIMESTAMPS_PATH = Path("store") / "timestamp.json"
+DOWNLOAD_HISTORY_PATH = Path("store") / "download-manager.json"
 IMAGE_CACHE_DIRNAME = "images-cache"
 #: What Heroic's library card appends to an Epic art URL before caching it.
 ART_CARD_QUERY = "?h=400&resize=1&w=300"
@@ -108,6 +109,11 @@ def installed_store_paths(home: Path | None = None) -> tuple[Path, ...]:
 def timestamps_path(home: Path | None = None) -> Path:
     """Where Heroic records first played, last played and minutes played."""
     return heroic_config_root(home) / TIMESTAMPS_PATH
+
+
+def download_history_path(home: Path | None = None) -> Path:
+    """Where Heroic records completed installs and queued downloads."""
+    return heroic_config_root(home) / DOWNLOAD_HISTORY_PATH
 
 
 def game_art_path(

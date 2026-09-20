@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .paths import (
+    download_history_path,
     game_art_path,
     installed_store_paths,
     library_cache_paths,
@@ -48,6 +49,7 @@ class InstalledHeroicGame:
     last_played: int
     playtime_hours: float
     art_path: Path | None
+    installed_at: int = 0
 
     @property
     def ready(self) -> bool:
@@ -90,6 +92,7 @@ def read_heroic_games(
     """
     timestamps = _read_timestamps(timestamps_path(home))
     installed = _read_installed(home)
+    install_times = _read_install_times(download_history_path(home))
     games: list[InstalledHeroicGame] = []
     seen: set[str] = set()
     for path in library_cache_paths(home):
@@ -100,7 +103,7 @@ def read_heroic_games(
             # of games nobody installed is a stat storm per library scan.
             if not include_uninstalled and not _is_installed(entry, record):
                 continue
-            game = _game_from_entry(entry, record, timestamps, home)
+            game = _game_from_entry(entry, record, timestamps, install_times, home)
             if game is None or game.game_id in seen:
                 continue
             seen.add(game.game_id)
@@ -203,6 +206,7 @@ def _game_from_entry(
     entry: dict,
     record: _InstalledRecord | None,
     timestamps: dict[str, tuple[int, float]],
+    install_times: dict[tuple[str, str], int],
     home: Path | None,
 ) -> InstalledHeroicGame | None:
     game_id = str(entry.get("app_name") or "").strip()
@@ -219,6 +223,10 @@ def _game_from_entry(
         name=str(entry.get("title") or "").strip(),
         runner=str(entry.get("runner") or "").strip(),
         installed=_is_installed(entry, record),
+        installed_at=(
+            install_times.get((str(entry.get("runner") or "").strip(), game_id), 0)
+            if _is_installed(entry, record) else 0
+        ),
         # The platform that was installed, not the platforms the store sells:
         # a game with a Linux build the user installed for Windows runs under
         # Proton, where the overlay always reaches it.
@@ -241,6 +249,41 @@ def _game_from_entry(
             home,
         ),
     )
+
+
+def _read_install_times(path: Path) -> dict[tuple[str, str], int]:
+    """Latest successful install per store/game, in epoch seconds.
+
+    Store installed.json records have no date. Heroic's download history has
+    millisecond completion times; updates, failed installs and queued work
+    must not make an older game look newly installed.
+    """
+    payload = _read_json(path)
+    finished = payload.get("finished") if isinstance(payload, dict) else None
+    if not isinstance(finished, list):
+        return {}
+    stamps: dict[tuple[str, str], int] = {}
+    for entry in finished:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") != "install" or entry.get("status") != "done":
+            continue
+        params = entry.get("params")
+        if not isinstance(params, dict):
+            continue
+        runner = str(params.get("runner") or "").strip()
+        app_name = str(params.get("appName") or "").strip()
+        end_time = entry.get("endTime")
+        if not runner or not app_name or isinstance(end_time, bool):
+            continue
+        try:
+            seconds = int(float(end_time) / 1000)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if seconds > 0:
+            key = (runner, app_name)
+            stamps[key] = max(seconds, stamps.get(key, 0))
+    return stamps
 
 
 def _epoch(value: object) -> int:

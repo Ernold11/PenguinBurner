@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from integrations.heroic.library import read_heroic_games
 from integrations.heroic.paths import (
     ART_CARD_QUERY,
@@ -213,6 +215,81 @@ def test_an_unplayed_game_reports_nothing_rather_than_guessing(tmp_path) -> None
     (game,) = read_heroic_games(tmp_path)
 
     assert (game.last_played, game.playtime_hours) == (0, 0.0)
+    assert game.installed_at == 0
+
+
+def _download(app_name="Turkey", runner="legendary", end_time=1789892225220, **fields):
+    return {
+        "params": {"appName": app_name, "runner": runner},
+        "type": "install", "status": "done", "endTime": end_time, **fields,
+    }
+
+
+@pytest.mark.parametrize("flatpak", [False, True])
+def test_completed_install_history_reaches_recently_installed(tmp_path, flatpak) -> None:
+    from integrations.heroic.library_source import HeroicLibrarySource
+    from integrations.launchers.library import SORT_INSTALLED, sorted_library_games
+
+    root = _heroic(tmp_path, flatpak=flatpak)
+    _library(root, [_game("old", title="A Short Hike"),
+                    _game("new", title="Ghostwire Tokyo", is_installed=False)])
+    _installed_legendary(root, "old", "new")
+    (root / "store/download-manager.json").write_text(json.dumps({"finished": [
+        _download("new"), _download("old", end_time=1789817721551),
+        _download("new", end_time=1789000000000),
+        _download("old", end_time=1789999999999, type="update"),
+        _download("old", end_time=1789999999999, status="error"),
+        _download("old", runner="gog", end_time=1789999999999),
+        _download("removed"),
+    ], "queue": [_download("old", end_time=1789999999999)]}))
+    source = HeroicLibrarySource(home=tmp_path, settings_path=tmp_path / "pb.json")
+    source.refresh(deep=False)
+
+    games = sorted_library_games(source.games(), SORT_INSTALLED)
+
+    assert [(g.name, g.installed_at) for g in games] == [
+        ("Ghostwire Tokyo", 1789892225), ("A Short Hike", 1789817721),
+    ]
+    # A later completed reinstall is noticed by the periodic shallow scan.
+    (root / "store/download-manager.json").write_text(json.dumps({"finished": [
+        _download("new"), _download("old", end_time=1789999999999),
+    ]}))
+    source.refresh(deep=False)
+    assert [g.game_id for g in sorted_library_games(source.games(), SORT_INSTALLED)] == [
+        "old", "new",
+    ]
+
+
+@pytest.mark.parametrize("end_time", [None, True, {}, [], "bad", "NaN", "inf", -1, 0])
+def test_invalid_install_dates_stay_unknown(tmp_path, end_time) -> None:
+    root = _heroic(tmp_path)
+    _library(root, [_game()])
+    _installed_legendary(root, "Turkey")
+    (root / "store/download-manager.json").write_text(json.dumps({
+        "finished": [_download(end_time=end_time)],
+    }))
+    assert read_heroic_games(tmp_path)[0].installed_at == 0
+
+
+@pytest.mark.parametrize("history", ["{broken", "[]", '{"finished": {}}',
+                                     '{"finished": [null, {}, {"params": []}]}'])
+def test_bad_download_history_does_not_hide_installed_games(tmp_path, history) -> None:
+    root = _heroic(tmp_path)
+    _library(root, [_game()])
+    _installed_legendary(root, "Turkey")
+    (root / "store/download-manager.json").write_text(history)
+    (game,) = read_heroic_games(tmp_path)
+    assert game.installed_at == 0
+
+
+def test_download_history_does_not_mark_an_uninstalled_game_as_new(tmp_path) -> None:
+    root = _heroic(tmp_path)
+    _library(root, [_game()])
+    (root / "store/download-manager.json").write_text(json.dumps({
+        "finished": [_download()],
+    }))
+    assert read_heroic_games(tmp_path) == ()
+    assert read_heroic_games(tmp_path, include_uninstalled=True)[0].installed_at == 0
 
 
 def test_a_half_written_cache_leaves_the_tab_empty_not_broken(tmp_path) -> None:
