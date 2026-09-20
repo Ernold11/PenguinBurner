@@ -30,7 +30,6 @@ class HeroicLibrarySource(WrapperLibrarySource):
     command_field_key = "wrapper_command"
     command_field_subtitle = "Wrapper command in the Heroic settings"
     command_field_inherited_subtitle = "Wrapper command — inherited from {source}"
-    command_noun = "wrapper command"
     _running_pids: tuple[int, ...] = ()
     _external_games: frozenset[str] = frozenset()
 
@@ -38,7 +37,7 @@ class HeroicLibrarySource(WrapperLibrarySource):
         return HeroicIntegrationManager(home=home, settings_path=settings_path)
 
     def probe_can_launch(self) -> bool:
-        return heroic_available()
+        return heroic_available(self._home)
 
     def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
         fields = super().fields(game)
@@ -56,7 +55,10 @@ class HeroicLibrarySource(WrapperLibrarySource):
             if ready else
             "Flatpak setup required: turn Wrap this game off and on, then use Play."
         )
-        return tuple(replace(field, subtitle=note) for field in fields)
+        return tuple(
+            replace(field, subtitle=note) if field.key == self.command_field_key else field
+            for field in fields
+        )
 
     def overlay_capability(self, row: LauncherGameRow) -> tuple[bool, str]:
         game = row.game
@@ -77,32 +79,40 @@ class HeroicLibrarySource(WrapperLibrarySource):
         """Deliver targets to the daemon and visibility to the loaded layer."""
         if setter != "set_game_overlay":
             return super().after_setting_write(game_id, setter)
-        row = self.manager.row(game_id)
-        if row is None:
+        return self._reapply_overlay((game_id,))
+
+    def after_bulk_write(self, setter: str, result: ApplyResult) -> ApplyResult | None:
+        if setter == "set_all_games_overlay":
+            return self._reapply_overlay(result.applied_game_ids)
+        return None
+
+    def _reapply_overlay(self, game_ids: tuple[str, ...]) -> ApplyResult | None:
+        if not game_ids:
             return None
         running = self._running_sessions()
         if running is None:
             return ApplyResult(
                 False, "Overlay saved, but the running game could not be checked for a live update."
             )
-        if game_id not in running.wrapped:
-            if game_id in running.external:
-                return ApplyResult(
-                    False,
-                    "Overlay saved; this game started without PenguinBurner. "
-                    "Close the game, then relaunch with Play in Game Library. "
-                    "Overlay visibility can change live after that.",
-                )
-            return None
+        wrapped = set(game_ids).intersection(running.wrapped)
+        external = set(game_ids).intersection(running.external)
+        messages: list[str] = []
+        if wrapped:
+            from overlay.state import write_overlay_override
 
-        from overlay.state import write_overlay_override
-
-        if not write_overlay_override(row.setting.overlay):
-            return ApplyResult(False, "Overlay saved, but live visibility update failed.")
-        return ApplyResult(
-            True,
-            f"Overlay switched {'on' if row.setting.overlay else 'off'} live (within one second).",
-        )
+            row = self.manager.row(next(iter(wrapped)))
+            if row is None or not write_overlay_override(row.setting.overlay):
+                return ApplyResult(False, "Overlay saved, but live visibility update failed.")
+            messages.append(
+                f"Overlay switched {'on' if row.setting.overlay else 'off'} live (within one second)."
+            )
+        if external:
+            messages.append(
+                "Overlay saved; a game started without PenguinBurner. "
+                "Close the game, then relaunch with Play in Game Library. "
+                "Overlay visibility can change live after that."
+            )
+        return ApplyResult(not external, " ".join(messages)) if messages else None
 
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Heroic to start a game. Returns (started, what to tell the user)."""
@@ -116,14 +126,17 @@ class HeroicLibrarySource(WrapperLibrarySource):
         return False, "FAILED to launch (heroic would not start the game)"
 
     def stop(self, game_id: str) -> tuple[bool, str]:
-        """Signal the game's PenguinBurner wrapper, which is the session itself."""
+        """Signal the wrapped game's surviving session members."""
         running = self._running_sessions()
         if running is None:
             return False, "FAILED to stop (could not tell what is running)"
         pids = running.wrapped.get(str(game_id), ())
         if not pids:
             return False, "FAILED to stop (no running session for this game)"
-        if stop_heroic_game(pids[0]):
+        # Handoffs can leave several identified successors. Stop every wrapped
+        # member, never an external launcher process or detached PB helper.
+        stopped = [stop_heroic_game(pid, str(game_id)) for pid in pids]
+        if all(stopped):
             return True, "stopping…"
         return False, "FAILED to stop (the wrapper would not take the signal)"
 

@@ -1716,3 +1716,34 @@ def test_launcher_refresh_runs_off_gui_thread_and_failure_restores_play(qapp, qt
     finally:
         release.set()
         panel.widget.close()
+
+
+@pytest.mark.parametrize("show", [True, False])
+def test_bulk_overlay_respects_renderer_support_and_enabled_scope(qapp, show):
+    from dataclasses import replace
+
+    from integrations.launchers.library import library_bulk_actions
+
+    steam, lutris = _steam_and_lutris()
+    for source in (steam, lutris):
+        original = source._games[0]
+        source._games = (
+            replace(original, enabled=True),
+            replace(original, game_id="unsupported", enabled=True, overlay_supported=False),
+            replace(original, game_id="disabled", enabled=False),
+        )
+        source._bulk = library_bulk_actions()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    confirmations = []
+    panel._confirm = lambda title, text: confirmations.append(text) or True
+    action, sources = next(
+        (action, sources) for action, sources in panel._bulk_entries
+        if action.key == ("overlay_all" if show else "overlay_none")
+    )
+    panel._bulk_apply(action, sources)
+    _finish_worker(qapp, panel, "_setting_thread")
+    for source, game_id in ((steam, "620"), (lutris, "27")):
+        expected = [game_id] + ([] if show else ["unsupported"])
+        assert source.manager.calls == [("set_all_games_overlay", expected, show)]
+    assert f"{2 if show else 4} " in confirmations[0]

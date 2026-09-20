@@ -15,6 +15,7 @@ from .library import (
     LauncherField,
     LauncherWriteState,
     LibraryGame,
+    library_bulk_actions,
 )
 from .wrapper_manager import ApplyResult, LauncherGameRow, WrapperManager
 
@@ -33,13 +34,11 @@ class WrapperLibrarySource:
     #: cannot live in the constructor the window builds tabs with.
     can_launch = False
 
-    #: The one field only this launcher has: where its wrapper command lives.
+    #: The launcher's wrapper command field.
     command_field_key = "command"
     #: Named as the launcher's own UI names it, with and without inheritance.
     command_field_subtitle = ""
     command_field_inherited_subtitle = "{name} — inherited from {source}"
-    #: How the library-wide confirmations refer to it.
-    command_noun = "launch command"
 
     def __init__(
         self,
@@ -94,6 +93,8 @@ class WrapperLibrarySource:
 
     def refresh(self, *, deep: bool = True) -> None:
         self.manager.refresh()
+        if deep and self.manager.compatibility is not None:
+            self.manager.compatibility.refresh()
         self._rows = tuple(self.manager.rows())
         # Renderer inspection belongs on the scan worker, never in games() or
         # selection handling: it walks a game's install directory. A deep
@@ -120,7 +121,8 @@ class WrapperLibrarySource:
             subtitle = self.command_field_inherited_subtitle.format(
                 name=self.command_field_key, source=row.source_label
             )
-        return (
+        compatibility = self.manager.compatibility
+        return ((compatibility.field(row.game),) if compatibility is not None else ()) + (
             LauncherField(
                 key=self.command_field_key,
                 kind=FIELD_TEXT,
@@ -139,35 +141,7 @@ class WrapperLibrarySource:
         return LauncherWriteState()
 
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
-        # Keys shared with the other launchers on purpose: the tab shows one
-        # "disable everything" and means it across the whole library.
-        return (
-            LauncherBulkAction(
-                key="enable_all",
-                label="Enable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=True,
-                affects="enabled",
-                confirm=(
-                    "Add the PenguinBurner wrapper to the launch command of "
-                    "{count} {games}?\n\nThe In-Game overlay stays off, and "
-                    "MangoHud is disabled in wrapped games. \"Disable "
-                    "PenguinBurner for all games\" restores each game's own "
-                    f"{self.command_noun}."
-                ),
-            ),
-            LauncherBulkAction(
-                key="disable_all",
-                label="Disable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=False,
-                affects="enabled",
-                confirm=(
-                    "Remove the PenguinBurner wrapper from {count} {games} and "
-                    f"restore their own {self.command_noun}?"
-                ),
-            ),
-        )
+        return library_bulk_actions()
 
     def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
         """Launchers can deliver supported changes to an existing session."""

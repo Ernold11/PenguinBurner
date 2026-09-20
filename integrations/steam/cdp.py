@@ -60,7 +60,6 @@ class SteamAppDetails:
     launch_options: str
     compat_tool_name: str
     compat_tool_display_name: str
-    compat_tool_priority: int
     platforms: tuple[str, ...]
 
 
@@ -434,8 +433,6 @@ class SteamCdpClient:
             "        compatToolDisplayName:"
             "          typeof details.strCompatToolDisplayName === 'string'"
             "            ? details.strCompatToolDisplayName : '',"
-            "        compatToolPriority: Number.isFinite(details.nCompatToolPriority)"
-            "          ? details.nCompatToolPriority : 0,"
             "        platforms: Array.isArray(details.vecPlatforms)"
             "          ? details.vecPlatforms : []"
             "      } : null);"
@@ -457,15 +454,10 @@ class SteamCdpClient:
         if not isinstance(value, dict):
             return None
         platforms = value.get("platforms")
-        try:
-            priority = int(value.get("compatToolPriority") or 0)
-        except (TypeError, ValueError):
-            priority = 0
         return SteamAppDetails(
             launch_options=str(value.get("launchOptions") or ""),
             compat_tool_name=str(value.get("compatToolName") or ""),
             compat_tool_display_name=str(value.get("compatToolDisplayName") or ""),
-            compat_tool_priority=priority,
             platforms=tuple(
                 str(platform).strip().lower()
                 for platform in platforms

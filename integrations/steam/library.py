@@ -50,7 +50,6 @@ class InstalledSteamGame:
     # explicit report that no compatibility tool is active.
     effective_compat_tool: str | None = None
     effective_compat_tool_display: str = ""
-    effective_compat_tool_priority: int = 0
     effective_platforms: tuple[str, ...] = ()
     # Steam's LastUpdated timestamp: set when the app is first installed and
     # refreshed on every update. The closest proxy to "install time". Defaulted

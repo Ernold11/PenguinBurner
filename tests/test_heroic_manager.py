@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 
@@ -41,6 +42,33 @@ def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
     assert "wrapperOptions" not in settings["Turkey"]
     row = manager.row("Turkey")
     assert row is not None and row.command == "game-performance"
+
+
+def test_stale_native_config_is_preserved_when_wrapping_flatpak_game(monkeypatch, tmp_path):
+    from integrations.heroic import manager as manager_module
+    from integrations.heroic import paths
+    from integrations.heroic.flatpak import wrapper_path
+
+    _home(tmp_path, game={'Turkey': {'wrapperOptions': [{'exe': 'existing', 'args': ''}]}})
+    native = tmp_path / '.config/heroic'
+    flatpak = tmp_path / paths.HEROIC_FLATPAK_DIRNAME
+    shutil.copytree(native, flatpak)
+    original = {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}
+    monkeypatch.setattr(paths, 'host_has_command', lambda _name: False)
+    monkeypatch.setattr(manager_module, 'ensure_integration', lambda _home: None)
+    manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / 'settings.json')
+    try:
+        manager.refresh()
+        assert manager.set_game_enabled('Turkey', True).ok
+        config = json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())
+        assert str(wrapper_path(tmp_path)) in json.dumps(config['Turkey']['wrapperOptions'])
+        assert {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()} == original
+        assert manager.set_game_enabled('Turkey', False).ok
+        assert json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())['Turkey'] == json.loads(
+            (native / 'GamesConfig/Turkey.json').read_text(),
+        )['Turkey']
+    finally:
+        paths.native_heroic_available.cache_clear()
 
 
 def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp_path):
@@ -256,7 +284,8 @@ def test_the_library_adapter_describes_the_game_the_tab_draws(tmp_path) -> None:
     assert game.subtitle == "Epic"
     assert game.installed_at == 0  # Heroic does not report an install timestamp.
     assert game.overlay_supported is True  # Proton translates everything to Vulkan
-    (field,) = source.fields(game)
+    (compatibility, field) = source.fields(game)
+    assert compatibility.key == "compat_tool"
     assert field.key == "wrapper_command"
     assert field.setter == "set_game_command"
     assert "inherited from Heroic global settings" in field.subtitle
@@ -472,7 +501,8 @@ def test_heroic_target_qt_edit_applies_saved_target_live(qapp, qtbot, tmp_path, 
     assert "--adaptive-target-fps" not in calls.pop()[0]
 
 
-def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch):
+@pytest.mark.parametrize("bulk", [False, True])
+def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch, bulk):
     from integrations.heroic import library_source
     from integrations.heroic.process import HeroicSessions
     from overlay.state import OVERLAY_OVERRIDE_ENV
@@ -498,9 +528,80 @@ def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, 
     qtbot.waitUntil(lambda: bool(panel._games), timeout=5000)
     panel._select_key("heroic:Turkey")
 
+    panel._confirm = lambda *_args: True
     for enabled in (True, False):
-        panel.overlay_switch.click()
+        if bulk:
+            action, sources = next(
+                (action, sources) for action, sources in panel._bulk_entries
+                if action.key == ("overlay_all" if enabled else "overlay_none")
+            )
+            panel._bulk_apply(action, sources)
+        else:
+            panel.overlay_switch.click()
         qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
         assert override.read_text() == ("1" if enabled else "0")
         assert _stored(tmp_path).overlay is enabled
         assert "live" in panel.status_label.text()
+
+
+@pytest.mark.parametrize("flatpak", [False, True])
+def test_bulk_overlay_preserves_settings_and_skips_unwrapped_games(tmp_path, monkeypatch, flatpak):
+    from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME
+
+    _home(tmp_path, app_names=("Turkey", "Other", "Disabled"))
+    if flatpak:
+        root = tmp_path / HEROIC_FLATPAK_DIRNAME
+        root.parent.mkdir(parents=True)
+        (tmp_path / ".config/heroic").rename(root)
+        monkeypatch.setattr("integrations.heroic.manager.ensure_integration", lambda home: None)
+    manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
+    manager.refresh()
+    assert manager.set_all_games_enabled(("Turkey", "Other"), True).ok
+    assert manager.set_game_mode("Turkey", GAME_MODE_ADAPTIVE).ok
+    assert manager.set_game_target_fps("Turkey", 72).ok
+    before = manager.row("Turkey").setting
+    disabled = manager.row("Disabled")
+    for enabled in (True, False):
+        result = manager.set_all_games_overlay(("Turkey", "Other", "Disabled"), enabled)
+        assert result.ok
+        assert result.applied_game_ids == ("Turkey", "Other")
+        for game_id in result.applied_game_ids:
+            row = manager.row(game_id)
+            assert row.setting.overlay is enabled
+            assert f"--pb-overlay={int(enabled)}" in row.command
+            assert "game-performance" in row.command
+        row = manager.row("Turkey")
+        assert (row.setting.mode, row.setting.target_fps, row.setting.gpu_uuid) == (
+            before.mode, before.target_fps, before.gpu_uuid,
+        )
+        assert row.setting.ingame_latency
+        assert manager.row("Disabled") == disabled
+    assert "PB_INGAME_LATENCY=1" in manager.row("Turkey").command
+
+
+@pytest.mark.parametrize("running_id", ["Turkey", "Other"])
+def test_bulk_overlay_live_update_uses_only_successfully_saved_games(tmp_path, monkeypatch, running_id):
+    from integrations.heroic.process import HeroicSessions
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    manager = _manager(tmp_path, app_names=("Turkey", "Other"))
+    assert manager.set_all_games_enabled(("Turkey", "Other"), True).ok
+    path = tmp_path / ".config/heroic/GamesConfig/Turkey.json"
+    path.write_text("{broken")
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    probes = []
+    def sessions():
+        probes.append(True)
+        return HeroicSessions(wrapped={running_id: (42,)})
+    monkeypatch.setattr(source, "_running_sessions", sessions)
+    override = tmp_path / "overlay-override"
+    override.write_text("0")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    result = manager.set_all_games_overlay(("Turkey", "Other"), True)
+    assert not result.ok and "1 game(s) updated" in result.message
+    assert result.applied_game_ids == ("Other",)
+    followup = source.after_bulk_write("set_all_games_overlay", result)
+    assert probes == [True]
+    assert (followup is not None) == (running_id == "Other")
+    assert override.read_text() == ("1" if running_id == "Other" else "0")
+    assert path.read_text() == "{broken"

@@ -147,7 +147,7 @@ class HeroicSessionRegressions(unittest.TestCase):
             with patch.object(sys, "argv", ["probe", tmp, GAME_KEY_ENV]), \
                  patch.object(Path, "read_bytes", side_effect=PermissionError), \
                  redirect_stdout(output):
-                exec(process._SESSION_PROBE, {})  # noqa: S102 - execute our fixed probe with mocked proc access
+                exec(process._SESSION_PROBE, {})
             self.assertEqual(json.loads(output.getvalue()), {"sessions": [], "external": [], "unreadable": [41]})
 
     def test_daemon_watches_recover_inaccessible_sessions_without_reviving_exits(self):
@@ -214,6 +214,7 @@ class HeroicSessionRegressions(unittest.TestCase):
                     f"{GAME_KEY_ENV}={key}\0PENGUIN_BURNER_TELEMETRY_SESSION={session}\0".encode()
                 )
                 (directory / "cmdline").write_bytes(b"/bin/sleep\0")
+                (directory / "stat").write_text(f"{pid} (sleep) S 1 0 0")
             (proc / "46").mkdir()  # process disappeared during the scan
             def run_probe(command, **kwargs):
                 command[-2] = str(proc)
@@ -270,7 +271,7 @@ launcher.main()
             else:
                 self.fail("session was not detected after exec")
             self.assertNotIn(b"--pb-game-id", Path(f"/proc/{child.pid}/cmdline").read_bytes())
-            self.assertTrue(process.stop_heroic_game(child.pid))
+            self.assertTrue(process.stop_heroic_game(child.pid, "ReviewProbe"))
             child.wait(timeout=5)
             sessions = process.probe_heroic_sessions()
             assert sessions is not None
@@ -282,6 +283,13 @@ launcher.main()
 
 
 class HeroicAvailabilityRegressions(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        discovery = patch.object(process, "heroic_config_root", return_value=Path(temporary.name))
+        discovery.start()
+        self.addCleanup(discovery.stop)
+
     def test_native_heroic_does_not_require_flatpak(self):
         with patch.object(process, "host_has_command", side_effect=lambda name: name == "heroic"), \
              patch.object(process, "run_on_host") as probe:

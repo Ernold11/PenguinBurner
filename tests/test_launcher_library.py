@@ -230,6 +230,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     tmp_path, monkeypatch
 ) -> None:
     from types import SimpleNamespace
+
     from integrations.lutris import library_source as lutris_source
 
     binary = tmp_path / "Game.x86_64"
@@ -244,7 +245,9 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     row = SimpleNamespace(
         game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)
     )
-    manager = SimpleNamespace(refresh=lambda: None, rows=lambda: [row])
+    manager = SimpleNamespace(
+        refresh=lambda: None, rows=lambda: [row], compatibility=None,
+    )
     source = lutris_source.LutrisLibrarySource(manager=manager)
     monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
     source.refresh()
@@ -569,7 +572,7 @@ def test_the_library_tab_never_names_a_launcher_in_its_code() -> None:
 
 def test_the_steam_adapter_carries_the_install_stamp_into_the_library_row() -> None:
     """Steam's LastUpdated is what the Recently installed sort orders on."""
-    from typing import cast
+    from typing import Any, cast
 
     from integrations.steam.library_source import SteamLibrarySource
 
@@ -639,11 +642,9 @@ class _SteamStub:
 
     def hot_reapply(self, app_id):
         self.reapplied.append(app_id)
-        return None
 
     def hot_reapply_overlay(self, app_id):
         self.overlays_reapplied.append(app_id)
-        return None
 
 
 def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
@@ -737,7 +738,7 @@ def test_a_proton_build_steam_will_not_list_is_still_shown() -> None:
 
     field = _field(source, _row(compat_tool="GE-Proton9-20"), "compat_tool")
 
-    assert ("GE-Proton9-20", "GE-Proton9-20") in field.choices
+    assert ("GE-Proton9-20", "GE-Proton9-20 (not listed)") in field.choices
     assert field.value == "GE-Proton9-20"
 
 
@@ -778,14 +779,17 @@ def test_lutris_needs_no_setup_because_it_owns_its_own_files() -> None:
 
 def test_launchers_sharing_a_bulk_key_mean_the_same_thing_by_it() -> None:
     """The tab merges by key, so two libraries are still one "disable all"."""
+    from integrations.heroic.library_source import HeroicLibrarySource
     from integrations.lutris.library_source import LutrisLibrarySource
     from integrations.steam.library_source import SteamLibrarySource
 
     steam = {a.key: a for a in SteamLibrarySource(manager=_SteamStub()).bulk_actions()}
     lutris = {a.key: a for a in LutrisLibrarySource().bulk_actions()}
 
+    heroic = {a.key: a for a in HeroicLibrarySource().bulk_actions()}
+    assert heroic == steam == lutris
     shared = set(steam) & set(lutris)
-    assert shared == {"enable_all", "disable_all"}
+    assert shared == {"enable_all", "disable_all", "overlay_all", "overlay_none"}
     for key in shared:
         assert steam[key].label == lutris[key].label
         assert steam[key].value == lutris[key].value

@@ -1621,6 +1621,7 @@ class GameLibraryPanel:
             game
             for game in self._games
             if game.launcher in wanted and (game.enabled or not action.enabled_only)
+            and (action.affects != "overlay" or not action.value or game.overlay_supported)
         ]
 
     def _bulk_would_change(self, action, sources) -> bool:
@@ -1689,6 +1690,12 @@ class GameLibraryPanel:
                         message = str(getattr(result, "message", "") or "")
                         if message:
                             messages.append(f"{source.launcher_id}: {message}")
+                        after_write = getattr(source, "after_bulk_write", None)
+                        if after_write is not None:
+                            followup = after_write(action.setter, result)
+                            if followup is not None:
+                                ok = followup.ok and ok
+                                messages.append(f"{source.launcher_id}: {followup.message}")
                 except Exception as error:  # noqa: BLE001 - launcher boundary
                     ok = False
                     messages.append(f"{source.launcher_id}: {type(error).__name__}: {error}")

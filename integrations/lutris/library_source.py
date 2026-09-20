@@ -27,7 +27,6 @@ class LutrisLibrarySource(WrapperLibrarySource):
 
     command_field_key = "prefix_command"
     command_field_subtitle = "prefix_command in the Lutris config"
-    command_noun = "launch command"
 
     def build_manager(self, *, home, settings_path) -> LutrisIntegrationManager:
         return LutrisIntegrationManager(home=home, settings_path=settings_path)

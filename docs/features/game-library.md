@@ -28,6 +28,21 @@ Discovery reads the library; wrapping a game changes its launch command.
 | Per-game target | Override the system-wide Adaptive FPS target; off follows that target. |
 | Overlay | Show the in-game HUD. Adaptive keeps required timing markers active when the HUD is hidden. |
 | Command | View or edit the launch command, Lutris prefix, or Heroic wrapper row. |
+| Compatibility tool | Choose the Wine/Proton version for a Windows game in Steam, Heroic, or native Lutris. Changes take effect on the next launch. |
+
+The compatibility picker uses the launcher's available tools. **Heroic default**
+and **Lutris default** remove the per-game override and restore inherited settings.
+Install additional builds through the launcher's own version manager, then select
+**Rescan** in Game Library. Lutris also offers its managed **GE-Proton (Latest)**
+choice, which Lutris may download on launch. Native Linux games do not need a
+compatibility tool.
+
+Close the launcher's game settings window before changing versions here, so its
+cached settings cannot overwrite your choice. For Heroic, use **Play** in Game
+Library afterward: it refreshes an idle launcher when the version changes.
+Both native and Flatpak Heroic are supported; the Flatpak version lists tools
+visible inside its sandbox. A missing tool remains visible as the saved selection
+but cannot be newly selected.
 
 Existing launch options, command prefixes and wrapper rows are preserved.
 Adaptive FPS targets update live for running wrapped Steam, Lutris, and Heroic
@@ -45,8 +60,12 @@ Sort by launcher, name, recently played, or most played. **Rescan** refreshes
 discovery without clearing settings. Scans and bulk writes run in the background.
 
 The **All games** menu enables or disables wrapping, or shows or hides overlays
-for enabled games. Bulk enable keeps the overlay off and preserves saved modes.
-Each action shows the affected count before confirmation.
+for enabled games across Steam, Lutris, and native or Flatpak Heroic. Bulk enable
+preserves saved modes and overlay choices; new games default to overlay off.
+Show skips games whose renderer cannot display the overlay. Other per-game
+settings stay intact, and failures are reported while remaining games update.
+Each action shows the affected count before confirmation. Overlay changes reach
+already wrapped Steam and Heroic sessions live; Lutris uses them on next launch.
 
 ## Runtime behavior
 

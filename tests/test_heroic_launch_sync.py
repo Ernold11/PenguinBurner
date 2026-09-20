@@ -57,13 +57,23 @@ def test_stale_launcher_restarts_before_launch_and_fresh_receipt_survives_restar
     assert events[-2:] == ['stop', command]
 
 
-def test_changed_settings_invalidate_same_running_launcher(tmp_path, config, monkeypatch):
+@pytest.mark.parametrize('setting', ['wrapperOptions', 'wineVersion', 'global_wine'])
+def test_changed_settings_invalidate_same_running_launcher(tmp_path, config, monkeypatch, setting):
     state = {'launchers': {'42': 'boot:new'}, 'busy': False}
     receipt = tmp_path / '.config/PenguinBurner/heroic-launch-receipt.json'
     receipt.parent.mkdir()
     receipt.write_text(json.dumps({'root': str(config), 'launchers': state['launchers'],
                                    'settings': sync._settings_fingerprint(config, tmp_path)}))
-    (config / 'GamesConfig/Turkey.json').write_text(json.dumps({'Turkey': {'wrapperOptions': []}}))
+    if setting == 'global_wine':
+        path = config / 'config.json'
+        document = json.loads(path.read_text())
+        document['defaultSettings']['wineVersion'] = {'bin': '/new/proton', 'type': 'proton', 'name': 'New'}
+    else:
+        path = config / 'GamesConfig/Turkey.json'
+        document = json.loads(path.read_text())
+        document['Turkey'][setting] = ([] if setting == 'wrapperOptions' else
+                                       {'bin': '/new/proton', 'type': 'proton', 'name': 'New'})
+    path.write_text(json.dumps(document))
     stops = []
     def probe(root, stop=None):
         if stop:

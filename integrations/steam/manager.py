@@ -277,7 +277,6 @@ class SteamIntegrationManager:
             game,
             effective_compat_tool=details.compat_tool_name,
             effective_compat_tool_display=details.compat_tool_display_name,
-            effective_compat_tool_priority=details.compat_tool_priority,
             effective_platforms=details.platforms,
         )
 

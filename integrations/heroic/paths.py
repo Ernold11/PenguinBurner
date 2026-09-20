@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
 
 from integrations.launchers.host_paths import host_config_home, safe_config_name
+from integrations.launchers.host_process import host_has_command
 
 HEROIC_DIRNAME = "heroic"
 #: The Flatpak build keeps the same tree under its own per-app config home.
@@ -47,15 +49,22 @@ def heroic_config_root(home: Path | None = None) -> Path:
     """Heroic's config directory: everything this integration reads.
 
     The native and Flatpak builds keep the same tree in two places, so both are
-    offered and the one that actually has a config wins. An explicit ``home``
-    is the test seam and wins over the environment, so a test cannot be broken
-    by whatever XDG variables the host session exports.
+    offered. When both have configuration, prefer native only while its
+    executable is installed; stale native settings must not shadow Flatpak.
+    An explicit ``home`` wins over the environment, so tests are independent of
+    whatever XDG variables the host session exports.
     """
     candidates = _config_roots(home)
-    for candidate in candidates:
-        if (candidate / CONFIG_FILENAME).is_file():
-            return candidate
-    return candidates[0]
+    configured = [path for path in candidates if (path / CONFIG_FILENAME).is_file()]
+    if len(configured) == 2 and not native_heroic_available():
+        return configured[1]
+    return configured[0] if configured else candidates[0]
+
+
+@lru_cache(maxsize=1)
+def native_heroic_available() -> bool:
+    """Cache host discovery across row/path reads; refresh clears it per scan."""
+    return host_has_command("heroic")
 
 
 def _config_roots(home: Path | None) -> tuple[Path, ...]:

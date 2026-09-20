@@ -92,12 +92,12 @@ def command_entries(command: str, previous: object = ()) -> list[dict]:
     return head + kept
 
 
-def read_game_config(app_name: str, home: Path | None = None) -> dict:
+def read_game_config(app_name: str, home: Path | None = None, *, strict: bool = False) -> dict:
     """The whole game config document, or an empty one when it has none."""
     path = game_config_path(app_name, home)
     if path is None:
         return {}
-    return _read_json(path)
+    return _read_json(path, strict=strict)
 
 
 def read_game_entries(app_name: str, home: Path | None = None) -> list[dict] | None:
@@ -200,7 +200,7 @@ def write_wrapper_command(
     return CommandWrite(True, landed)
 
 
-def _read_json(path: Path) -> dict:
+def _read_json(path: Path, *, strict: bool = False) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except FileNotFoundError:
@@ -211,4 +211,6 @@ def _read_json(path: Path) -> dict:
         raise HeroicConfigError(f"cannot read {path.name}: {error}") from error
     except json.JSONDecodeError as error:
         raise HeroicConfigError(f"{path.name} is not valid JSON: {error}") from error
+    if strict and not isinstance(payload, dict):
+        raise HeroicConfigError(f"{path.name} must contain a settings object.")
     return payload if isinstance(payload, dict) else {}

@@ -60,7 +60,6 @@ class _FakeCdpClient:
                 if tool_name == "proton_experimental"
                 else tool_name
             ),
-            compat_tool_priority=details.compat_tool_priority,
             platforms=details.platforms,
         )
 
@@ -125,7 +124,6 @@ def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationMa
             launch_options="gamemoderun %command%",
             compat_tool_name="proton_experimental",
             compat_tool_display_name="Proton Experimental",
-            compat_tool_priority=75,
             platforms=("windows", "linux"),
         )
     }
@@ -161,7 +159,7 @@ def test_library_uses_one_batch_and_keeps_cached_details_for_missing_apps(manage
     fresh = SteamAppDetails(
         launch_options='env TITLE="other game" %command%',
         compat_tool_name="GE-Proton10-34", compat_tool_display_name="GE-Proton10-34",
-        compat_tool_priority=75, platforms=("windows",),
+        platforms=("windows",),
     )
     calls = []
 
@@ -185,7 +183,6 @@ def test_refresh_marks_native_only_when_steam_api_reports_no_compat_tool(
         launch_options="gamemoderun %command%",
         compat_tool_name="",
         compat_tool_display_name="",
-        compat_tool_priority=0,
         platforms=("windows", "linux"),
     )
 
