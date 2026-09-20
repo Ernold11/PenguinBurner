@@ -1,0 +1,73 @@
+name: Code quality
+
+# Required checks must run on every PR, including docs-only changes, so a
+# workflow path filter cannot leave a required status permanently pending.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python quality and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PENGUIN_BURNER_REQUIRE_DAEMON: '1'
+      PENGUIN_BURNER_REQUIRE_NATIVE_LAYER: '1'
+      PENGUIN_BURNER_REQUIRE_NVAPI_SHIM: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install build and analysis dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep cloc cmake ninja-build libvulkan-dev g++-mingw-w64-x86-64 libegl1 libopengl0 libxkbcommon0
+          cargo install tokei --locked --version 14.0.0
+          mkdir -p "$RUNNER_TEMP/scc"
+          cd "$RUNNER_TEMP/scc"
+          curl --fail --location --retry 3 --remote-name https://github.com/boyter/scc/releases/download/v3.7.0/scc_Linux_x86_64.tar.gz
+          curl --fail --location --retry 3 --remote-name https://github.com/boyter/scc/releases/download/v3.7.0/checksums.txt
+          grep ' scc_Linux_x86_64.tar.gz$' checksums.txt | sha256sum --check --strict
+          tar -xzf scc_Linux_x86_64.tar.gz scc
+          sudo install -m755 scc /usr/local/bin/scc
+      - name: Build daemon for Python socket integration tests
+        run: cargo build --release --locked --manifest-path burnerd/Cargo.toml
+      - name: Install project and pinned quality tools
+        run: python -m pip install -r requirements-quality.txt '.[test]'
+      - name: Blocking static analysis
+        run: scripts/check-feature-static-analysis.sh
+      - name: Full Python suite including daemon and Qt tests
+        run: |
+          test -x burnerd/target/release/penguin-burnerd
+          python -m pytest tests/ -q -rs
+
+  rust:
+    name: Rust quality and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: burnerd
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis tools
+        run: |
+          rustup component add rustfmt clippy
+          cargo install cargo-deny --locked --version 0.19.9
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy with warnings as errors
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Rust tests
+        run: cargo test --locked
+      - name: Dependency advisories and licenses
+        run: cargo deny --locked check

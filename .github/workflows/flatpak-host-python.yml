@@ -8,40 +8,16 @@ name: Flatpak host-python compatibility
 
 on:
   pull_request:
-    paths:
-      - runtime/**
-      - auto_uv/**
-      - cli/**
-      - common/**
-      - drivers/**
-      - overlay/**
-      - profiles/**
-      - curve_editors/**
-      - ui/features/curves/**
-      - pyproject.toml
-      - scripts/check-flatpak-host-python.sh
-      - .github/workflows/flatpak-host-python.yml
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - runtime/**
-      - auto_uv/**
-      - cli/**
-      - common/**
-      - drivers/**
-      - overlay/**
-      - profiles/**
-      - curve_editors/**
-      - ui/features/curves/**
-      - pyproject.toml
-      - scripts/check-flatpak-host-python.sh
-      - .github/workflows/flatpak-host-python.yml
   schedule:
     - cron: "52 6 * * 1"
   workflow_dispatch:
 
 jobs:
   check:
+    name: Host Python (${{ matrix.scenario }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

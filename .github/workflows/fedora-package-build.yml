@@ -7,33 +7,18 @@ name: Fedora package build
 
 on:
   pull_request:
-    paths:
-      - packaging/rpm/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-fedora-package-build.sh
-      - .github/workflows/fedora-package-build.yml
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - packaging/rpm/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-fedora-package-build.sh
-      - .github/workflows/fedora-package-build.yml
   schedule:
     - cron: "47 6 * * 1"
   workflow_dispatch:
 
 jobs:
   build:
+    name: Fedora package (${{ matrix.scenario }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

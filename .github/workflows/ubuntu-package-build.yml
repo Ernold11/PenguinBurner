@@ -8,33 +8,18 @@ name: Ubuntu package build
 
 on:
   pull_request:
-    paths:
-      - packaging/debian/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-ubuntu-package-build.sh
-      - .github/workflows/ubuntu-package-build.yml
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - packaging/debian/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-ubuntu-package-build.sh
-      - .github/workflows/ubuntu-package-build.yml
   schedule:
     - cron: "32 7 * * 1"
   workflow_dispatch:
 
 jobs:
   build:
+    name: Ubuntu package (${{ matrix.scenario }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
