@@ -86,9 +86,9 @@ class HeroicLibrarySource(WrapperLibrarySource):
     # -- launching -------------------------------------------------------------
 
     def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
-        """Send visibility changes to the layer already loaded by the wrapper."""
+        """Deliver targets to the daemon and visibility to the loaded layer."""
         if setter != "set_game_overlay":
-            return None
+            return super().after_setting_write(game_id, setter)
         row = self.manager.row(game_id)
         if row is None:
             return None

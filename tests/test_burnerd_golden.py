@@ -399,12 +399,13 @@ def _short_game(seconds: float = 0.35) -> "subprocess.Popen[bytes]":
     )
 
 
-def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon):
+@pytest.mark.parametrize("reapply", [False, True])
+def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon, reapply):
     daemon = make_daemon()
     standing = _runtime_spec(gpu_uuid="GPU-standing")
     game_spec = _runtime_spec(gpu_uuid="GPU-game")
     apply_runtime_spec(standing, socket_path=daemon.socket_path)
-    game = _short_game()
+    game = _short_game(1.0)
     try:
         result = start_game_runtime_spec(
             game_spec,
@@ -422,6 +423,15 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
             "standing_profile_id": "",
             "standing_runtime_mode": "stock",
         }
+        if reapply:
+            reapplied = start_game_runtime_spec(
+                game_spec,
+                watch_pid=game.pid,
+                app_id="1089130",
+                socket_path=daemon.socket_path,
+            )
+            assert reapplied["started"] is True
+            assert daemon_status(socket_path=daemon.socket_path)["game_runtime"] == status["game_runtime"]
         game.wait(timeout=5)
         assert _wait_until(
             lambda: "game_runtime"

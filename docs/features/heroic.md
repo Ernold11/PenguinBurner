@@ -53,6 +53,12 @@ field resumes inheritance from Heroic's global wrappers.
 
 ## Overlay and Adaptive
 
+Changing the **Per-game target** FPS also updates an already running Adaptive
+session without relaunching the game. Turning the override off applies the
+system-wide target. The controller still waits for sustained headroom before
+lowering the tier. If the live update fails, the target stays saved and the
+Game Library reports the failure; it does not claim the running target changed.
+
 The **In-Game overlay** switch shows or hides the overlay in a running wrapped
 game within about one second, without restarting Heroic or the game. The
 setting is also saved for future launches. If the game started without the
