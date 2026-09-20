@@ -1,7 +1,7 @@
 """Adapt Lutris's library and prefix_command to the shared wrapper manager.
 
-Commands resolve across game, runner and system YAML. Changes apply at the
-next launch; Lutris has no live-apply API or account layer."""
+Commands resolve across game, runner and system YAML for the next launch.
+The shared library adapter applies live profile and overlay changes."""
 
 from __future__ import annotations
 
@@ -22,7 +22,12 @@ from .config_store import (
     write_prefix_command,
 )
 from .library import InstalledLutrisGame, read_lutris_games
-from .paths import lutris_installed, runner_config_path, system_config_path
+from .paths import (
+    lutris_installation,
+    lutris_installed,
+    runner_config_path,
+    system_config_path,
+)
 from .settings import LUTRIS_GAME_SETTINGS_STORE
 
 
@@ -43,6 +48,10 @@ class LutrisIntegrationManager(WrapperManager):
             LutrisCompatibility(home),
             guidance="Applies on the next launch. Close Lutris's game settings before editing here.",
         )
+
+    @property
+    def installation(self):
+        return lutris_installation(self._home)
 
     @property
     def available(self) -> bool:

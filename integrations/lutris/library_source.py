@@ -40,7 +40,7 @@ class LutrisLibrarySource(WrapperLibrarySource):
         return LutrisIntegrationManager(home=home, settings_path=settings_path)
 
     def probe_can_launch(self) -> bool:
-        return lutris_available()
+        return lutris_available(self._home)
 
     def overlay_capability(self, row: LauncherGameRow) -> tuple[bool, str]:
         game = row.game
@@ -73,8 +73,8 @@ class LutrisLibrarySource(WrapperLibrarySource):
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Lutris to start a game. Returns (started, what to tell the user)."""
         if not self.can_launch:
-            return False, "FAILED to launch (lutris not on PATH)"
-        if launch_lutris_game(game_id):
+            return False, "FAILED to launch (selected Lutris installation is unavailable)"
+        if launch_lutris_game(game_id, home=self._home):
             return True, "launching via Lutris…"
         return False, "FAILED to launch (lutris would not start the game)"
 

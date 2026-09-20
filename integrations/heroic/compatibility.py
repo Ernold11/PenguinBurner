@@ -14,9 +14,13 @@ from overlay.telemetry.steam_game_setup import default_steamapps_dirs
 
 from . import compat_probe
 from .config_store import HeroicConfigError, read_game_config
-from .flatpak import APP_ID, uses_flatpak
 from .library import InstalledHeroicGame
-from .paths import game_config_path, global_config_path, heroic_config_root
+from .paths import (
+    game_config_path,
+    global_config_path,
+    heroic_config_root,
+    heroic_installation,
+)
 
 
 def wine_settings(app_name: str, home: Path | None = None) -> tuple[dict, dict]:
@@ -47,8 +51,7 @@ class HeroicCompatibility:
             records = compat_probe.discover(request)
         else:
             script = Path(compat_probe.__file__).read_text()
-            command = (["flatpak", "run", "--command=python3", APP_ID]
-                       if uses_flatpak(self.home) else ["/usr/bin/python3"])
+            command = heroic_installation(self.home).python_command()
             result = run_on_host([*command, "-c", script, json.dumps(request)], capture=True, timeout=10)
             if result is None or result.returncode:
                 raise HeroicConfigError("Could not discover Heroic's compatibility tools. Rescan to retry.")

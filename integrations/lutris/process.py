@@ -11,13 +11,15 @@ launcher, and is solved once in integrations/launchers/host_process.py.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from integrations.launchers.host_process import (
-    host_has_command,
     host_pgrep,
     host_terminate,
     start_on_host,
 )
+
+from .paths import lutris_installation
 
 #: Lutris runs every game through this, the way Steam runs one through reaper.
 #: It is exec'd as
@@ -37,17 +39,17 @@ _WRAPPER_RE = re.compile(rf"{re.escape(WRAPPER_NAME)}:?\s+(.*)$")
 _AFTER_TITLE_RE = re.compile(r"^(\s+\d+\s+\d+(\s|$)|\s*$)")
 
 
-def lutris_available() -> bool:
+def lutris_available(home: Path | None = None) -> bool:
     """Whether the Lutris CLI is reachable, which is what launching needs.
 
     Distinct from having a Lutris library: a machine can carry the database of
     a Lutris that is no longer installed, and those games are still worth
     listing and configuring -- just not startable.
     """
-    return host_has_command("lutris")
+    return lutris_installation(home).command() is not None
 
 
-def launch_lutris_game(game_id: str) -> bool:
+def launch_lutris_game(game_id: str, *, home: Path | None = None) -> bool:
     """Ask Lutris to start a game (detached).
 
     ``lutris:rungameid/<id>`` takes the numeric database id, which is the same
@@ -57,7 +59,8 @@ def launch_lutris_game(game_id: str) -> bool:
     game_id = str(game_id).strip()
     if not game_id.isdigit():
         return False
-    return start_on_host(["lutris", f"lutris:rungameid/{game_id}"])
+    command = lutris_installation(home).command(f"lutris:rungameid/{game_id}")
+    return command is not None and start_on_host(command)
 
 
 def title_from_wrapper_line(line: str, known_titles) -> str | None:

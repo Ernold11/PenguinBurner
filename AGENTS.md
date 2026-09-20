@@ -90,6 +90,11 @@ Anything that needs root belongs behind its socket API.
   do not add launcher-specific overlay writers or silently save for next launch.
   Bulk results must report successfully saved game IDs. Extend the registered
   launcher contract tests, including unknown/unwrapped sessions and failures.
+- Native and Flatpak variants must use `LauncherInstallation` and the shared
+  installation selector/runtime bridge in `integrations/launchers/`. Discovery,
+  settings, compatibility probes and launch commands must target that same
+  installation. Keep only launcher-specific paths and config formats in adapters;
+  test coexistence, missing executables and sandbox preflight failures.
 - Preserve visible integrations and saved configuration unless removal or
   migration is explicitly part of the request.
 - If overlay-visible fields change, keep Python formatting and the native layer

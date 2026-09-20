@@ -74,3 +74,12 @@ def _no_detached_launch_processes(monkeypatch):
     monkeypatch.setattr(
         launcher, "spawn_detached_drainer", lambda env, path, session_pid=None: None
     )
+
+
+@pytest.fixture(autouse=True)
+def _launcher_command_cache():
+    from integrations.launchers.installation import native_command
+
+    native_command.cache_clear()
+    yield
+    native_command.cache_clear()

@@ -292,6 +292,8 @@ def test_penguinburner_flatpak_reads_lutris_from_the_host_home(
         "XDG_CONFIG_HOME",
         str(tmp_path / ".var/app/io.github.jpietek.PenguinBurner/config"),
     )
+    from integrations.launchers import installation
+    monkeypatch.setattr(installation, "host_command_path", lambda name: "/usr/bin/" + name)
     host_config = tmp_path / ".config" / "lutris"
     host_config.mkdir(parents=True)
 

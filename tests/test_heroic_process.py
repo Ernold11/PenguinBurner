@@ -10,24 +10,24 @@ import sys
 import pytest
 
 from integrations.heroic import paths, process
+from integrations.launchers import installation
 
 
 @pytest.fixture(autouse=True)
 def isolated_installation(tmp_path, monkeypatch):
-    resolver = paths.heroic_config_root
-    monkeypatch.setattr(process, "heroic_config_root", lambda home=None: resolver(home or tmp_path))
-    monkeypatch.setattr(paths, "host_has_command", lambda name: process.host_has_command(name))
-    paths.native_heroic_available.cache_clear()
+    resolver = paths.heroic_installation
+    monkeypatch.setattr(process, "heroic_installation", lambda home=None: resolver(home or tmp_path))
+    installation.native_command.cache_clear()
     yield
-    paths.native_heroic_available.cache_clear()
+    installation.native_command.cache_clear()
 
 
 def _installed(monkeypatch, *, native: bool = True):
     monkeypatch.setattr(
-        process, "host_has_command", lambda name: native or name == "flatpak"
+        installation, "host_command_path", lambda name: name if native else None
     )
     monkeypatch.setattr(
-        process, "run_on_host", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
+        installation, "run_on_host", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
     )
 
 
@@ -237,7 +237,7 @@ def test_flatpak_config_does_not_launch_an_unconfigured_native_install(tmp_path,
     root.mkdir(parents=True)
     (root / 'config.json').write_text('{}')
     command = process.launch_command('legendary', 'Turkey', home=tmp_path)
-    assert command is not None and command[:3] == ['flatpak', 'run', process.FLATPAK_APP_ID]
+    assert command is not None and command[:3] == ['flatpak', 'run', "com.heroicgameslauncher.hgl"]
 
 
 def test_missing_selected_executable_never_falls_back_to_other_settings(tmp_path, monkeypatch):

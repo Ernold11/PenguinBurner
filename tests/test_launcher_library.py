@@ -236,11 +236,11 @@ def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
     source = lutris_source.LutrisLibrarySource(home=tmp_path)
     assert source.can_launch is False  # not probed while the window builds
 
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: True)
     source.refresh()
     assert source.can_launch is True
 
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: False)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: False)
     source.refresh()
     assert source.can_launch is False
 
@@ -268,7 +268,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
         refresh=lambda: None, rows=lambda: [row], compatibility=None,
     )
     source = lutris_source.LutrisLibrarySource(manager=manager)
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: True)
     source.refresh()
     assert source.games()[0].overlay_supported is False
 

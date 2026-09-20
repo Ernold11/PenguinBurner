@@ -23,7 +23,7 @@ from integrations.launchers.host_process import (
 from integrations.launchers.library import LaunchNotStartedError
 
 from .config_store import entries_command, read_global_entries
-from .paths import heroic_config_root
+from .paths import heroic_config_root, heroic_installation
 
 _RESTART_TIMEOUT_S = 10.0
 
@@ -161,12 +161,12 @@ def _settings_fingerprint(root: Path, home: Path | None) -> str:
         )
     # Installing a new Flatpak payload may also introduce filesystem grants
     # that an already-running sandbox has not received.
-    base = home if home is not None else Path.home()
-    wrapper = base / ".var/app/com.heroicgameslauncher.hgl/data/penguin-burner/PENGUIN_BURNER"
+    installation = heroic_installation(home)
+    wrapper = Path(installation.wrapper)
     payload = {
         "default": global_command, "games": commands,
         "default_wine": default_wine, "wine_versions": versions,
-        "flatpak_runtime": wrapper.read_text() if wrapper.is_file() else "",
+        "flatpak_runtime": wrapper.read_text() if installation.flatpak and wrapper.is_file() else "",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 

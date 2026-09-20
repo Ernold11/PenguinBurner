@@ -23,11 +23,13 @@ def inject_wrapper(
     launcher_id: str,
     game_id: str,
     ingame_latency: bool = False,
+    executable: str = "PENGUIN_BURNER",
 ) -> str:
     """Put our tokens in front of whatever the user already had there."""
     base = strip_penguin_burner_tokens(command or "")
     tokens = wrapper_tokens(
         overlay=overlay,
+        executable=executable,
         game_key=game_key(launcher_id, game_id),
         # With the overlay on the launcher turns the markers on by itself, so
         # writing the opt-in as well would only be noise in the command.

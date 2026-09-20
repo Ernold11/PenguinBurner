@@ -518,6 +518,7 @@ def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
         lambda command, **kwargs: launched.append(command),
     )
     from integrations.steam.process import launch_steam_game
+    monkeypatch.setattr("integrations.steam.process.steam_matches_installation", lambda home: True)
 
     assert launch_steam_game("3606110")
     assert launched == [["/usr/bin/steam", "-applaunch", "3606110"]]

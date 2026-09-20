@@ -205,3 +205,40 @@ def test_popular_linux_gaming_launch_chains_survive_pb_round_trip(
     # Toggling PB visualization only changes PB's own flag.
     overlay_off = inject_launch_options(injected, overlay=False)
     assert overlay_off == injected.replace("--pb-overlay=1", "--pb-overlay=0")
+
+
+@pytest.mark.parametrize('original', ['gamescope -- %command% -arg', 'bash -c \'%command% -arg\'', ''])
+def test_flatpak_wrapper_can_be_toggled_repeatedly(original):
+    wrapper = '/home/player/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    enabled = inject_launch_options(original, overlay=True, executable=wrapper)
+    assert injection_state(enabled).wrapped and injection_state(enabled).overlay
+    hidden = inject_launch_options(enabled, executable=wrapper)
+    assert hidden.count(wrapper) == 1
+    assert injection_state(hidden).wrapped and not injection_state(hidden).overlay
+    assert remove_injection(hidden) == original
+
+
+def test_flatpak_wrapper_with_spaces_round_trips_outside_script():
+    wrapper = '/home/space home/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    enabled = inject_launch_options('%command% -arg', executable=wrapper)
+    assert injection_state(enabled).wrapped
+    assert inject_launch_options(enabled, executable=wrapper) == enabled
+    assert remove_injection(enabled) == '%command% -arg'
+
+
+def test_quoted_script_with_unsafe_wrapper_path_is_rejected():
+    with pytest.raises(ValueError, match='quoted %command%'):
+        inject_launch_options("bash -c '%command%'", executable='/home/space home/PENGUIN_BURNER')
+
+
+@pytest.mark.parametrize('original', [
+    'PENGUIN_BURNER --pb-overlay=1 --pb-custom=keep %command%',
+    "sh -c 'PENGUIN_BURNER --pb-overlay=1 --pb-custom=keep %command%'",
+])
+def test_manual_flatpak_wrapper_retargets_without_losing_flags(original):
+    from integrations.steam.launch_options import retarget_wrapper
+
+    wrapper = '/home/player/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    result = retarget_wrapper(original, wrapper)
+    assert result == original.replace('PENGUIN_BURNER', wrapper)
+    assert retarget_wrapper(result, wrapper) == result

@@ -10,7 +10,6 @@ from integrations.launchers.compatibility import CompatibilityTools
 from integrations.launchers.wrapper_manager import (
     CommandWrite,
     EffectiveCommand,
-    LauncherGameRow,
     WrapperManager,
 )
 
@@ -22,9 +21,8 @@ from .config_store import (
     read_global_entries,
     write_wrapper_command,
 )
-from .flatpak import ensure_integration, sandbox_command, uses_flatpak
 from .library import InstalledHeroicGame, read_heroic_games
-from .paths import game_config_path, heroic_installed, native_heroic_available
+from .paths import game_config_path, heroic_installation, heroic_installed
 from .settings import HEROIC_GAME_SETTINGS_STORE
 
 
@@ -47,20 +45,17 @@ class HeroicIntegrationManager(WrapperManager):
         )
         self._global_entries: list[dict] | None = None
 
-    def refresh(self) -> tuple[LauncherGameRow, ...]:
-        native_heroic_available.cache_clear()
-        # Heroic's global wrappers are one file every game without its own
-        # falls back to, so it is read once a pass instead of once a game.
-        # A settings change never touches it; the next scan picks up a change
-        # the user made in Heroic itself.
-        self._global_entries = read_global_entries(self._home)
-        return super().refresh()
+    @property
+    def installation(self):
+        return heroic_installation(self._home)
 
     @property
     def available(self) -> bool:
         return heroic_installed(self._home)
 
     def read_games(self) -> tuple[InstalledHeroicGame, ...]:
+        # Read inherited wrappers once per scan, after the shared cache reset.
+        self._global_entries = read_global_entries(self._home)
         return read_heroic_games(self._home)
 
     def read_effective(self, game: InstalledHeroicGame) -> EffectiveCommand:
@@ -91,22 +86,11 @@ class HeroicIntegrationManager(WrapperManager):
 
     def write_command(self, game: InstalledHeroicGame, command: str | None) -> CommandWrite:
         try:
-            if command and uses_flatpak(self._home):
-                command = sandbox_command(command, self._home)
             return write_wrapper_command(
                 game.game_id, command, self._home, global_entries=self._global_entries
             )
         except (HeroicConfigError, ValueError) as error:
             return CommandWrite(False, "", str(error))
-
-    def _ensure_wrapper_installed(self) -> str:
-        if not uses_flatpak(self._home):
-            return super()._ensure_wrapper_installed()
-        try:
-            ensure_integration(self._home)
-        except (OSError, RuntimeError) as error:
-            return str(error)
-        return ""
 
     def _describe(self, game, setting) -> str:
         description = super()._describe(game, setting)
