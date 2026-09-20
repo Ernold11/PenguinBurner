@@ -54,6 +54,14 @@ in an already wrapped game.
 Steam supports live mode, target, and overlay updates
 for a running wrapped game; changing its GPU requires a relaunch.
 
+Changing a running wrapped Heroic or Lutris game's Auto-UV mode applies it live,
+including switching between Adaptive and a fixed tier. PenguinBurner verifies
+the running mode with the daemon before reporting success. If the live update
+fails or cannot be confirmed, the selection remains saved for the next launch
+and the status reports the problem; a saved choice alone is not a live readout.
+Changing the target GPU still requires a relaunch.
+
+
 ## Library controls
 
 Sort by launcher, name, recently played, or most played. **Rescan** refreshes

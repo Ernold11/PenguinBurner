@@ -605,3 +605,63 @@ def test_bulk_overlay_live_update_uses_only_successfully_saved_games(tmp_path, m
     assert (followup is not None) == (running_id == "Other")
     assert override.read_text() == ("1" if running_id == "Other" else "0")
     assert path.read_text() == "{broken"
+
+
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+@pytest.mark.parametrize("accepted", [True, False])
+def test_launcher_mode_qt_edit_reports_verified_runtime(qapp, qtbot, tmp_path, monkeypatch, accepted, launcher):
+    from integrations.launchers import runtime_profile
+    from runtime import daemon_client
+    from ui.components.game_library_panel import GameLibraryPanel
+    from ui.qt import import_qt
+
+    if launcher == "heroic":
+        manager = _manager(tmp_path)
+        game_id = "Turkey"
+        source = HeroicLibrarySource(manager, home=tmp_path)
+    else:
+        from test_lutris_manager import _manager as lutris_manager
+
+        from integrations.lutris.library_source import LutrisLibrarySource
+
+        manager = lutris_manager(tmp_path)
+        game_id = "27"
+        source = LutrisLibrarySource(manager, home=tmp_path)
+    assert manager.set_game_enabled(game_id, True).ok
+    monkeypatch.setattr(source, "probe_can_launch", lambda: False)
+    status = {
+        "active_job": {"runtime_mode": "adaptive", "gpu_uuid": "GPU-1"},
+        "game_runtime": {"active": True, "watched": [{"pid": 4242, "app_id": f"{launcher}:{game_id}"}]},
+    }
+    monkeypatch.setattr(daemon_client, "daemon_status", lambda **kw: status)
+    monkeypatch.setattr(runtime_profile, "profile_argv", lambda setting: (
+        ["--auto-uv-profile", "perf-1"] + (["--adaptive-auto-uv"] if setting.mode == "adaptive" else [])
+    ))
+    def apply(argv, **kwargs):
+        assert kwargs["watch_pid"] == 4242
+        if accepted:
+            status["active_job"].update(
+                runtime_mode="adaptive" if "--adaptive-auto-uv" in argv else "static",
+                profile_id="perf-1",
+            )
+        return {"started": True}
+    monkeypatch.setattr(daemon_client, "start_game_runtime_profile", apply)
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    panel = GameLibraryPanel(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, sources=(source,))
+    qtbot.addWidget(panel.widget)
+    panel.ensure_scanned()
+    qtbot.waitUntil(lambda: bool(panel._games), timeout=5000)
+    panel._select_key(f"{launcher}:{game_id}")
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("performance"))
+    qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+    assert manager.row(game_id).setting.mode == "performance"
+    if accepted:
+        assert status["active_job"]["runtime_mode"] == "static"
+        assert "verified with daemon" in panel.status_label.text()
+        panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("adaptive"))
+        qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+        assert status["active_job"]["runtime_mode"] == "adaptive"
+        assert "verified with daemon" in panel.status_label.text()
+    else:
+        assert status["active_job"]["runtime_mode"] == "adaptive"
+        assert "unconfirmed (daemon mode: adaptive)" in panel.status_label.text()

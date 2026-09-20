@@ -582,10 +582,12 @@ class GameLibraryPanel:
             QtWidgets=self.QtWidgets,
             QtCore=self.QtCore,
             rows_layout=tuning_rows,
-            title="Auto-UV mode",
+            title="Saved Auto-UV mode",
             subtitle=(
                 "Adaptive switches tiers from live frame pacing. A named tier "
-                "pins that one profile; Stock pins the factory GPU state."
+                "pins that one profile; Stock pins the factory GPU state. "
+                "Changes apply live to a wrapped game; the status below reports "
+                "whether the running mode was updated."
             ),
             control=self.mode_combo,
         )
