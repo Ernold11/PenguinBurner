@@ -145,14 +145,16 @@ class WrapperLibrarySource:
 
     def after_setting_write(self, game_id: str, setter: str) -> ApplyResult | None:
         """Launchers can deliver supported changes to an existing session."""
-        if setter != "set_game_target_fps":
+        if setter not in ("set_game_target_fps", "set_game_mode"):
             return None
-        from .runtime_profile import hot_reapply_adaptive_target
+        from .runtime_profile import hot_reapply_game_profile
 
         row = self.manager.row(game_id)
         if row is None:
             return None
-        return hot_reapply_adaptive_target(f"{self.launcher_id}:{game_id}", row.setting)
+        return hot_reapply_game_profile(
+            f"{self.launcher_id}:{game_id}", row.setting, mode_change=setter == "set_game_mode",
+        )
 
     def games(self) -> tuple[LibraryGame, ...]:
         return tuple(self._library_game(row) for row in self._rows)

@@ -22,18 +22,15 @@ from .game_settings import LauncherGameSetting
 from .wrapper_manager import ApplyResult
 
 
-def hot_reapply_adaptive_target(
-    game_key: str, setting: GameProfileSetting
+def hot_reapply_game_profile(
+    game_key: str, setting: GameProfileSetting, *, mode_change: bool = False,
 ) -> ApplyResult | None:
-    """Reapply a target only to this game's existing adaptive daemon watch.
-
-    Reusing the host watch PID preserves session ownership and the daemon's
-    standing-profile restoration. Never register a GUI PID or an unwrapped game.
-    """
+    """Update this game's existing watch without taking another session's GPU."""
     from runtime.daemon_client import daemon_status, start_game_runtime_profile
 
-    if not setting.enabled or setting.mode != GAME_MODE_ADAPTIVE:
+    if not setting.enabled or (not mode_change and setting.mode != GAME_MODE_ADAPTIVE):
         return None
+    saved = "Mode saved" if mode_change else "Target saved"
     try:
         status = daemon_status(timeout_s=1.0)
         game_runtime = status.get("game_runtime") or {}
@@ -43,23 +40,43 @@ def hot_reapply_adaptive_target(
             None,
         )
         if watch is None:
-            return None
+            return (ApplyResult(True, "Mode saved for next launch; no active profile for this game.")
+                    if mode_change else None)
         active_job = status.get("active_job") or {}
-        if not game_runtime.get("active") or active_job.get("runtime_mode") != "adaptive":
-            return ApplyResult(False, "Target saved; this game's Adaptive profile is not active.")
+        if not game_runtime.get("active"):
+            return ApplyResult(False, f"{saved}; this game's profile is not active.")
+        if not mode_change and active_job.get("runtime_mode") != "adaptive":
+            return ApplyResult(False, f"{saved}; this game's Adaptive profile is not active.")
         if setting.gpu_uuid and setting.gpu_uuid != active_job.get("gpu_uuid"):
-            return ApplyResult(False, "Target saved; relaunch the game to change its GPU.")
+            return ApplyResult(False, f"{saved}; relaunch the game to change its GPU.")
         argv = profile_argv(setting)
         if argv is None:
-            return ApplyResult(False, "Target saved; the Adaptive profiles or target GPU are unavailable.")
+            return ApplyResult(False, f"{saved}; the selected profile or target GPU is unavailable.")
         result = start_game_runtime_profile(
             argv, watch_pid=int(watch["pid"]), app_id=game_key, timeout_s=45.0
         )
+        if result.get("ignored") or not result.get("started", False):
+            reason = result.get("reason") or "daemon did not start the profile"
+            return ApplyResult(False, f"{saved}; live update skipped: {reason}")
+        if mode_change:
+            # A saved selection and an accepted request are not proof of the
+            # active mode. Read the same game's ownership and mode back.
+            current = daemon_status(timeout_s=1.0)
+            runtime = current.get("game_runtime") or {}
+            job = current.get("active_job") or {}
+            expected = setting.mode if setting.mode in ("adaptive", "stock") else "static"
+            confirmed = (
+                runtime.get("active") and watch in runtime.get("watched", [])
+                and job.get("runtime_mode") == expected
+                and job.get("gpu_uuid") == active_job.get("gpu_uuid")
+                and (expected != "static" or job.get("profile_id") == argv[1])
+            )
+            if not confirmed:
+                actual = str(job.get("runtime_mode") or "unknown")
+                return ApplyResult(False, f"{saved}; live change unconfirmed (daemon mode: {actual}).")
+            return ApplyResult(True, f"{setting.mode.title()} applied to the running game; verified with daemon.")
     except Exception as error:  # noqa: BLE001 - saved setting survives a failed live apply
-        return ApplyResult(False, f"Target saved; live Adaptive update failed: {error}")
-    if result.get("ignored") or not result.get("started", False):
-        reason = result.get("reason") or "daemon did not start the profile"
-        return ApplyResult(False, f"Target saved; live Adaptive update skipped: {reason}")
+        return ApplyResult(False, f"{saved}; live update failed: {error}")
     return ApplyResult(True, "Adaptive target applied to the running game.")
 
 

@@ -51,7 +51,7 @@ def test_live_target_reuses_owner_and_resolves_saved_target(live_adaptive, launc
     key = f"{launcher}:27"
     status["game_runtime"]["watched"][0]["app_id"] = key
     setting = LauncherGameSetting(enabled=True, mode="adaptive", target_fps=target)
-    result = runtime_profile.hot_reapply_adaptive_target(key, setting)
+    result = runtime_profile.hot_reapply_game_profile(key, setting)
     assert result is not None and result.ok
     argv, kwargs = calls[0]
     assert kwargs == {"watch_pid": 4242, "app_id": key, "timeout_s": 45.0}
@@ -75,7 +75,7 @@ def test_live_target_does_not_take_over_another_runtime(live_adaptive, case):
         status["game_runtime"]["active"] = False
     elif case == "static":
         status["active_job"]["runtime_mode"] = "static"
-    result = runtime_profile.hot_reapply_adaptive_target("heroic:27", setting)
+    result = runtime_profile.hot_reapply_game_profile("heroic:27", setting)
     assert result is None or not result.ok
     assert calls == []
 
@@ -97,7 +97,7 @@ def test_live_target_reports_failure_without_claiming_apply(live_adaptive, monke
                 raise RuntimeError("not a running process")
             return {"ignored": True, "reason": "first-game-runtime-active"} if failure == "ignored" else {}
         monkeypatch.setattr(daemon_client, "start_game_runtime_profile", start)
-    result = runtime_profile.hot_reapply_adaptive_target(
+    result = runtime_profile.hot_reapply_game_profile(
         "heroic:27", LauncherGameSetting(enabled=True, mode="adaptive", target_fps=90)
     )
     assert result is not None and not result.ok
@@ -273,3 +273,78 @@ def test_the_daemon_id_is_the_namespaced_game_key(tmp_path, monkeypatch) -> None
 
     assert apply_game_key_profile("lutris:27", settings_path=settings, watch_pid=99)
     assert seen == {"app_id": "lutris:27", "watch_pid": 99}
+
+
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+@pytest.mark.parametrize("mode", ["performance", "adaptive", "stock"])
+def test_live_mode_switches_and_verifies_the_same_game(live_adaptive, monkeypatch, launcher, mode):
+    from runtime import daemon_client
+
+    status, calls = live_adaptive
+    key = f"{launcher}:27"
+    status["game_runtime"]["watched"][0]["app_id"] = key
+    original_watch = dict(status["game_runtime"]["watched"][0])
+    status["active_job"]["runtime_mode"] = "static" if mode == "adaptive" else "adaptive"
+    def apply(argv, **kwargs):
+        calls.append((argv, kwargs))
+        status["active_job"].update(
+            runtime_mode=mode if mode in ("adaptive", "stock") else "static",
+            profile_id=argv[1],
+        )
+        return {"started": True}
+    monkeypatch.setattr(daemon_client, "start_game_runtime_profile", apply)
+    result = runtime_profile.hot_reapply_game_profile(
+        key, LauncherGameSetting(enabled=True, mode=mode), mode_change=True,
+    )
+    assert result.ok and "verified" in result.message
+    assert status["game_runtime"]["watched"] == [original_watch]
+    assert calls[0][1]["watch_pid"] == original_watch["pid"]
+    assert ("--adaptive-auto-uv" in calls[0][0]) == (mode == "adaptive")
+
+
+@pytest.mark.parametrize("failure", ["mode", "profile", "owner", "overridden", "offline"])
+def test_live_mode_does_not_claim_success_without_readback(live_adaptive, monkeypatch, failure):
+    from runtime import daemon_client
+
+    status, _calls = live_adaptive
+    reads = []
+    def read(**kwargs):
+        reads.append(True)
+        if failure == "offline" and len(reads) > 1:
+            raise RuntimeError("daemon offline")
+        return status
+    monkeypatch.setattr(daemon_client, "daemon_status", read)
+    def apply(*args, **kwargs):
+        status["active_job"].update(runtime_mode="static", profile_id="perf-1")
+        if failure == "mode":
+            status["active_job"]["runtime_mode"] = "adaptive"
+        elif failure == "profile":
+            status["active_job"]["profile_id"] = "other"
+        elif failure == "owner":
+            status["game_runtime"]["watched"] = []
+        elif failure == "overridden":
+            status["game_runtime"]["active"] = False
+        return {"started": True}
+    monkeypatch.setattr(daemon_client, "start_game_runtime_profile", apply)
+    result = runtime_profile.hot_reapply_game_profile(
+        "heroic:27", LauncherGameSetting(enabled=True, mode="performance"), mode_change=True,
+    )
+    assert not result.ok
+    assert "Mode saved" in result.message
+
+
+@pytest.mark.parametrize("case", ["other-game", "overridden", "gpu", "disabled", "missing-profile"])
+def test_live_mode_never_applies_outside_its_active_profile(live_adaptive, monkeypatch, case):
+    status, calls = live_adaptive
+    setting = LauncherGameSetting(enabled=case != "disabled", mode="performance",
+                                  gpu_uuid="GPU-other" if case == "gpu" else "")
+    if case == "other-game":
+        status["game_runtime"]["watched"][0]["app_id"] = "lutris:27"
+    elif case == "overridden":
+        status["game_runtime"]["active"] = False
+    elif case == "missing-profile":
+        monkeypatch.setattr(runtime_profile, "profile_argv", lambda setting: None)
+    result = runtime_profile.hot_reapply_game_profile("heroic:27", setting, mode_change=True)
+    assert calls == []
+    if result is not None:
+        assert "verified" not in result.message

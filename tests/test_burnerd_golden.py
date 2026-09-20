@@ -903,3 +903,58 @@ def test_all_tier_targets_survive_gui_socket_and_worker_cli(make_daemon, tmp_pat
     launched = json.loads(argv_file.read_text())
     effective = build_effective_auto_uv_runtime_options(parse_arguments(launched))
     assert {key: effective[key] for key in targets} == targets
+
+
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+def test_live_launcher_mode_roundtrip_preserves_session_and_standing_profile(make_daemon, monkeypatch, launcher):
+    from integrations.launchers import runtime_profile
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from runtime import daemon_client, runtime_spec
+
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    curve = {
+        "profile_id": "perf-test", "profile_tier_key": "performance",
+        "plan": [{"index": 0, "voltage_mv": 900, "base_mhz": 2700,
+                  "target_mhz": 2800, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2800, "candidate_voltage_mv": 900,
+        "memory_offset_mhz": 0, "power_limit_w": 300,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2800,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 900, "tail_point_count": 1},
+    }
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", list)
+    specs = {"stock": standing, "performance": {
+        **standing, "mode": "static", "static_profile": runtime_spec._profile_spec(curve),
+    }, "adaptive": {
+        **standing, "mode": "adaptive", "adaptive": runtime_spec._adaptive_spec(curve),
+    }}
+    key = f"{launcher}:27"
+    game = _short_game(30)
+    try:
+        start_game_runtime_spec(specs["adaptive"], watch_pid=game.pid, app_id=key,
+                                socket_path=daemon.socket_path)
+        before = daemon_status(socket_path=daemon.socket_path)["game_runtime"]
+        monkeypatch.setattr(daemon_client, "daemon_status",
+                            lambda **kw: daemon_status(socket_path=daemon.socket_path))
+        monkeypatch.setattr(runtime_profile, "profile_argv", lambda setting: [
+            "--auto-uv-profile", "perf-test", setting.mode,
+        ])
+        monkeypatch.setattr(daemon_client, "start_game_runtime_profile", lambda argv, **kw:
+            start_game_runtime_spec(specs[argv[-1]], socket_path=daemon.socket_path, **kw))
+        for mode in ("performance", "adaptive", "stock"):
+            result = runtime_profile.hot_reapply_game_profile(
+                key, LauncherGameSetting(enabled=True, mode=mode), mode_change=True,
+            )
+            assert result.ok, result.message
+            status = daemon_status(socket_path=daemon.socket_path)
+            assert status["active_job"]["runtime_mode"] == ("static" if mode == "performance" else mode)
+            assert status["game_runtime"] == before
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path), timeout=5)
+        assert json.loads(daemon.state_file.read_text()) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
