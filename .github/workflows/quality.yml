@@ -24,6 +24,9 @@ jobs:
       PENGUIN_BURNER_REQUIRE_NVAPI_SHIM: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Release packaging tests resolve published tags such as v0.7.7.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'

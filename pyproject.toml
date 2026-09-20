@@ -58,6 +58,9 @@ test = [
   # "fixture 'qapp' not found", which reads like a broken checkout.
   "pytest>=8",
   "pytest-qt>=4.4",
+  # The sdist test invokes setup.py outside pip's isolated build environment.
+  "setuptools>=69",
+  "wheel",
 ]
 
 [project.urls]
