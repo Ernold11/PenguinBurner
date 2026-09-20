@@ -30,7 +30,10 @@ Discovery reads the library; wrapping a game changes its launch command.
 | Command | View or edit the launch command, Lutris prefix, or Heroic wrapper row. |
 
 Existing launch options, command prefixes and wrapper rows are preserved.
-Lutris changes apply on the next launch. Heroic's Play action refreshes saved
+Adaptive FPS targets update live for running wrapped Steam, Lutris, and Heroic
+games, including switching back to the system-wide target. Tier changes still
+wait for sustained frame-time headroom. Other Lutris changes apply on the next
+launch. Heroic's Play action refreshes saved
 launch settings automatically, restarting an idle launcher when necessary. Heroic overlay visibility also updates live
 in an already wrapped game.
 Steam supports live mode, target, and overlay updates

@@ -12,12 +12,55 @@ from pathlib import Path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from overlay.wrapper_tokens import split_game_key
 from profiles.game_profile import (
+    GAME_MODE_ADAPTIVE,
     GameProfileSetting,
     game_gpu_target,
     profile_argv_for_setting,
 )
 
 from .game_settings import LauncherGameSetting
+from .wrapper_manager import ApplyResult
+
+
+def hot_reapply_adaptive_target(
+    game_key: str, setting: GameProfileSetting
+) -> ApplyResult | None:
+    """Reapply a target only to this game's existing adaptive daemon watch.
+
+    Reusing the host watch PID preserves session ownership and the daemon's
+    standing-profile restoration. Never register a GUI PID or an unwrapped game.
+    """
+    from runtime.daemon_client import daemon_status, start_game_runtime_profile
+
+    if not setting.enabled or setting.mode != GAME_MODE_ADAPTIVE:
+        return None
+    try:
+        status = daemon_status(timeout_s=1.0)
+        game_runtime = status.get("game_runtime") or {}
+        watch = next(
+            (entry for entry in game_runtime.get("watched", [])
+             if entry.get("app_id") == game_key and entry.get("pid")),
+            None,
+        )
+        if watch is None:
+            return None
+        active_job = status.get("active_job") or {}
+        if not game_runtime.get("active") or active_job.get("runtime_mode") != "adaptive":
+            return ApplyResult(False, "Target saved; this game's Adaptive profile is not active.")
+        if setting.gpu_uuid and setting.gpu_uuid != active_job.get("gpu_uuid"):
+            return ApplyResult(False, "Target saved; relaunch the game to change its GPU.")
+        argv = profile_argv(setting)
+        if argv is None:
+            return ApplyResult(False, "Target saved; the Adaptive profiles or target GPU are unavailable.")
+        result = start_game_runtime_profile(
+            argv, watch_pid=int(watch["pid"]), app_id=game_key, timeout_s=45.0
+        )
+    except Exception as error:  # noqa: BLE001 - saved setting survives a failed live apply
+        return ApplyResult(False, f"Target saved; live Adaptive update failed: {error}")
+    if result.get("ignored") or not result.get("started", False):
+        reason = result.get("reason") or "daemon did not start the profile"
+        return ApplyResult(False, f"Target saved; live Adaptive update skipped: {reason}")
+    return ApplyResult(True, "Adaptive target applied to the running game.")
 
 
 def profile_argv(setting: GameProfileSetting) -> list[str] | None:

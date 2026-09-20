@@ -422,6 +422,56 @@ def test_other_heroic_settings_do_not_change_live_overlay(tmp_path, monkeypatch)
         assert source.after_setting_write("Turkey", setter) is None
 
 
+def test_heroic_target_qt_edit_applies_saved_target_live(qapp, qtbot, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from integrations.launchers import runtime_profile
+    from profiles import game_profile
+    from runtime import daemon_client
+    from ui.components.game_library_panel import GameLibraryPanel
+    from ui.qt import import_qt
+
+    manager = _manager(tmp_path)
+    assert manager.set_game_enabled("Turkey", True).ok
+    assert manager.set_game_target_fps("Turkey", 120).ok
+    source = HeroicLibrarySource(manager, home=tmp_path)
+    monkeypatch.setattr(source, "probe_can_launch", lambda: False)
+    monkeypatch.setattr(daemon_client, "daemon_status", lambda **kw: {
+        "active_job": {"runtime_mode": "adaptive", "gpu_uuid": "GPU-1"},
+        "game_runtime": {"active": True, "watched": [{"pid": 4242, "app_id": "heroic:Turkey"}]},
+    })
+    monkeypatch.setattr(runtime_profile.DaemonGpuClient, "discover_identities",
+                        lambda: [SimpleNamespace(uuid="GPU-1", index=0)])
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", list)
+    monkeypatch.setattr(game_profile, "resolve_profile_tier_profiles",
+                        lambda *a, **kw: {"performance": {"profile_id": "perf-1"}})
+    calls = []
+
+    def apply(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return {"started": True}
+
+    monkeypatch.setattr(daemon_client, "start_game_runtime_profile", apply)
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    panel = GameLibraryPanel(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, sources=(source,))
+    qtbot.addWidget(panel.widget)
+    panel.ensure_scanned()
+    qtbot.waitUntil(lambda: bool(panel._games), timeout=5000)
+    panel._select_key("heroic:Turkey")
+    panel.target_fps_spin.setValue(90)
+    qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+    assert _stored(tmp_path).target_fps == 90
+    argv, kwargs = calls.pop()
+    assert argv[argv.index("--adaptive-target-fps") + 1] == "90"
+    assert kwargs["watch_pid"] == 4242
+    assert "applied to the running game" in panel.status_label.text()
+
+    panel.per_game_target_switch.click()
+    qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+    assert _stored(tmp_path).target_fps is None
+    assert "--adaptive-target-fps" not in calls.pop()[0]
+
+
 def test_heroic_overlay_qt_toggle_writes_live_visibility(qapp, qtbot, tmp_path, monkeypatch):
     from integrations.heroic import library_source
     from integrations.heroic.process import HeroicSessions
