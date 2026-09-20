@@ -9,10 +9,13 @@ behind our back, and to a bulk write that fails halfway through.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from integrations.launchers.game_settings import GameSettingsStore, LauncherGameSetting
+from integrations.launchers.installation import LauncherInstallation
 from integrations.launchers.wrapper_manager import (
     SOURCE_GAME,
     CommandWrite,
@@ -38,7 +41,7 @@ class FakeLauncher(WrapperManager):
 
     launcher_id = "fake"
     display_name = "Fake"
-    source_labels = {SOURCE_RUNNER: "the runner"}
+    source_labels: ClassVar = {SOURCE_RUNNER: "the runner"}
 
     def __init__(self, settings_path, *, game_ids=("1",), inherited: str = ""):
         super().__init__(GameSettingsStore(SETTINGS_FILENAME), settings_path=settings_path)
@@ -48,6 +51,10 @@ class FakeLauncher(WrapperManager):
         #: Games whose config refuses to be written, as a locked file would.
         self.locked: set[str] = set()
         self.writes: list[tuple[str, str]] = []
+
+    @property
+    def installation(self):
+        return LauncherInstallation("fake", "test.Fake", Path("/unused"))
 
     def read_games(self):
         return self.games

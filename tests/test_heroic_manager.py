@@ -7,31 +7,30 @@ import shutil
 
 import pytest
 
+from common import flatpak_wrappers
 from integrations.heroic.library_source import HeroicLibrarySource
 from integrations.heroic.manager import HeroicIntegrationManager
 from integrations.heroic.settings import HEROIC_GAME_SETTINGS_STORE
-from integrations.launchers import wrapper_manager
 from profiles.game_profile import GAME_MODE_ADAPTIVE
 
 WRAPPER_FLAG = "--pb-game-id=heroic:Turkey"
 
 
 def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
-    from integrations.heroic import manager as manager_module
-    from integrations.heroic.flatpak import wrapper_path
-    from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME
+    from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME, heroic_installation
+    from integrations.launchers import flatpak as flatpak_module
 
     _home(tmp_path)
     root = tmp_path / HEROIC_FLATPAK_DIRNAME
     root.parent.mkdir(parents=True)
     (tmp_path / ".config/heroic").rename(root)
     repairs = []
-    monkeypatch.setattr(manager_module, "ensure_integration", lambda home: repairs.append(home))
+    monkeypatch.setattr(flatpak_module, "ensure_integration", lambda installation: repairs.append(installation.home))
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
     manager.refresh()
     result = manager.set_game_enabled("Turkey", True)
     assert result.ok
-    assert str(wrapper_path(tmp_path)) in result.command
+    assert heroic_installation(tmp_path).wrapper in result.command
     row = manager.row("Turkey")
     assert row is not None and row.wrapped
     assert row.setting.injected_command == row.command
@@ -45,35 +44,36 @@ def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
 
 
 def test_stale_native_config_is_preserved_when_wrapping_flatpak_game(monkeypatch, tmp_path):
-    from integrations.heroic import manager as manager_module
     from integrations.heroic import paths
-    from integrations.heroic.flatpak import wrapper_path
+    from integrations.heroic.paths import heroic_installation
+    from integrations.launchers import flatpak as flatpak_module
 
     _home(tmp_path, game={'Turkey': {'wrapperOptions': [{'exe': 'existing', 'args': ''}]}})
     native = tmp_path / '.config/heroic'
     flatpak = tmp_path / paths.HEROIC_FLATPAK_DIRNAME
     shutil.copytree(native, flatpak)
     original = {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}
-    monkeypatch.setattr(paths, 'host_has_command', lambda _name: False)
-    monkeypatch.setattr(manager_module, 'ensure_integration', lambda _home: None)
+    from integrations.launchers import installation
+    monkeypatch.setattr(installation, 'host_command_path', lambda _name: None)
+    monkeypatch.setattr(flatpak_module, 'ensure_integration', lambda _home: None)
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / 'settings.json')
     try:
         manager.refresh()
         assert manager.set_game_enabled('Turkey', True).ok
         config = json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())
-        assert str(wrapper_path(tmp_path)) in json.dumps(config['Turkey']['wrapperOptions'])
+        assert heroic_installation(tmp_path).wrapper in json.dumps(config['Turkey']['wrapperOptions'])
         assert {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()} == original
         assert manager.set_game_enabled('Turkey', False).ok
         assert json.loads((flatpak / 'GamesConfig/Turkey.json').read_text())['Turkey'] == json.loads(
             (native / 'GamesConfig/Turkey.json').read_text(),
         )['Turkey']
     finally:
-        paths.native_heroic_available.cache_clear()
+        installation.native_command.cache_clear()
 
 
 def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp_path):
-    from integrations.heroic import manager as manager_module
     from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME
+    from integrations.launchers import flatpak as flatpak_module
 
     _home(tmp_path)
     root = tmp_path / HEROIC_FLATPAK_DIRNAME
@@ -83,7 +83,7 @@ def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp
     def fail(_home):
         raise RuntimeError("sandbox layer unavailable")
 
-    monkeypatch.setattr(manager_module, "ensure_integration", fail)
+    monkeypatch.setattr(flatpak_module, "ensure_integration", fail)
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
     manager.refresh()
     result = manager.set_game_enabled("Turkey", True)
@@ -93,10 +93,7 @@ def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp
 
 
 def test_flatpak_malformed_manual_command_reports_error(monkeypatch, tmp_path):
-    from integrations.heroic import manager as manager_module
-
     manager = _manager(tmp_path)
-    monkeypatch.setattr(manager_module, "uses_flatpak", lambda home: True)
     result = manager.set_game_command("Turkey", "gamemoderun 'unterminated")
     assert not result.ok
     assert "quotation" in result.message
@@ -105,7 +102,7 @@ def test_flatpak_malformed_manual_command_reports_error(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _no_host_repair(monkeypatch):
     """Outside a Flatpak this is a no-op; here it must never touch the host."""
-    monkeypatch.setattr(wrapper_manager, "ensure_host_integration", lambda: None)
+    monkeypatch.setattr(flatpak_wrappers, "ensure_host_integration", lambda: None)
 
 
 def _home(
@@ -571,7 +568,7 @@ def test_bulk_overlay_preserves_settings_and_skips_unwrapped_games(tmp_path, mon
         root = tmp_path / HEROIC_FLATPAK_DIRNAME
         root.parent.mkdir(parents=True)
         (tmp_path / ".config/heroic").rename(root)
-        monkeypatch.setattr("integrations.heroic.manager.ensure_integration", lambda home: None)
+        monkeypatch.setattr("integrations.launchers.flatpak.ensure_integration", lambda home: None)
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
     manager.refresh()
     assert manager.set_all_games_enabled(("Turkey", "Other"), True).ok

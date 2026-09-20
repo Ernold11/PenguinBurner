@@ -149,11 +149,6 @@ def host_command_path(name: str) -> str | None:
     return first or None
 
 
-def host_has_command(name: str) -> bool:
-    """Whether ``name`` is on the host's PATH."""
-    return host_command_path(name) is not None
-
-
 def host_pgrep(pattern: str) -> list[tuple[int, str]] | None:
     """``pgrep -af`` on the host: (pid, command line) for every match.
 

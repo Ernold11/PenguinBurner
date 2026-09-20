@@ -18,7 +18,8 @@ from unittest.mock import patch
 from integrations.heroic import config_store, process
 from integrations.heroic.library_source import HeroicLibrarySource
 from integrations.heroic.manager import HeroicIntegrationManager
-from integrations.launchers import host_process
+from integrations.heroic.paths import heroic_installation
+from integrations.launchers import host_process, installation
 from integrations.launchers.game_settings import GameSettingsError
 from integrations.launchers.wrapper_manager import WrapperManager
 from overlay.wrapper_tokens import GAME_KEY_ENV
@@ -282,17 +283,19 @@ launcher.main()
             child.wait(timeout=5)
 
 
+
+
 class HeroicAvailabilityRegressions(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        discovery = patch.object(process, "heroic_config_root", return_value=Path(temporary.name))
+        discovery = patch.object(process, "heroic_installation", side_effect=lambda home=None: heroic_installation(Path(temporary.name)))
         discovery.start()
         self.addCleanup(discovery.stop)
 
     def test_native_heroic_does_not_require_flatpak(self):
-        with patch.object(process, "host_has_command", side_effect=lambda name: name == "heroic"), \
-             patch.object(process, "run_on_host") as probe:
+        with patch.object(installation, "host_command_path", return_value="heroic"), \
+             patch.object(installation, "run_on_host") as probe:
             self.assertTrue(process.heroic_available())
             self.assertEqual(process.launch_command("gog", "123")[:2], ["heroic", "--no-gui"])
             probe.assert_not_called()
@@ -300,28 +303,28 @@ class HeroicAvailabilityRegressions(unittest.TestCase):
     def test_flatpak_without_heroic_cannot_launch(self):
         for result in (None, subprocess.CompletedProcess([], 1)):
             with self.subTest(result=result), \
-                 patch.object(process, "host_has_command", side_effect=lambda name: name == "flatpak"), \
-                 patch.object(process, "run_on_host", return_value=result) as probe, \
+                 patch.object(installation, "host_command_path", return_value=None), \
+                 patch.object(installation, "run_on_host", return_value=result) as probe, \
                  patch.object(process, "launch_with_current_settings") as start:
                 self.assertFalse(process.heroic_available())
                 self.assertFalse(process.launch_heroic_game("gog", "123"))
-                probe.assert_called_with(["flatpak", "info", process.FLATPAK_APP_ID])
+                probe.assert_called_with(["flatpak", "info", "com.heroicgameslauncher.hgl"])
                 start.assert_not_called()
 
     def test_installed_flatpak_is_checked_again_at_launch(self):
-        with patch.object(process, "host_has_command", side_effect=lambda name: name == "flatpak"), \
-             patch.object(process, "run_on_host", side_effect=[
+        with patch.object(installation, "host_command_path", return_value=None), \
+             patch.object(installation, "run_on_host", side_effect=[
                  subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
              ]):
             self.assertTrue(process.heroic_available())
             self.assertIsNone(process.launch_command("gog", "123"))
 
     def test_installed_flatpak_can_launch(self):
-        with patch.object(process, "host_has_command", side_effect=lambda name: name == "flatpak"), \
-             patch.object(process, "run_on_host", return_value=subprocess.CompletedProcess([], 0)):
+        with patch.object(installation, "host_command_path", return_value=None), \
+             patch.object(installation, "run_on_host", return_value=subprocess.CompletedProcess([], 0)):
             self.assertTrue(process.heroic_available())
             self.assertEqual(process.launch_command("gog", "123"), [
-                "flatpak", "run", process.FLATPAK_APP_ID, "--no-gui",
+                "flatpak", "run", "com.heroicgameslauncher.hgl", "--no-gui",
                 "heroic://launch/gog/123?gui=false",
             ])
 

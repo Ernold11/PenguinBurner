@@ -9,7 +9,6 @@ from integrations.launchers.library_source import WrapperLibrarySource
 from integrations.launchers.wrapper_manager import LauncherGameRow
 from overlay.render_api import overlay_support
 
-from .flatpak import uses_flatpak, wrapper_path
 from .manager import HeroicIntegrationManager
 from .process import (
     HeroicSessions,
@@ -41,9 +40,12 @@ class HeroicLibrarySource(WrapperLibrarySource):
 
     def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
         fields = super().fields(game)
-        if not game.wrapped or not uses_flatpak(self._home):
+        installation = self.manager.installation
+        if not game.wrapped or not installation.flatpak:
             return fields
-        wrapper = wrapper_path(self._home)
+        from pathlib import Path
+
+        wrapper = Path(installation.wrapper)
         row = game.detail
         ready = (
             isinstance(row, LauncherGameRow)

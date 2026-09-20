@@ -15,9 +15,9 @@ from integrations.launchers.host_process import run_on_host
 
 from .config_store import LutrisConfigError, read_game_config
 from .library import InstalledLutrisGame
-from .paths import runner_config_path
+from .paths import lutris_installation, runner_config_path
 
-# Run in host Python: PenguinBurner's Flatpak does not contain Lutris's modules.
+# Query the selected Lutris installation's Python, which owns its runner modules.
 # These APIs enumerate tools; they do not install versions or launch a game.
 _CATALOGUE = '''
 import json
@@ -35,9 +35,9 @@ class LutrisCompatibility:
         # An explicit home is an isolated library, not the host's Lutris install.
         if self.home is not None:
             return ()
-        result = run_on_host(["/usr/bin/python3", "-c", _CATALOGUE], capture=True, timeout=10)
+        result = run_on_host(lutris_installation(self.home).python_command("-c", _CATALOGUE), capture=True, timeout=10)
         if result is None or result.returncode:
-            raise ValueError("Could not query Lutris's Wine versions. Install native Lutris, then Rescan.")
+            raise ValueError("Could not query Lutris's Wine versions. Check the selected Lutris installation, then Rescan.")
         payload = json.loads(result.stdout)
         if not isinstance(payload, dict):
             raise TypeError("Lutris returned an invalid compatibility catalogue.")

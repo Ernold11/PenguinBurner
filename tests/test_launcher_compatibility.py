@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import yaml
@@ -185,7 +186,9 @@ def test_flatpak_discovery_runs_in_heroic_namespace(monkeypatch):
         return subprocess.CompletedProcess(command, 0, json.dumps([
             {'bin': '/app/bin/wine', 'name': 'Sandbox Wine', 'type': 'wine'},
         ]))
-    monkeypatch.setattr(heroic_compat, 'uses_flatpak', lambda home: True)
+    from integrations.launchers.installation import LauncherInstallation
+    monkeypatch.setattr(heroic_compat, 'heroic_installation', lambda home: LauncherInstallation(
+        'heroic', 'com.heroicgameslauncher.hgl', Path('/tmp'), flatpak=True))
     monkeypatch.setattr(heroic_compat, 'run_on_host', run)
     tools = heroic_compat.HeroicCompatibility().discover()
     assert calls[0][:4] == ['flatpak', 'run', '--command=python3', 'com.heroicgameslauncher.hgl']
@@ -209,7 +212,9 @@ def test_native_discovery_uses_host_python(monkeypatch):
     def run(command, **kwargs):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, '[]')
-    monkeypatch.setattr(heroic_compat, 'uses_flatpak', lambda home: False)
+    from integrations.launchers.installation import LauncherInstallation
+    monkeypatch.setattr(heroic_compat, 'heroic_installation', lambda home: LauncherInstallation(
+        'heroic', 'com.heroicgameslauncher.hgl', Path('/tmp')))
     monkeypatch.setattr(heroic_compat, 'run_on_host', run)
     assert heroic_compat.HeroicCompatibility().discover() == ()
     assert calls[0][:2] == ['/usr/bin/python3', '-c']
@@ -227,7 +232,8 @@ def test_stale_native_config_does_not_capture_flatpak_version_write(tmp_path, mo
     shutil.copytree(native, flatpak)
     binary = executable(flatpak / 'tools/proton/Flatpak-GE/proton')
     native_files = {str(p.relative_to(native)): p.read_bytes() for p in native.rglob('*') if p.is_file()}
-    monkeypatch.setattr(paths, 'host_has_command', lambda _: False)
+    from integrations.launchers import installation
+    monkeypatch.setattr(installation, 'host_command_path', lambda _: None)
     manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / 'pb-settings.json')
     try:
         manager.refresh()
@@ -237,7 +243,7 @@ def test_stale_native_config_does_not_capture_flatpak_version_write(tmp_path, mo
         assert saved['Turkey']['wineVersion']['bin'] == str(binary)
         assert {str(p.relative_to(native)): p.read_bytes() for p in native.rglob('*') if p.is_file()} == native_files
     finally:
-        paths.native_heroic_available.cache_clear()
+        installation.native_command.cache_clear()
 
 
 def test_lutris_default_resumes_runner_inheritance(tmp_path, monkeypatch):
@@ -274,3 +280,16 @@ def test_shallow_refresh_does_not_probe_tools(setup, monkeypatch):
     assert calls == []
     source.refresh(deep=True)
     assert calls == [True]
+
+
+def test_flatpak_lutris_catalogue_queries_sandbox_python(monkeypatch, tmp_path):
+    from integrations.launchers.installation import LauncherInstallation
+
+    selected = LauncherInstallation('lutris', 'net.lutris.Lutris', tmp_path, flatpak=True)
+    monkeypatch.setattr(lutris_compat, 'lutris_installation', lambda home: selected)
+    def run(command, **kwargs):
+        assert command[:5] == ['flatpak', 'run', '--command=python3', selected.app_id, '-c']
+        assert 'get_installed_wine_versions' in command[5]
+        return subprocess.CompletedProcess(command, 0, json.dumps({'versions': ['Sandbox-GE'], 'default': 'Sandbox-GE'}))
+    monkeypatch.setattr(lutris_compat, 'run_on_host', run)
+    assert [tool.value for tool in lutris_compat.LutrisCompatibility().discover()] == ['Sandbox-GE']

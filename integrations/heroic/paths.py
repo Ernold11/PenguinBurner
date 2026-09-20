@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from functools import lru_cache
 from pathlib import Path
 
 from integrations.launchers.host_paths import host_config_home, safe_config_name
-from integrations.launchers.host_process import host_has_command
+from integrations.launchers.installation import (
+    LauncherInstallation,
+    select_installation,
+)
 
 HEROIC_DIRNAME = "heroic"
 #: The Flatpak build keeps the same tree under its own per-app config home.
@@ -45,33 +47,17 @@ ART_CARD_QUERY = "?h=400&resize=1&w=300"
 GAME_ICON_DIRNAME = "icons"
 
 
+def heroic_installation(home: Path | None = None) -> LauncherInstallation:
+    base = home or Path.home()
+    return select_installation(
+        "heroic", "com.heroicgameslauncher.hgl", home=home,
+        native_roots=(host_config_home(home) / HEROIC_DIRNAME,),
+        flatpak_roots=(base / HEROIC_FLATPAK_DIRNAME,), markers=(CONFIG_FILENAME,),
+    )
+
+
 def heroic_config_root(home: Path | None = None) -> Path:
-    """Heroic's config directory: everything this integration reads.
-
-    The native and Flatpak builds keep the same tree in two places, so both are
-    offered. When both have configuration, prefer native only while its
-    executable is installed; stale native settings must not shadow Flatpak.
-    An explicit ``home`` wins over the environment, so tests are independent of
-    whatever XDG variables the host session exports.
-    """
-    candidates = _config_roots(home)
-    configured = [path for path in candidates if (path / CONFIG_FILENAME).is_file()]
-    if len(configured) == 2 and not native_heroic_available():
-        return configured[1]
-    return configured[0] if configured else candidates[0]
-
-
-@lru_cache(maxsize=1)
-def native_heroic_available() -> bool:
-    """Cache host discovery across row/path reads; refresh clears it per scan."""
-    return host_has_command("heroic")
-
-
-def _config_roots(home: Path | None) -> tuple[Path, ...]:
-    # The Flatpak build's tree hangs off the real home whatever XDG says, so
-    # it is a candidate even when the config home has been redirected.
-    base = Path(home) if home is not None else Path.home()
-    return (host_config_home(home) / HEROIC_DIRNAME, base / HEROIC_FLATPAK_DIRNAME)
+    return heroic_installation(home).root
 
 
 def heroic_installed(home: Path | None = None) -> bool:

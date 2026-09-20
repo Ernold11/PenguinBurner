@@ -106,11 +106,11 @@ def test_enabling_repairs_the_host_wrapper_before_writing(
     """The written line execs PENGUIN_BURNER on the host, so inside a Flatpak
     the wrapper must be made real before a config names it -- a Lutris-only
     host otherwise gets a prefix_command that stops the game launching."""
-    from integrations.launchers import wrapper_manager
+    from common import flatpak_wrappers
 
     calls: list[bool] = []
     monkeypatch.setattr(
-        wrapper_manager, "ensure_host_integration", lambda: calls.append(True)
+        flatpak_wrappers, "ensure_host_integration", lambda: calls.append(True)
     )
     manager = _manager(tmp_path)
 
@@ -119,12 +119,12 @@ def test_enabling_repairs_the_host_wrapper_before_writing(
 
 
 def test_a_failed_wrapper_repair_blocks_the_write(tmp_path, monkeypatch) -> None:
-    from integrations.launchers import wrapper_manager
+    from common import flatpak_wrappers
 
     def boom() -> None:
         raise RuntimeError("packaged NVAPI shim is missing")
 
-    monkeypatch.setattr(wrapper_manager, "ensure_host_integration", boom)
+    monkeypatch.setattr(flatpak_wrappers, "ensure_host_integration", boom)
     manager = _manager(tmp_path)
 
     result = manager.set_game_enabled("27", True)
@@ -663,12 +663,12 @@ def test_library_scan_cannot_revert_a_setting_before_the_next_edit(
 ) -> None:
     """A scan that read old settings must finish before a write uses the cache."""
     import integrations.lutris.manager as manager_module
-    from integrations.launchers import wrapper_manager
+    from common import flatpak_wrappers
     from integrations.lutris.library_source import LutrisLibrarySource
     from ui.components.game_library_panel import GameLibraryPanel
     from ui.qt import import_qt
 
-    monkeypatch.setattr(wrapper_manager, "ensure_host_integration", lambda: None)
+    monkeypatch.setattr(flatpak_wrappers, "ensure_host_integration", lambda: None)
     manager = _manager(tmp_path, prefix_command="gamemoderun")
     source = LutrisLibrarySource(manager, home=tmp_path)
     QtCore, QtGui, QtWidgets, _pg = import_qt()
@@ -753,3 +753,55 @@ def test_bulk_overlay_preserves_lutris_prefix_and_adaptive_settings(tmp_path):
     before = _config(tmp_path)
     assert manager.set_all_games_overlay(("27",), True).applied_game_ids == ()
     assert _config(tmp_path) == before
+
+
+@pytest.mark.parametrize('legacy_config', [False, True])
+def test_flatpak_wrapper_uses_selected_config_and_restores_prefix(tmp_path, monkeypatch, legacy_config):
+    import shutil
+
+    from integrations.launchers import flatpak, installation
+    from integrations.lutris.paths import lutris_installation
+
+    _home(tmp_path, prefix_command='gamemoderun')
+    native = tmp_path / '.local/share/lutris'
+    sandbox = tmp_path / '.var/app/net.lutris.Lutris/data/lutris'
+    shutil.copytree(native, sandbox)
+    original = {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()}
+    monkeypatch.setattr(installation, 'host_command_path', lambda name: None)
+    selected = lutris_installation(tmp_path)
+    config_root = sandbox
+    if legacy_config:
+        config_root = selected.app_home / 'config/lutris'
+        config_root.mkdir(parents=True)
+        (sandbox / 'games').rename(config_root / 'games')
+    prepared = []
+    monkeypatch.setattr(flatpak, 'ensure_integration', lambda selected: prepared.append(selected))
+    manager = LutrisIntegrationManager(home=tmp_path, settings_path=tmp_path / 'settings.json')
+    manager.refresh()
+    assert manager.set_game_enabled('27', True).ok
+    config = config_root / 'games/game-1.yml'
+    assert selected.wrapper in yaml.safe_load(config.read_text())['system']['prefix_command']
+    assert prepared == [selected]
+    assert manager.set_game_enabled('27', False).ok
+    assert yaml.safe_load(config.read_text())['system']['prefix_command'] == 'gamemoderun'
+    assert {p.relative_to(native): p.read_bytes() for p in native.rglob('*') if p.is_file()} == original
+
+
+def test_flatpak_preflight_failure_keeps_lutris_and_pb_settings(tmp_path, monkeypatch):
+    from integrations.launchers import flatpak
+
+    _home(tmp_path, prefix_command='gamemoderun')
+    native = tmp_path / '.local/share/lutris'
+    sandbox = tmp_path / '.var/app/net.lutris.Lutris/data/lutris'
+    sandbox.parent.mkdir(parents=True)
+    native.rename(sandbox)
+    config = sandbox / 'games/game-1.yml'
+    original = config.read_bytes()
+    def fail(selected):
+        raise RuntimeError('sandbox failed')
+    monkeypatch.setattr(flatpak, 'ensure_integration', fail)
+    manager = LutrisIntegrationManager(home=tmp_path, settings_path=tmp_path / 'settings.json')
+    manager.refresh()
+    assert not manager.set_game_enabled('27', True).ok
+    assert config.read_bytes() == original
+    assert not (tmp_path / 'settings.json').exists()

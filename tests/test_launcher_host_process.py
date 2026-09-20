@@ -34,7 +34,6 @@ def test_a_command_is_asked_of_the_host_inside_a_flatpak(monkeypatch) -> None:
     # The path, not just a yes: a caller that goes on to run the program needs
     # it, and the sandbox's own PATH is the wrong answer at both ends.
     assert host.host_command_path("lutris") == "/usr/bin/lutris"
-    assert host.host_has_command("lutris") is True
     command = commands[0]
     assert command[:2] == ["/usr/bin/flatpak-spawn", "--host"]
     # The name is an argument to the script, never part of it.
@@ -51,9 +50,9 @@ def test_a_name_that_is_not_a_program_name_is_never_asked_about(monkeypatch) -> 
     """The one lookup helper that reaches a shell must not carry syntax into it."""
     commands = _sandboxed(monkeypatch)
 
-    assert host.host_has_command("lutris; rm -rf ~") is False
-    assert host.host_has_command("$(id)") is False
-    assert host.host_has_command("") is False
+    assert host.host_command_path("lutris; rm -rf ~") is None
+    assert host.host_command_path("$(id)") is None
+    assert host.host_command_path("") is None
     assert commands == []
 
 
@@ -61,7 +60,6 @@ def test_a_program_the_host_does_not_have_is_not_claimed(monkeypatch) -> None:
     _sandboxed(monkeypatch, returncode=1)
 
     assert host.host_command_path("lutris") is None
-    assert host.host_has_command("lutris") is False
 
 
 def test_the_host_command_runs_from_a_directory_the_host_has(monkeypatch) -> None:

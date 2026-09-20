@@ -122,6 +122,14 @@ def _command_words(value: str) -> list[tuple[int, int, str]]:
     return words
 
 
+def replace_wrapper_executable(value: str, executable: str) -> str:
+    """Retarget only wrapper words, preserving user shell syntax verbatim."""
+    for start, end, word in reversed(_command_words(value)):
+        if _wrapper_word(word):
+            value = value[:start] + shlex.quote(executable) + value[end:]
+    return value
+
+
 def wrapper_present(value: str | None) -> bool:
     return any(_wrapper_word(word) for _, _, word in _command_words(value or ""))
 
@@ -201,6 +209,7 @@ def wrapper_tokens(
     game_key: str = "",
     ingame_latency: bool = False,
     latency_as_flag: bool = False,
+    executable: str = PENGUIN_BURNER_WRAPPER,
 ) -> str:
     """The wrapper plus its flags, in the order the launcher will run them.
 
@@ -209,7 +218,7 @@ def wrapper_tokens(
     As a flag it comes after, because then it is an argument to the wrapper.
     """
     parts = [] if (latency_as_flag or not ingame_latency) else [INGAME_LATENCY_TOKENS]
-    parts += [PENGUIN_BURNER_WRAPPER, overlay_flag(overlay)]
+    parts += [shlex.quote(executable), overlay_flag(overlay)]
     if ingame_latency and latency_as_flag:
         parts.append(INGAME_LATENCY_FLAG)
     key = str(game_key or "").strip()

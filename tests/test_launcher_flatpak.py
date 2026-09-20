@@ -8,16 +8,22 @@ from pathlib import Path
 
 import pytest
 
-from integrations.heroic import flatpak, paths
-from overlay.wrapper_tokens import strip_penguin_burner_tokens, wrapper_present
+from integrations.launchers import flatpak
+from integrations.launchers.installation import LauncherInstallation
+from overlay.wrapper_tokens import (
+    replace_wrapper_executable,
+    strip_penguin_burner_tokens,
+    wrapper_present,
+)
 
 
 def test_absolute_wrapper_round_trip_preserves_other_commands(tmp_path):
     command = "PENGUIN_BURNER --pb-overlay=1 --pb-game-id=heroic:game gamemoderun"
-    deployed = flatpak.sandbox_command(command, tmp_path / "space home")
+    wrapper = LauncherInstallation("heroic", "com.heroicgameslauncher.hgl", tmp_path, True, tmp_path / "space home").wrapper
+    deployed = replace_wrapper_executable(command, wrapper)
     assert wrapper_present(deployed)
     assert strip_penguin_burner_tokens(deployed) == "gamemoderun"
-    assert str(flatpak.wrapper_path(tmp_path / "space home")) in deployed
+    assert wrapper in deployed
 
 
 def test_runtime_archive_is_deterministic_and_excludes_non_source(tmp_path):
@@ -46,7 +52,9 @@ def payload(monkeypatch):
     return files
 
 
-def test_prepare_scopes_grants_and_probes_actual_sandbox(monkeypatch, tmp_path, payload):
+@pytest.mark.parametrize("name,app_id", [("heroic", "com.heroicgameslauncher.hgl"), ("lutris", "net.lutris.Lutris"), ("steam", "com.valvesoftware.Steam")])
+def test_prepare_scopes_grants_and_probes_actual_sandbox(monkeypatch, tmp_path, payload, name, app_id):
+    installation = LauncherInstallation(name, app_id, tmp_path, True, tmp_path)
     calls = []
 
     def run(command, **kwargs):
@@ -54,40 +62,28 @@ def test_prepare_scopes_grants_and_probes_actual_sandbox(monkeypatch, tmp_path, 
         return subprocess.CompletedProcess(command, 0, "ready", "")
 
     monkeypatch.setattr(flatpak, "run_on_host", run)
-    flatpak.ensure_integration(tmp_path)
-    wrapper = flatpak.wrapper_path(tmp_path)
+    flatpak.ensure_integration(installation)
+    wrapper = Path(installation.wrapper)
     assert wrapper.stat().st_mode & 0o111
     assert calls[0] == [
         "flatpak", "override", "--user",
         f"--filesystem={tmp_path}/.config/PenguinBurner",
         f"--filesystem={tmp_path}/.cache/penguin-burner",
-        "--filesystem=/run/penguin-burnerd.sock", flatpak.APP_ID,
+        "--filesystem=/run/penguin-burnerd.sock", installation.app_id,
     ]
     assert calls[1] == [
-        "flatpak", "run", f"--command={wrapper}", flatpak.APP_ID, "--check-integration",
+        "flatpak", "run", f"--command={wrapper}", installation.app_id, "--check-integration",
     ]
     manifest = next(wrapper.parent.glob("*/native_layer/*.json"))
     library = Path(json.loads(manifest.read_text())["layer"]["library_path"])
     assert library.read_bytes() == b"layer"
-    flatpak.ensure_integration(tmp_path)
+    flatpak.ensure_integration(installation)
     assert len(list(wrapper.parent.glob("*/runtime.zip"))) == 1
 
 
 def test_probe_failure_is_reported(monkeypatch, tmp_path, payload):
+    installation = LauncherInstallation("lutris", "net.lutris.Lutris", tmp_path, True, tmp_path)
     monkeypatch.setattr(flatpak, "run_on_host", lambda command, **kwargs:
         subprocess.CompletedProcess(command, 1 if "run" in command else 0, "", "old daemon"))
     with pytest.raises(RuntimeError, match="old daemon"):
-        flatpak.ensure_integration(tmp_path)
-
-
-@pytest.mark.parametrize("native_installed", [False, True])
-def test_config_location_selects_flatpak(tmp_path, monkeypatch, native_installed):
-    monkeypatch.setattr(paths, "native_heroic_available", lambda: native_installed)
-    root = tmp_path / flatpak.HEROIC_FLATPAK_DIRNAME
-    root.mkdir(parents=True)
-    (root / "config.json").write_text("{}")
-    assert flatpak.uses_flatpak(tmp_path)
-    native = tmp_path / ".config/heroic"
-    native.mkdir(parents=True)
-    (native / "config.json").write_text("{}")
-    assert flatpak.uses_flatpak(tmp_path) is not native_installed
+        flatpak.ensure_integration(installation)

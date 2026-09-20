@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from integrations.launchers.host_process import (
-    host_has_command,
     run_on_host,
     running_in_flatpak,
 )
@@ -27,12 +26,10 @@ from overlay.wrapper_tokens import GAME_KEY_ENV, split_game_key
 from runtime.daemon_client import daemon_status
 
 from .launch_sync import launch_with_current_settings
-from .paths import CONFIG_FILENAME, HEROIC_FLATPAK_DIRNAME, heroic_config_root
+from .paths import heroic_installation
 
 LAUNCHER_ID = "heroic"
-COMMAND = "heroic"
 #: Heroic's Flatpak application id, for hosts that installed it that way.
-FLATPAK_APP_ID = "com.heroicgameslauncher.hgl"
 
 
 @dataclass(frozen=True)
@@ -133,24 +130,7 @@ def heroic_available(home: Path | None = None) -> bool:
     library of a Heroic that is no longer installed, and those games are still
     worth listing and configuring -- just not startable.
     """
-    return _launcher_command(home) is not None
-
-
-def _launcher_command(home: Path | None = None) -> list[str] | None:
-    root = heroic_config_root(home)
-    configured = (root / CONFIG_FILENAME).is_file()
-    flatpak = root == (home if home is not None else Path.home()) / HEROIC_FLATPAK_DIRNAME
-    # Once a library/configuration was selected, launch only that installation.
-    # Falling back to the other executable would silently ignore saved settings.
-    if (not configured or not flatpak) and host_has_command(COMMAND):
-        return [COMMAND]
-    if configured and not flatpak:
-        return None
-    if host_has_command("flatpak"):
-        installed = run_on_host(["flatpak", "info", FLATPAK_APP_ID])
-        if installed is not None and installed.returncode == 0:
-            return ["flatpak", "run", FLATPAK_APP_ID]
-    return None
+    return heroic_installation(home).command() is not None
 
 
 def launch_command(runner: str, app_name: str, *, home: Path | None = None) -> list[str] | None:
@@ -164,7 +144,7 @@ def launch_command(runner: str, app_name: str, *, home: Path | None = None) -> l
     # running one, whose own argv was parsed at ITS startup -- the flag alone
     # would raise the window over the game every time Heroic was already open.
     url = f"heroic://launch/{runner}/{app_name}?gui=false"
-    launcher = _launcher_command(home)
+    launcher = heroic_installation(home).command()
     return None if launcher is None else [*launcher, "--no-gui", url]
 
 

@@ -130,6 +130,7 @@ def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationMa
     _FakeCdpClient.fail = False
     monkeypatch.setattr(manager_module, "SteamCdpClient", _FakeCdpClient)
     monkeypatch.setattr(manager_module, "steam_running", lambda: True)
+    monkeypatch.setattr(manager_module, "steam_matches_installation", lambda home: True)
     return SteamIntegrationManager(
         home=steam_home,
         settings_path=tmp_path / "steam-game-settings.json",
@@ -917,3 +918,33 @@ def test_bulk_overlay_live_followup_excludes_failed_steam_writes(manager, monkey
     followup = SteamLibrarySource(manager).after_bulk_write("set_all_games_overlay", result)
     assert (followup is not None) == (running_id == APP_ID)
     assert path.read_text() == ("1" if running_id == APP_ID else "0")
+
+
+@pytest.mark.parametrize('preflight_ok', [False, True])
+def test_flatpak_steam_wrapper_write_targets_selected_library(manager, steam_home, monkeypatch, preflight_ok):
+    from integrations.launchers import flatpak, installation
+    from integrations.steam.users import steam_installation
+
+    root = steam_home / '.local/share/Steam'
+    sandbox = steam_home / '.var/app/com.valvesoftware.Steam/.local/share/Steam'
+    sandbox.parent.mkdir(parents=True)
+    root.rename(sandbox)
+    # A running native client is forbidden; this fake CDP belongs to Flatpak.
+    monkeypatch.setattr(manager_module, 'steam_matches_installation', lambda home: True)
+    monkeypatch.setattr(installation, 'host_command_path', lambda name: None)
+    prepared = []
+    def prepare(selected):
+        prepared.append(selected)
+        if not preflight_ok:
+            raise RuntimeError('sandbox failed')
+    monkeypatch.setattr(flatpak, 'ensure_integration', prepare)
+    manager.refresh()
+    selected = steam_installation(steam_home)
+    result = manager.set_game_enabled(APP_ID, True)
+    assert result.ok is preflight_ok
+    assert prepared == [selected]
+    if preflight_ok:
+        assert selected.wrapper in _FakeCdpClient.launch_options[APP_ID]
+        assert manager.set_game_enabled(APP_ID, False).ok
+    assert _FakeCdpClient.launch_options[APP_ID] == 'gamemoderun %command%'
+    assert not root.exists()

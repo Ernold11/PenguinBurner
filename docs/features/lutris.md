@@ -1,8 +1,21 @@
 # Lutris in Game Library
 
+Native and Flatpak installations share the same integration. When both have a
+configured library, PenguinBurner prefers native while its executable is
+available; otherwise it selects Flatpak. Library discovery, settings, Play and
+compatibility tools follow that choice. **Rescan** refreshes it after a launcher
+installation changes. Flatpak games receive a sandbox-local PenguinBurner runtime;
+restart the launcher after first enabling wrapping so it receives filesystem access.
+
+Flatpak Lutris uses `~/.var/app/net.lutris.Lutris/data/lutris/pga.db`, with
+configuration under that app's `config/lutris` directory when present, otherwise
+its data directory. Its compatibility picker queries Lutris inside that sandbox.
+
 [Game Library](game-library.md) lists installed Lutris games beside Steam.
 Enable **Wrap this game**, select a mode, and use **Play** or launch from Lutris.
-Changes take effect on the next launch.
+Wrapping and compatibility-tool changes take effect on the next launch.
+Profile modes, Adaptive targets and overlay visibility also apply live to an
+already wrapped game, with failures reported alongside the saved preference.
 
 ![Game Library with a Lutris game's settings](../assets/game-library.png)
 

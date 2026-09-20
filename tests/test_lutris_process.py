@@ -17,6 +17,8 @@ def test_a_game_is_started_by_its_database_id_through_the_lutris_cli(
     game's stored config, so the prefix_command PenguinBurner wrote is already
     in it and nothing here has to re-implement a launch.
     """
+    from integrations.launchers import installation
+    monkeypatch.setattr(installation, "host_command_path", lambda name: name)
     seen: list[list[str]] = []
 
     class _Popen:

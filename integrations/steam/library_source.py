@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_host_integration
 from integrations.launchers.compatibility import (
     CompatibilitySelection,
     CompatibilityTool,
@@ -34,7 +33,7 @@ from .launch_options import injection_state
 from .library import steam_playtime_hours
 from .manager import SteamGameRow, SteamIntegrationManager
 from .process import launch_steam_game, restart_steam
-from .users import default_steam_root
+from .users import default_steam_root, steam_installation
 
 
 class SteamLibrarySource(LiveOverlaySource):
@@ -228,7 +227,7 @@ class SteamLibrarySource(LiveOverlaySource):
 
     def restart(self):
         """Restart the Steam client. Named here because write_state points at it."""
-        return restart_steam()
+        return restart_steam(home=self._home)
 
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
         return library_bulk_actions()
@@ -252,10 +251,10 @@ class SteamLibrarySource(LiveOverlaySource):
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Steam to start a game. Returns (started, what to tell the user)."""
         try:
-            ensure_host_integration()
+            steam_installation(self._home).ensure_integration()
         except (OSError, RuntimeError) as error:
             return False, f"FAILED to repair the PenguinBurner Steam integration ({error})"
-        if launch_steam_game(game_id):
+        if launch_steam_game(game_id, home=self._home):
             return True, "launching via Steam…"
         return False, "FAILED to launch (steam not available)"
 

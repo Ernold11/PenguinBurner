@@ -18,6 +18,10 @@ from integrations.launchers.host_paths import (
     host_data_home,
     safe_config_name,
 )
+from integrations.launchers.installation import (
+    LauncherInstallation,
+    select_installation,
+)
 
 LUTRIS_DATA_DIRNAME = Path(".local") / "share" / "lutris"
 LUTRIS_CONFIG_DIRNAME = Path(".config") / "lutris"
@@ -29,9 +33,19 @@ COVERART_DIRNAME = "coverart"
 BANNER_DIRNAME = "banners"
 
 
+def lutris_installation(home: Path | None = None) -> LauncherInstallation:
+    base = home or Path.home()
+    return select_installation(
+        "lutris", "net.lutris.Lutris", home=home,
+        native_roots=(host_data_home(home) / "lutris",),
+        flatpak_roots=(base / ".var/app/net.lutris.Lutris/data/lutris",),
+        markers=(LIBRARY_DB_FILENAME,),
+    )
+
+
 def lutris_data_root(home: Path | None = None) -> Path:
     """Lutris's DATA_DIR: the library database and artwork. Never the configs."""
-    return host_data_home(home) / "lutris"
+    return lutris_installation(home).root
 
 
 def lutris_config_root(home: Path | None = None) -> Path:
@@ -43,8 +57,9 @@ def lutris_config_root(home: Path | None = None) -> Path:
     copy on a host whose legacy dir survives produces YAML Lutris never reads,
     so the wrapper silently never applies.
     """
-    legacy = host_config_home(home) / "lutris"
-    return legacy if legacy.is_dir() else lutris_data_root(home)
+    installation = lutris_installation(home)
+    legacy = ((installation.app_home / "config") if installation.flatpak else host_config_home(home)) / "lutris"
+    return legacy if legacy.is_dir() else installation.root
 
 
 def lutris_library_db(home: Path | None = None) -> Path:

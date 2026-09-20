@@ -11,10 +11,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from common.flatpak_wrappers import ensure_host_integration
 from overlay.wrapper_tokens import (
     ingame_latency_present,
     overlay_present,
+    replace_wrapper_executable,
     strip_penguin_burner_tokens,
     wrapper_present,
 )
@@ -29,6 +29,7 @@ from profiles.game_profile import (
 
 from .compatibility import CompatibilityTools
 from .game_settings import GameSettingsError, GameSettingsStore, LauncherGameSetting
+from .installation import LauncherInstallation, native_command
 from .wrapper_command import inject_wrapper, remove_wrapper
 
 #: The game's own level, as opposed to anything it inherits from.
@@ -125,6 +126,10 @@ class WrapperManager:
         """Whether this launcher has anything to read on this machine."""
         raise NotImplementedError
 
+    @property
+    def installation(self) -> LauncherInstallation:
+        raise NotImplementedError
+
     def read_games(self) -> Iterable[Any]:
         """The library. Each game exposes ``game_id`` and ``display_name``."""
         raise NotImplementedError
@@ -159,6 +164,7 @@ class WrapperManager:
         The launcher's own files are the truth: a user who edited the command
         in the launcher itself should see that here rather than our stale copy.
         """
+        native_command.cache_clear()
         settings = self._store.load(self._settings_path)
         self._rows = {
             game.game_id: self._row(
@@ -278,6 +284,7 @@ class WrapperManager:
             problem = self._ensure_wrapper_installed()
             if problem:
                 return ApplyResult(False, problem)
+        wanted = replace_wrapper_executable(wanted, self.installation.wrapper)
         write = self.write_command(row.game, wanted or None)
         if not write.ok:
             return ApplyResult(False, write.message, write.command)
@@ -345,6 +352,7 @@ class WrapperManager:
             wanted = inject_wrapper(
                 current,
                 overlay=setting.overlay,
+                executable=self.installation.wrapper,
                 launcher_id=self.launcher_id,
                 game_id=row.game.game_id,
                 ingame_latency=setting.ingame_latency,
@@ -436,13 +444,9 @@ class WrapperManager:
         )
 
     def _ensure_wrapper_installed(self) -> str:
-        """Make the PENGUIN_BURNER host wrapper real before naming it, or say why not.
-
-        Outside a Flatpak this is a no-op: the console-script entry point ships
-        with every pip/native install.
-        """
+        """Prepare the selected installation before saving its wrapper command."""
         try:
-            ensure_host_integration()
+            self.installation.ensure_integration()
         except (OSError, RuntimeError) as error:
             return f"PenguinBurner launcher integration repair failed: {error}"
         return ""

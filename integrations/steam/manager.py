@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_host_integration
+from integrations.launchers.installation import native_command
 from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
@@ -40,15 +40,16 @@ from .launch_options import (
     injection_state,
     launch_options_problems,
     remove_injection,
+    retarget_wrapper,
 )
 from .library import InstalledSteamGame, installed_steam_games
-from .process import running_steam_game_ids, steam_running
+from .process import running_steam_game_ids, steam_matches_installation, steam_running
 from .settings import (
     SteamGameSetting,
     load_steam_game_settings,
     store_steam_game_setting,
 )
-from .users import SteamUser, active_steam_user
+from .users import SteamUser, active_steam_user, steam_installation
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class SteamIntegrationManager:
         return steam_running()
 
     def cdp_ready(self) -> bool:
-        return cdp_available(timeout_s=1.0)
+        return steam_matches_installation(self._home) and cdp_available(timeout_s=1.0)
 
     def running_game_ids(self) -> frozenset[str] | None:
         """Every running Steam game's app id in one subprocess (for polling).
@@ -116,7 +117,7 @@ class SteamIntegrationManager:
         if not str(app_id).isdecimal():
             return ApplyResult(False, "invalid app id")
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 if not client.terminate_app_supported():
                     return ApplyResult(
                         False, "this Steam build does not expose TerminateApp"
@@ -151,6 +152,7 @@ class SteamIntegrationManager:
         *,
         read_launch_options: bool = True,
     ) -> tuple[SteamGameRow, ...]:
+        native_command.cache_clear()
         games = installed_steam_games(self._home)
         if read_launch_options:
             games = self._read_all_app_details(games)
@@ -229,7 +231,7 @@ class SteamIntegrationManager:
         authoritative for the runtime it actually selected through defaults.
         """
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 fresh_details = client.app_details_many(game.app_id for game in games)
         except SteamCdpError:
             fresh_details = {}
@@ -386,7 +388,7 @@ class SteamIntegrationManager:
         if self._compat_tools_unavailable:
             return ()
         try:
-            with SteamCdpClient(timeout_s=5.0) as client:
+            with self._client(timeout_s=5.0) as client:
                 if not client.compat_tool_selection_supported():
                     self._compat_tools_unavailable = True
                     return ()
@@ -406,7 +408,7 @@ class SteamIntegrationManager:
         if tool_name and tool_name not in available:
             return ApplyResult(False, "selected compatibility tool is unavailable")
         try:
-            with SteamCdpClient(timeout_s=5.0) as client:
+            with self._client(timeout_s=5.0) as client:
                 if not client.compat_tool_selection_supported():
                     return ApplyResult(False, "this Steam build cannot change Proton live")
                 client.specify_compat_tool(app_id, tool_name)
@@ -429,6 +431,13 @@ class SteamIntegrationManager:
         problems = launch_options_problems(text)
         if problems:
             return ApplyResult(False, "; ".join(problems))
+        if injection_state(text).wrapped:
+            try:
+                installation = steam_installation(self._home)
+                installation.ensure_integration()
+                text = retarget_wrapper(text, installation.wrapper)
+            except (OSError, RuntimeError, ValueError) as error:
+                return ApplyResult(False, f"PenguinBurner integration repair failed: {error}")
         write = self._write_launch_options(app_id, text)
         if not write.ok:
             return write
@@ -579,17 +588,21 @@ class SteamIntegrationManager:
             )
         if setting.active:
             try:
-                ensure_host_integration()
+                steam_installation(self._home).ensure_integration()
             except (OSError, RuntimeError) as error:
                 return ApplyResult(
                     False,
                     f"PenguinBurner Steam integration repair failed: {error}",
                 )
-            desired = inject_launch_options(
-                current,
-                overlay=setting.overlay,
-                ingame_latency=setting.ingame_latency,
-            )
+            try:
+                desired = inject_launch_options(
+                    current,
+                    overlay=setting.overlay,
+                    ingame_latency=setting.ingame_latency,
+                    executable=steam_installation(self._home).wrapper,
+                )
+            except ValueError as error:
+                return ApplyResult(False, str(error))
             # The stored original is a snapshot taken when the wrapper last
             # went in, and it is only still the original while the wrapper is
             # still there. On an unwrapped line the live command *is* the
@@ -639,6 +652,11 @@ class SteamIntegrationManager:
 
     # -- helpers -------------------------------------------------------------
 
+    def _client(self, *, timeout_s: float) -> SteamCdpClient:
+        if not steam_matches_installation(self._home):
+            raise SteamCdpError("Close the other Steam installation before applying settings.")
+        return SteamCdpClient(timeout_s=timeout_s)
+
     def _store(self, app_id: str, setting: SteamGameSetting) -> None:
         user = self.active_user()
         store_steam_game_setting(
@@ -662,7 +680,7 @@ class SteamIntegrationManager:
 
     def _write_launch_options(self, app_id: str, value: str) -> ApplyResult:
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 if client.set_app_launch_options(app_id, value):
                     self._launch_options[app_id] = value
                     return ApplyResult(True, "Applied live.", launch_options=value)

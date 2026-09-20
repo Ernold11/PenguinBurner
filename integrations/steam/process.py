@@ -8,22 +8,18 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 
 from integrations.launchers.host_process import (
     HOST_PGREP,
-    host_command_path,
     host_pgrep,
     run_on_host,
     start_on_host,
 )
 
+from .users import steam_installation
+
 _STEAM_LAUNCH_APPID_RE = re.compile(r"SteamLaunch AppId=(\d+)")
-
-
-def _steam_command(*args: str) -> list[str] | None:
-    """The Steam client invocation, or None when Steam is not installed."""
-    executable = host_command_path("steam")
-    return None if executable is None else [executable, *args]
 
 
 def steam_running() -> bool:
@@ -57,15 +53,47 @@ def running_steam_game_ids() -> frozenset[str] | None:
     return frozenset(ids)
 
 
-def steam_available() -> bool:
-    return host_command_path("steam") is not None
+# Read only launcher identity, never export the rest of a process environment.
+_STEAM_INSTALLATIONS = """
+import os
+from pathlib import Path
+kinds = set()
+for proc in Path('/proc').iterdir():
+    try:
+        if not proc.name.isdigit() or proc.stat().st_uid != os.getuid():
+            continue
+        if (proc / 'comm').read_text().strip() != 'steam':
+            continue
+        env = (proc / 'environ').read_bytes().split(b'\\0')
+        kinds.add('flatpak' if b'FLATPAK_ID=com.valvesoftware.Steam' in env else 'native')
+    except FileNotFoundError:
+        continue
+    except (OSError, ValueError):
+        kinds.add('unknown')
+print(' '.join(sorted(kinds)))
+"""
 
 
-def shutdown_steam(*, timeout_s: float = 30.0) -> bool:
+def steam_matches_installation(home: Path | None = None) -> bool:
+    """Do not send global CDP/IPC commands to another Steam installation."""
+    result = run_on_host(['/usr/bin/python3', '-c', _STEAM_INSTALLATIONS], capture=True)
+    if result is None or result.returncode:
+        return False
+    expected = 'flatpak' if steam_installation(home).flatpak else 'native'
+    return set((result.stdout or '').split()) <= {expected}
+
+
+def steam_available(home: Path | None = None) -> bool:
+    return steam_installation(home).command() is not None
+
+
+def shutdown_steam(*, timeout_s: float = 30.0, home: Path | None = None) -> bool:
     """Ask Steam to exit cleanly and wait until the process is gone."""
     if not steam_running():
         return True
-    command = _steam_command("-shutdown")
+    if not steam_matches_installation(home):
+        return False
+    command = steam_installation(home).command("-shutdown")
     if command is None or run_on_host(command, timeout=10.0) is None:
         return False
     deadline = time.monotonic() + timeout_s
@@ -76,20 +104,24 @@ def shutdown_steam(*, timeout_s: float = 30.0) -> bool:
     return not steam_running()
 
 
-def launch_steam(*, silent: bool = True) -> bool:
-    command = _steam_command(*(["-silent"] if silent else []))
+def launch_steam(*, silent: bool = True, home: Path | None = None) -> bool:
+    if not steam_matches_installation(home):
+        return False
+    command = steam_installation(home).command(*(["-silent"] if silent else []))
     return command is not None and start_on_host(command)
 
 
-def restart_steam(*, shutdown_timeout_s: float = 30.0, silent: bool = True) -> bool:
-    if not shutdown_steam(timeout_s=shutdown_timeout_s):
+def restart_steam(*, shutdown_timeout_s: float = 30.0, silent: bool = True, home: Path | None = None) -> bool:
+    if not shutdown_steam(timeout_s=shutdown_timeout_s, home=home):
         return False
-    return launch_steam(silent=silent)
+    return launch_steam(silent=silent, home=home)
 
 
-def launch_steam_game(app_id: str) -> bool:
+def launch_steam_game(app_id: str, *, home: Path | None = None) -> bool:
     """Ask the running Steam client to launch a game (detached)."""
     if not str(app_id).isdigit():
         return False
-    command = _steam_command("-applaunch", str(app_id))
+    if not steam_matches_installation(home):
+        return False
+    command = steam_installation(home).command("-applaunch", str(app_id))
     return command is not None and start_on_host(command)
