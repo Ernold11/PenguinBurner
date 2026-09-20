@@ -84,7 +84,7 @@ def effective_prefix_command(
     return EffectiveCommand("", "")
 
 
-def read_game_config(config_path: str | Path) -> dict:
+def read_game_config(config_path: str | Path, *, strict: bool = False) -> dict:
     """The whole YAML document, or an empty one when the game has no config."""
     path = Path(config_path).expanduser()
     try:
@@ -99,6 +99,8 @@ def read_game_config(config_path: str | Path) -> dict:
         document = yaml.safe_load(text)
     except yaml.YAMLError as error:
         raise LutrisConfigError(f"{path.name} is not valid YAML: {error}") from error
+    if strict and not isinstance(document, dict):
+        raise LutrisConfigError(f"{path.name} must contain a settings mapping.")
     return document if isinstance(document, dict) else {}
 
 

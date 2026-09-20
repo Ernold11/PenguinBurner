@@ -94,6 +94,8 @@ class WrapperLibrarySource:
 
     def refresh(self, *, deep: bool = True) -> None:
         self.manager.refresh()
+        if deep:
+            self.manager.refresh_compat_tools()
         self._rows = tuple(self.manager.rows())
         # Renderer inspection belongs on the scan worker, never in games() or
         # selection handling: it walks a game's install directory. A deep
@@ -120,7 +122,8 @@ class WrapperLibrarySource:
             subtitle = self.command_field_inherited_subtitle.format(
                 name=self.command_field_key, source=row.source_label
             )
-        return (
+        compatibility = self.manager.compat_tool_field(game.game_id)
+        return ((compatibility,) if compatibility is not None else ()) + (
             LauncherField(
                 key=self.command_field_key,
                 kind=FIELD_TEXT,

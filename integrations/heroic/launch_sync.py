@@ -145,12 +145,16 @@ def _probe(root: Path, stop: dict | None = None) -> dict:
 
 
 def _settings_fingerprint(root: Path, home: Path | None) -> str:
-    """Hash effective wrapper commands, ignoring Heroic's formatting rewrites."""
+    """Hash wrappers and compatibility choices, ignoring formatting rewrites."""
     global_command = entries_command(read_global_entries(home))
+    defaults = json.loads((root / "config.json").read_text()).get("defaultSettings", {})
+    default_wine = defaults.get("wineVersion")
     commands = {}
+    versions = {}
     for path in sorted((root / "GamesConfig").glob("*.json")):
         document = json.loads(path.read_text())
         settings = document.get(path.stem, {})
+        versions[path.stem] = settings.get("wineVersion", default_wine)
         commands[path.stem] = (
             entries_command(settings["wrapperOptions"])
             if "wrapperOptions" in settings else global_command
@@ -161,6 +165,7 @@ def _settings_fingerprint(root: Path, home: Path | None) -> str:
     wrapper = base / ".var/app/com.heroicgameslauncher.hgl/data/penguin-burner/PENGUIN_BURNER"
     payload = {
         "default": global_command, "games": commands,
+        "default_wine": default_wine, "wine_versions": versions,
         "flatpak_runtime": wrapper.read_text() if wrapper.is_file() else "",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()

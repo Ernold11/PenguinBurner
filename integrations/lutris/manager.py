@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from integrations.launchers.compatibility import CompatibilityTools
 from integrations.launchers.wrapper_manager import (
     CommandWrite,
     EffectiveCommand,
     WrapperManager,
 )
 
+from .compatibility import LutrisCompatibility
 from .config_store import (
     SOURCE_LABELS,
     LutrisConfigError,
@@ -37,6 +39,10 @@ class LutrisIntegrationManager(WrapperManager):
     ):
         super().__init__(LUTRIS_GAME_SETTINGS_STORE, settings_path=settings_path)
         self._home = home
+        self.compatibility = CompatibilityTools(
+            LutrisCompatibility(home),
+            guidance="Applies on the next launch. Close Lutris's game settings before editing here.",
+        )
 
     @property
     def available(self) -> bool:

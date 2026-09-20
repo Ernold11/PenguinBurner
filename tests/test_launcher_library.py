@@ -230,6 +230,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     tmp_path, monkeypatch
 ) -> None:
     from types import SimpleNamespace
+
     from integrations.lutris import library_source as lutris_source
 
     binary = tmp_path / "Game.x86_64"
@@ -244,7 +245,9 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     row = SimpleNamespace(
         game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)
     )
-    manager = SimpleNamespace(refresh=lambda: None, rows=lambda: [row])
+    manager = SimpleNamespace(
+        refresh=lambda: None, rows=lambda: [row], refresh_compat_tools=lambda: None,
+    )
     source = lutris_source.LutrisLibrarySource(manager=manager)
     monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
     source.refresh()

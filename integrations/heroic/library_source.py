@@ -68,7 +68,10 @@ class HeroicLibrarySource(WrapperLibrarySource):
             if ready else
             "Flatpak setup required: turn Wrap this game off and on, then use Play."
         )
-        return tuple(replace(field, subtitle=note) for field in fields)
+        return tuple(
+            replace(field, subtitle=note) if field.key == self.command_field_key else field
+            for field in fields
+        )
 
     def overlay_capability(self, row: LauncherGameRow) -> tuple[bool, str]:
         game = row.game

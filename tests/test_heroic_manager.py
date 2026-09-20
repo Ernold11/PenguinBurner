@@ -284,7 +284,8 @@ def test_the_library_adapter_describes_the_game_the_tab_draws(tmp_path) -> None:
     assert game.subtitle == "Epic"
     assert game.installed_at == 0  # Heroic does not report an install timestamp.
     assert game.overlay_supported is True  # Proton translates everything to Vulkan
-    (field,) = source.fields(game)
+    (compatibility, field) = source.fields(game)
+    assert compatibility.key == "compat_tool"
     assert field.key == "wrapper_command"
     assert field.setter == "set_game_command"
     assert "inherited from Heroic global settings" in field.subtitle

@@ -27,7 +27,9 @@ from profiles.game_profile import (
     normalize_game_target_fps,
 )
 
+from .compatibility import CompatibilityTools
 from .game_settings import GameSettingsError, GameSettingsStore, LauncherGameSetting
+from .library import LauncherField
 from .wrapper_command import inject_wrapper, remove_wrapper
 
 #: The game's own level, as opposed to anything it inherits from.
@@ -88,7 +90,28 @@ class LauncherGameRow:
 
 
 class WrapperManager:
-    """Read a launcher's games, and own the field that runs our wrapper."""
+    """Read a launcher's games, and own its wrapper and optional compatibility settings."""
+
+    compatibility: CompatibilityTools | None = None
+
+    def refresh_compat_tools(self) -> None:
+        if self.compatibility is not None:
+            self.compatibility.refresh()
+
+    def compat_tool_field(self, game_id: str) -> LauncherField | None:
+        row = self.row(game_id)
+        if self.compatibility is None or row is None:
+            return None
+        return self.compatibility.field(row.game)
+
+    def set_game_compat_tool(self, game_id: str, value: str) -> ApplyResult:
+        row = self.row(game_id)
+        if self.compatibility is None or row is None:
+            return ApplyResult(False, "No compatibility settings for this game.")
+        try:
+            return ApplyResult(True, self.compatibility.save(row.game, value))
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            return ApplyResult(False, str(error))
 
     launcher_id: str = ""
     display_name: str = ""

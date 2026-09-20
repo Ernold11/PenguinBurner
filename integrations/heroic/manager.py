@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from integrations.launchers.compatibility import CompatibilityTools
 from integrations.launchers.wrapper_manager import (
     CommandWrite,
     EffectiveCommand,
@@ -13,6 +14,7 @@ from integrations.launchers.wrapper_manager import (
     WrapperManager,
 )
 
+from .compatibility import HeroicCompatibility
 from .config_store import (
     SOURCE_LABELS,
     HeroicConfigError,
@@ -39,6 +41,10 @@ class HeroicIntegrationManager(WrapperManager):
     ):
         super().__init__(HEROIC_GAME_SETTINGS_STORE, settings_path=settings_path)
         self._home = home
+        self.compatibility = CompatibilityTools(
+            HeroicCompatibility(home),
+            guidance="Applies on the next launch. Use Play here to refresh Heroic's saved settings.",
+        )
         self._global_entries: list[dict] | None = None
 
     def refresh(self) -> tuple[LauncherGameRow, ...]:
