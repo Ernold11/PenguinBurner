@@ -20,10 +20,10 @@ from .config_store import (
     read_global_entries,
     write_wrapper_command,
 )
+from .flatpak import ensure_integration, sandbox_command, uses_flatpak
 from .library import InstalledHeroicGame, read_heroic_games
 from .paths import game_config_path, heroic_installed
 from .settings import HEROIC_GAME_SETTINGS_STORE
-from .flatpak import ensure_integration, sandbox_command, uses_flatpak
 
 
 class HeroicIntegrationManager(WrapperManager):

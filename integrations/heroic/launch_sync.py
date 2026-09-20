@@ -16,7 +16,11 @@ from pathlib import Path
 
 from common.atomic_write import atomic_write_text
 from common.penguin_burner_paths import default_user_config_dir
-from integrations.launchers.host_process import run_on_host, running_in_flatpak, start_on_host
+from integrations.launchers.host_process import (
+    run_on_host,
+    running_in_flatpak,
+    start_on_host,
+)
 
 from .config_store import entries_command, read_global_entries
 from .paths import heroic_config_root
@@ -111,7 +115,7 @@ def _probe(root: Path, stop: dict | None = None) -> dict:
     try:
         payload = json.loads(result.stdout)
         if not isinstance(payload["launchers"], dict) or not isinstance(payload["busy"], bool):
-            raise ValueError("invalid launcher probe")
+            raise TypeError("invalid launcher probe")
         return payload
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError("Could not read Heroic's running launcher state.") from error

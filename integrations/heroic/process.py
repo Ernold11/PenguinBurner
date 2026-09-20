@@ -26,6 +26,7 @@ from integrations.launchers.host_process import (
 )
 from overlay.wrapper_tokens import GAME_KEY_ENV, split_game_key
 from runtime.daemon_client import daemon_status
+
 from .launch_sync import launch_with_current_settings
 
 LAUNCHER_ID = "heroic"

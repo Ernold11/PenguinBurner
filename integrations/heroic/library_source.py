@@ -9,12 +9,12 @@ from integrations.launchers.library_source import WrapperLibrarySource
 from integrations.launchers.wrapper_manager import ApplyResult, LauncherGameRow
 from overlay.render_api import overlay_support
 
-from .manager import HeroicIntegrationManager
 from .flatpak import uses_flatpak, wrapper_path
+from .manager import HeroicIntegrationManager
 from .process import (
+    HeroicSessions,
     heroic_available,
     launch_heroic_game,
-    HeroicSessions,
     probe_heroic_sessions,
     stop_heroic_game,
 )

@@ -10,10 +10,10 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from pathlib import Path
 import shlex
 import tempfile
 import zipfile
+from pathlib import Path
 
 from common.atomic_write import atomic_write_text
 from integrations.launchers.host_process import run_on_host

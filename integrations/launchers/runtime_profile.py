@@ -24,7 +24,7 @@ def profile_argv(setting: GameProfileSetting) -> list[str] | None:
     """The daemon request this preset means on today's hardware, or None."""
     try:
         identities = list(DaemonGpuClient.discover_identities())
-    except Exception:
+    except Exception:  # noqa: BLE001 - profile automation must not block game launch
         return None
     target = game_gpu_target(setting, identities)
     if target is None:
@@ -54,7 +54,7 @@ def send_profile(
             app_id=str(app_id),
             timeout_s=45.0,
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - profile automation must not block game launch
         return _skipped(error)
     if isinstance(result, dict) and (
         bool(result.get("ignored")) or not bool(result.get("started", True))
