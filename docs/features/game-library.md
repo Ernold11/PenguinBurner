@@ -82,6 +82,12 @@ standing profile when the game exits. If the daemon is unavailable, the game
 still launches. Only one game can own the daemon's active monitoring and
 Adaptive engine at a time; concurrent games do not replace that owner.
 
+Adaptive and fixed-tier game profiles preserve the target GPU's active fan
+policy, including its silent fan curve. Changing the Adaptive FPS target during
+a game also preserves that policy. **Stock** restores automatic fan control for
+the game. Switching back from Stock restores the target GPU's standing fan
+policy; exiting restores the standing profile and its fan settings.
+
 Fixed profiles work independently of the game's graphics API. Overlay and
 Adaptive frame telemetry require Vulkan, including DXVK and vkd3d-proton.
 Known native OpenGL games have those controls disabled; fixed profiles and
