@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.8.0
+Version:        0.8.1
 Release:        1%{?dist}
 Summary:        Automatic NVIDIA GPU undervolting, overclocking, and per-game tuning
 
@@ -121,6 +121,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Mon Sep 21 2026 PenguinBurner contributors <noreply@github.com> - 0.8.1-1
+- Add the Heroic Games Launcher integration, on par with Steam and Lutris.
+- Add a per-game Wine/Proton compatibility picker and live mode, target and
+  overlay changes for a running wrapped game.
+- Track launcher sessions from events instead of polling, and steady Adaptive
+  against alt-tab frame-time spikes.
+
 * Sun Sep 06 2026 PenguinBurner contributors <noreply@github.com> - 0.8.0-1
 - Add Auto-UV recovery, smooth curves, per-tier targets and clearer profile metrics.
 - Unify the Game Library and improve adaptive switching under frame-rate caps.
