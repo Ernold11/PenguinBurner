@@ -23,7 +23,7 @@ from .config_store import (
     write_launch_arguments,
 )
 from .library import InstalledFaugusGame, read_faugus_games
-from .paths import faugus_installed
+from .paths import faugus_installation, faugus_installed
 from .settings import FAUGUS_GAME_SETTINGS_STORE
 
 
@@ -52,6 +52,10 @@ class FaugusIntegrationManager(WrapperManager):
             # reports the real error when the user tries to change something.
             self._document = []
         return super().refresh()
+
+    @property
+    def installation(self):
+        return faugus_installation(self._home)
 
     @property
     def available(self) -> bool:

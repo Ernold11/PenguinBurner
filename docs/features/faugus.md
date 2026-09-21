@@ -1,5 +1,11 @@
 # Faugus Launcher in Game Library
 
+Native and Flatpak installations share the same integration. When both have a
+configured library, PenguinBurner prefers native while its executable is
+available; otherwise it selects Flatpak. Library discovery, settings and Play
+follow that choice. **Rescan** refreshes it after a launcher installation
+changes.
+
 [Game Library](game-library.md) lists your Faugus Launcher games beside Steam,
 Lutris and Heroic. Enable **Wrap this game**, select a mode, and use **Play** or
 launch from Faugus. Changes apply the next time Faugus starts the game: it
@@ -48,8 +54,8 @@ through the game identity and session PID carried in the process environment,
 and only those sessions can be stopped from PenguinBurner.
 
 If a game starts without the wrapper, Game Library shows **Running in Faugus**
-instead of waiting for the startup timeout. Close that game in Faugus or in the
-game itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
+rather than reporting nothing. Close that game in Faugus or in the game
+itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
 in front of every game it starts — the same one its own "kill this game" uses —
 so they are observed even though they carry none of our identity.
 

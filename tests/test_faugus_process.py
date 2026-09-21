@@ -5,17 +5,37 @@ from __future__ import annotations
 import json
 import subprocess
 
-from integrations.faugus import process
-from integrations.launchers import wrapped_sessions
+import pytest
+
+from integrations.faugus import paths, process
+from integrations.launchers import installation, wrapped_sessions
 from integrations.launchers.wrapped_sessions import LauncherSessions
 
 
-def _available(monkeypatch) -> None:
-    monkeypatch.setattr(process, "host_has_command", lambda name: name == process.COMMAND)
+@pytest.fixture(autouse=True)
+def isolated_installation(tmp_path, monkeypatch):
+    resolver = paths.faugus_installation
+    monkeypatch.setattr(
+        process, "faugus_installation", lambda home=None: resolver(home or tmp_path)
+    )
+    installation.native_command.cache_clear()
+    yield
+    installation.native_command.cache_clear()
+
+
+def _installed(monkeypatch, *, native: bool = True) -> None:
+    monkeypatch.setattr(
+        installation, "host_command_path", lambda name: name if native else None
+    )
+    monkeypatch.setattr(
+        installation,
+        "run_on_host",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0),
+    )
 
 
 def test_a_game_is_started_through_faugus_own_command(monkeypatch) -> None:
-    _available(monkeypatch)
+    _installed(monkeypatch)
     started: list[list[str]] = []
     monkeypatch.setattr(process, "start_on_host", lambda cmd: started.append(cmd) or True)
 
@@ -24,24 +44,33 @@ def test_a_game_is_started_through_faugus_own_command(monkeypatch) -> None:
 
 
 def test_a_flatpak_faugus_is_asked_the_same_thing(monkeypatch) -> None:
-    monkeypatch.setattr(process, "host_has_command", lambda name: name == "flatpak")
-    monkeypatch.setattr(
-        process,
-        "run_on_host",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0),
-    )
+    _installed(monkeypatch, native=False)
 
     assert process.launch_command("expedition-33") == [
         "flatpak",
         "run",
-        process.FLATPAK_APP_ID,
+        paths.FAUGUS_FLATPAK_APP_ID,
         "--game",
         "expedition-33",
     ]
 
 
+def test_a_faugus_that_is_not_installed_cannot_start_a_game(monkeypatch) -> None:
+    """A library can outlive its launcher, and then Play has nothing to call."""
+    _installed(monkeypatch, native=False)
+    monkeypatch.setattr(
+        installation,
+        "run_on_host",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1),
+    )
+
+    assert not process.faugus_available()
+    assert process.launch_command("expedition-33") is None
+    assert not process.launch_faugus_game("expedition-33")
+
+
 def test_an_unusable_id_never_reaches_the_command_line(monkeypatch) -> None:
-    _available(monkeypatch)
+    _installed(monkeypatch)
 
     assert process.launch_command("../elsewhere") is None
     assert process.launch_command("--version") is None

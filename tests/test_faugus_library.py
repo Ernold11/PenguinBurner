@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from integrations.faugus.library import read_faugus_games
 from integrations.faugus.paths import config_path, faugus_installed, games_path
+
+
+@pytest.fixture(autouse=True)
+def _faugus_installed_natively(native_launcher_installed) -> None:
+    """Which tree wins depends on the host, so these tests name theirs."""
+
 
 GAME = {
     "gameid": "expedition-33",

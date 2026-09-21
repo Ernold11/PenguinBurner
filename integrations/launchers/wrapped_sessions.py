@@ -35,10 +35,10 @@ class LauncherSessions:
 
 
 # A stdlib-only host probe: the PenguinBurner package need not be installed
-# outside our Flatpak. Only the session leader qualifies as a wrapper session;
-# helpers and game children inherit its identity but must never become targets
-# for Stop. The launcher's own marker is inherited by a whole game tree, so
-# those pids are reported for observation only.
+# outside our Flatpak. Wrapper leaders and identified successors qualify for
+# Stop; PB's own detached helpers clear the session id and so do not. The
+# launcher's own marker is inherited by a whole game tree, so those pids are
+# reported for observation only.
 _SESSION_PROBE = """
 import json, os, sys
 from pathlib import Path
@@ -55,7 +55,13 @@ for proc in Path(sys.argv[1]).iterdir():
             continue
         fields = (proc / 'environ').read_bytes().split(b'\\0')
         env = dict(field.split(b'=', 1) for field in fields if b'=' in field)
-        if env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode():
+        if (env.get(b'PENGUIN_BURNER_SESSION_ID')
+                or env.get(b'PENGUIN_BURNER_TELEMETRY_SESSION') == proc.name.encode()):
+            # A forked successor inherits the launch identity but keeps the
+            # original leader's telemetry PID, so SESSION_ID is what carries
+            # Stop authority through a handoff. PB's detached helpers clear it.
+            if (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z':
+                continue
             key = env.get(sys.argv[2].encode(), b'').decode('utf-8', errors='replace')
             if key:
                 sessions.append([int(proc.name), key])

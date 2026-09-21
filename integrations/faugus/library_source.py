@@ -34,7 +34,7 @@ class FaugusLibrarySource(WrapperLibrarySource):
         return FaugusIntegrationManager(home=home, settings_path=settings_path)
 
     def probe_can_launch(self) -> bool:
-        return faugus_available()
+        return faugus_available(self._home)
 
     def overlay_capability(self, row: LauncherGameRow) -> tuple[bool, str]:
         game = row.game
@@ -58,7 +58,7 @@ class FaugusLibrarySource(WrapperLibrarySource):
         row = self.manager.row(game_id)
         if row is None:
             return False, "FAILED to launch (no such game in the Faugus library)"
-        if launch_faugus_game(row.game.game_id):
+        if launch_faugus_game(row.game.game_id, home=self._home):
             return True, "launching via Faugus Launcher…"
         return False, "FAILED to launch (faugus-launcher would not start the game)"
 
