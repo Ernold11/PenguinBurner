@@ -83,3 +83,24 @@ def _launcher_command_cache():
     native_command.cache_clear()
     yield
     native_command.cache_clear()
+
+
+@pytest.fixture
+def native_launcher_installed(monkeypatch):
+    """Say the host has the native launcher, instead of asking the real one.
+
+    select_installation() only keeps the native roots while the launcher has
+    an executable on PATH, and falls back to ~/.var/app/<app id>/... when it
+    does not. A test that asserts on native Lutris or Heroic paths without
+    saying which host it is running on therefore passes on a developer machine
+    that has the launcher and fails on CI, which does not -- so it has to say.
+
+    A test about a missing native copy stubs host_command_path itself; that
+    runs after this fixture and wins.
+    """
+    from integrations.launchers import installation
+
+    monkeypatch.setattr(
+        installation, "host_command_path", lambda name: f"/usr/bin/{name}"
+    )
+    installation.native_command.cache_clear()

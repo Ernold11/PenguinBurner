@@ -18,6 +18,12 @@ from integrations.lutris.paths import (
     system_config_path,
 )
 
+
+@pytest.fixture(autouse=True)
+def _lutris_installed_natively(native_launcher_installed) -> None:
+    """Every path here is the native layout, so pin the host that has it."""
+
+
 _SCHEMA = """
 create table games (
     id INTEGER PRIMARY KEY, name TEXT, sortname TEXT, slug TEXT,

@@ -19,6 +19,11 @@ from integrations.lutris import compatibility as lutris_compat
 from integrations.lutris.library_source import LutrisLibrarySource
 
 
+@pytest.fixture(autouse=True)
+def _launchers_installed_natively(native_launcher_installed) -> None:
+    """Probe the native installation unless a test asks for the Flatpak one."""
+
+
 def executable(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('#!/bin/sh\nexit 0\n')
