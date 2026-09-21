@@ -10,6 +10,7 @@ use crate::gpu::GpuBackend;
 
 use super::apply::apply_adaptive_curve;
 use super::ceiling::FlattenedClockCeilingController;
+use super::frametime::FrametimeStats;
 use super::guard::select_expected_vf_samples;
 use super::latency_rx::METER_SAMPLE_MAX_AGE_S;
 use super::logfmt::{tier_switch_line, DecisionInputs};
@@ -73,10 +74,34 @@ pub struct FrametimeReadings {
     pub p95_ms: Option<f64>,
     pub p50_ms: Option<f64>,
     pub p50_source: MedianSource,
-    /// Share of the window past the badly-slow bar. A tail can be one stutter;
-    /// a ratio cannot, which is why the branch that jumps straight to the top
-    /// tier asks for it.
-    pub miss_ratio: Option<f64>,
+    /// Base-frame statistics for the shared slowdown guard, when measurable.
+    /// Separate from the cap/probe median, which may include generated frames.
+    pub promotion_stats: Option<FrametimeStats>,
+}
+
+impl FrametimeReadings {
+    pub fn from_snapshot(latency_snapshot: Option<&LatencySnapshot>) -> Self {
+        // The marker median is preferred: it is a median of the same accepted
+        // set as the p95, so the two are comparable. Present pacing is the
+        // fallback, and the source travels with the value because a latch made
+        // against one must never be re-tested against the other.
+        let (p50_ms, p50_source) = match latency_snapshot {
+            Some(snapshot) => match snapshot.base_present_frametime_p50_ms {
+                Some(ms) => (Some(ms), MedianSource::Marker),
+                None => match snapshot.present_pacing_p50_ms {
+                    Some(ms) => (Some(ms), MedianSource::Pacing),
+                    None => (None, MedianSource::None),
+                },
+            },
+            None => (None, MedianSource::None),
+        };
+        Self {
+            p95_ms: latency_snapshot.and_then(|s| s.base_present_frametime_p95_ms),
+            p50_ms,
+            p50_source,
+            promotion_stats: latency_snapshot.and_then(|s| s.promotion_stats),
+        }
+    }
 }
 
 impl From<Option<f64>> for FrametimeReadings {
@@ -86,7 +111,7 @@ impl From<Option<f64>> for FrametimeReadings {
             p95_ms,
             p50_ms: None,
             p50_source: MedianSource::None,
-            miss_ratio: None,
+            promotion_stats: None,
         }
     }
 }
@@ -279,8 +304,6 @@ struct PolicyState {
     median_ms: Option<f64>,
     median_source: MedianSource,
     promotion_probe: Option<PromotionProbe>,
-    /// Share of this tick's window past the badly-slow bar, when known.
-    miss_ratio: Option<f64>,
     /// Consecutive frame ticks that have looked externally capped without a
     /// latch being held yet. Recognition waits for
     /// `frame_cap_confirm_windows` of these; the tier is held while it does.
@@ -362,44 +385,12 @@ impl AdaptiveProfileController {
                 median_ms: None,
                 median_source: MedianSource::None,
                 promotion_probe: None,
-                miss_ratio: None,
                 frame_cap_streak: 0,
                 desktop_idle_since: None,
                 frames_last_tick: false,
             },
             util_samples: std::collections::VecDeque::new(),
         }
-    }
-
-    /// The deadline a frame has to clear to count as on time.
-    ///
-    /// The badly-slow bar rather than the target: a frame over target is late,
-    /// but a frame over *this* is the kind of late the ladder is allowed to
-    /// answer by jumping a tier -- so it is the bar worth counting.
-    /// Whether one badly-slow window is evidence enough to jump a tier.
-    ///
-    /// The branch below answers a single window by going straight to the top,
-    /// and a promotion takes one window where every step back down pays its
-    /// dwell -- so one stutter can outrun several minutes of easing. Two things
-    /// argue it is not a stutter: most of the window missed the deadline, and
-    /// the median is over target too, not just the tail.
-    ///
-    /// Missing base-frame readings mean the old behaviour. The present-pacing
-    /// median can include generated frames, so it cannot be compared with the
-    /// base-frame target. It remains useful for like-for-like cap/probe checks.
-    fn badly_slow_is_evidenced(&self) -> bool {
-        if self
-            .state
-            .miss_ratio
-            .is_some_and(|ratio| ratio < self.config.badly_slow_miss_ratio_min)
-        {
-            return false;
-        }
-        !(self.state.median_source == MedianSource::Marker
-            && self
-                .state
-                .median_ms
-                .is_some_and(|median| median <= self.config.target_ms))
     }
 
     /// The reference a fresh latch is made against: the median where one
@@ -495,7 +486,6 @@ impl AdaptiveProfileController {
         let frametime = frametime.into();
         let present_frametime_p95_ms = frametime.p95_ms;
         self.state.median_ms = frametime.p50_ms;
-        self.state.miss_ratio = frametime.miss_ratio;
         self.state.median_source = if frametime.p50_ms.is_some() {
             frametime.p50_source
         } else {
@@ -663,7 +653,14 @@ impl AdaptiveProfileController {
         }
         self.state.frame_cap_streak = 0;
 
-        if frametime_ms > self.config.badly_slow_ms && self.badly_slow_is_evidenced() {
+        if frametime_ms > self.config.badly_slow_ms
+            && frametime.promotion_stats.is_none_or(|stats| {
+                stats.supports_immediate_promotion(
+                    self.config.target_ms,
+                    self.config.badly_slow_miss_ratio_min,
+                )
+            })
+        {
             return self.switch_with_cpu_bound_guard(
                 ordered[ordered.len() - 1].clone(),
                 &ordered,
@@ -1150,26 +1147,7 @@ impl AdaptiveAutoUvRuntimeController {
         if !self.enabled() {
             return None;
         }
-        // The marker median is preferred: it is a median of the same accepted
-        // set as the p95, so the two are comparable. Present pacing is the
-        // fallback, and the source travels with the value because a latch made
-        // against one must never be re-tested against the other.
-        let (p50_ms, p50_source) = match latency_snapshot {
-            Some(snapshot) => match snapshot.base_present_frametime_p50_ms {
-                Some(ms) => (Some(ms), MedianSource::Marker),
-                None => match snapshot.present_pacing_p50_ms {
-                    Some(ms) => (Some(ms), MedianSource::Pacing),
-                    None => (None, MedianSource::None),
-                },
-            },
-            None => (None, MedianSource::None),
-        };
-        let readings = FrametimeReadings {
-            p95_ms: latency_snapshot.and_then(|s| s.base_present_frametime_p95_ms),
-            p50_ms,
-            p50_source,
-            miss_ratio: latency_snapshot.and_then(|s| s.base_present_frametime_miss_ratio),
-        };
+        let readings = FrametimeReadings::from_snapshot(latency_snapshot);
         let policy_state = self.policy.snapshot_state();
         let gpu = publisher.last_gpu_util_pct().map(|v| v as f64);
         let cpu = publisher.last_cpu_util_pct().map(|v| v as f64);
@@ -1189,7 +1167,9 @@ impl AdaptiveAutoUvRuntimeController {
             present_frametime_p95_ms: readings.p95_ms,
             present_frametime_p50_ms: readings.p50_ms,
             median_source: readings.p50_source.label(),
-            present_frametime_miss_ratio: readings.miss_ratio,
+            present_frametime_miss_ratio: readings
+                .promotion_stats
+                .and_then(|stats| stats.miss_ratio),
             // The windowed figures the branches read, falling back to the
             // instantaneous ones only for the tick the window is empty --
             // which is what the guards themselves do.
@@ -2099,7 +2079,11 @@ mod tests {
             p95_ms: Some(p95),
             p50_ms: Some(p50),
             p50_source: source,
-            miss_ratio: Some(miss),
+            promotion_stats: Some(FrametimeStats {
+                p95_us: (p95 * 1000.0) as i64,
+                p50_us: (p50 * 1000.0) as i64,
+                miss_ratio: Some(miss),
+            }),
         }
     }
 
@@ -2338,7 +2322,7 @@ mod tests {
                 p95_ms: Some(30.0),
                 p50_ms: None,
                 p50_source: MedianSource::None,
-                miss_ratio: Some(0.9),
+                promotion_stats: None,
             },
             &tiers(),
             100.0,
