@@ -22,9 +22,9 @@
         idle desktops.
       </li>
       <li>
-        A Game Library that brings Steam and Lutris games into one list, each
-        with its own GPU profile, adaptive FPS target and overlay setting,
-        applied at launch and restored on exit.
+        A Game Library that brings Steam, Lutris and Heroic games into one
+        list, each with its own GPU profile, adaptive FPS target and overlay
+        setting, applied at launch and restored on exit.
       </li>
       <li>
         An in-game Vulkan overlay showing base FPS, frame-generation FPS, PC
