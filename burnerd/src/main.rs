@@ -9,6 +9,7 @@ mod profile;
 mod rtd3;
 mod scan;
 mod server;
+mod sessions;
 mod supervisor;
 
 use std::env;

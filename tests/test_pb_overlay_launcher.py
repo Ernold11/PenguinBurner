@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from overlay import launcher
 from overlay.config import OVERLAY_CONFIG_ENV
 from overlay.config import OverlayConfig
@@ -12,6 +14,17 @@ from overlay.state import (
     OVERLAY_ENABLE_ENV,
     OVERLAY_STATE_ENV,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_session_transport(monkeypatch):
+    from integrations.launchers import session
+
+    def unavailable(*args, **kwargs):
+        raise OSError("isolated daemon")
+
+    monkeypatch.setattr(session, "register_launcher_session", unavailable)
+    monkeypatch.setattr(session, "update_launcher_session", unavailable)
 
 
 def test_flatpak_session_uses_daemon_host_pid(monkeypatch, tmp_path):
@@ -573,3 +586,28 @@ def test_wrapper_consumes_pb_overlay_flag(monkeypatch, tmp_path) -> None:
     # Only flags and no command -> usage error, no exec.
     assert launcher.main(["--pb-overlay=1"]) == 2
     assert len(calls) == 2
+
+
+def test_flatpak_daemon_unavailable_launches_without_namespace_pid_gpu_write(monkeypatch, tmp_path):
+    from runtime import daemon_client
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("FLATPAK_ID", "com.heroicgameslauncher.hgl")
+    def unavailable():
+        raise OSError("service stopped")
+    monkeypatch.setattr(daemon_client, "client_host_pid", unavailable)
+    monkeypatch.setattr(launcher, "configure_penguin_burner_environment", lambda *a, **k: False)
+    profiles, launched = [], []
+    monkeypatch.setattr(launcher, "_apply_game_profile", lambda env: profiles.append(env))
+    monkeypatch.setattr(launcher.os, "execvpe", lambda exe, args, env: launched.append(env))
+    launcher.main(["--pb-overlay=0", "--pb-game-id=heroic:test", "game"])
+    assert len(launched) == 1
+    assert profiles == []
+    assert launched[0]["PENGUIN_BURNER_SESSION_ID"]
+
+
+def test_detached_helpers_cannot_keep_game_session_alive():
+    env = {"PENGUIN_BURNER_SESSION_ID": "game", "PENGUIN_BURNER_TELEMETRY_SESSION": "42"}
+    helper = launcher._session_helper_environment(env, "")
+    assert "PENGUIN_BURNER_SESSION_ID" not in helper
+    assert helper["PENGUIN_BURNER_TELEMETRY_SESSION"] == "42"
+    assert env["PENGUIN_BURNER_SESSION_ID"] == "game"

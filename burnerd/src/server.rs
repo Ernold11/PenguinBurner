@@ -52,6 +52,11 @@ pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
 /// Accept loop. Each connection is handled on its own thread; a panic in a
 /// connection is caught so it never takes the daemon down.
 pub fn serve(listener: UnixListener, sup: Arc<Mutex<Supervisor>>) {
+    let uid = env::var(DAEMON_ALLOWED_UID_ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| nix::unistd::Uid::current().as_raw());
+    crate::sessions::recover(uid);
     for incoming in listener.incoming() {
         let stream = match incoming {
             Ok(stream) => stream,
@@ -121,6 +126,47 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
         }
         match serde_json::from_str::<Value>(line) {
             Ok(value) => {
+                let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+                if method == "subscribe_launcher_sessions" {
+                    crate::sessions::subscribe(&mut writer);
+                    return;
+                }
+                if method == "reconcile_launcher_sessions" {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .map(|peer| {
+                            crate::sessions::recover(peer.uid());
+                            api::MethodResult::Value(crate::sessions::snapshot())
+                        });
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
+                if method == "observe_launcher_session" {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .and_then(|peer| crate::sessions::observe(peer.uid(), &value));
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
+                if matches!(
+                    method,
+                    "register_launcher_session" | "update_launcher_session"
+                ) {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .and_then(|peer| {
+                            let pid = u32::try_from(peer.pid()).map_err(|_| "invalid peer PID")?;
+                            crate::sessions::request(pid, &value)
+                        });
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
                 if let Some(kind) = streaming_kind(&value) {
                     handle_start_stream(kind, &value, sup, &mut writer);
                     return; // streaming consumes the connection

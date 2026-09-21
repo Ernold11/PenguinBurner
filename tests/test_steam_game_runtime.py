@@ -631,3 +631,34 @@ def test_flatpak_steam_control_fails_closed_without_host_bridge(monkeypatch) -> 
     assert not process.steam_running()
     assert not process.steam_available()
     assert not process.launch_steam_game("3606110")
+
+
+def test_steam_shutdown_helper_waits_for_kernel_exit_without_polling():
+    import json
+    import subprocess
+    import sys
+
+    from integrations.steam.process import _STEAM_SHUTDOWN
+
+    # Use a distinct test-only comm value so the real Steam client is untouched.
+    code = "import ctypes, sys; ctypes.CDLL(None).prctl(15, b'pb-test-steam', 0, 0, 0); print('ready', flush=True); sys.stdin.readline()"
+    with subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert child.stdout.readline().strip() == 'ready'
+            script = _STEAM_SHUTDOWN.replace("== 'steam'", "== 'pb-test-steam'")
+            # A command that leaves the client alive must never confirm exit.
+            noop = [sys.executable, '-c', 'pass']
+            refused = subprocess.run([sys.executable, '-c', script, json.dumps(noop), '0.01'],
+                                     capture_output=True, timeout=5)
+            assert refused.returncode != 0
+            assert child.poll() is None
+            terminate = [sys.executable, '-c', f'import os, signal; os.kill({child.pid}, signal.SIGTERM)']
+            result = subprocess.run([sys.executable, '-c', script, json.dumps(terminate), '2'],
+                                    capture_output=True, timeout=5)
+            assert result.returncode == 0, result.stderr
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)

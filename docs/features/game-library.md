@@ -89,6 +89,36 @@ a game also preserves that policy. **Stock** restores automatic fan control for
 the game. Switching back from Stock restores the target GPU's standing fan
 policy; exiting restores the standing profile and its fan settings.
 
+Game status follows wrapper registration and kernel process-exit events for
+Steam, Lutris and Heroic. Opening Game Library during a game reconnects to the
+current session snapshot. Launchers without complete notifications also receive
+periodic recovery scans; a missed scan never proves that a game failed or that
+PenguinBurner was absent.
+
+**Starting…** means the launch was requested but a game session has not yet been
+confirmed. **Retry launch…** asks before attempting another instance. A detected
+external session shows **Running — PBurn unconfirmed** and disables Play. Missing
+wrapper or GPU-profile evidence is a neutral status, not a failure warning.
+Wrapper registration confirms the launch wrapper, not that the HUD has rendered.
+
+If launch preparation fails before a request is sent, **Play** becomes available
+again and other games remain launchable. A refused retry does not clear an earlier
+launch whose status is still unknown. Errors after possible dispatch continue to
+require **Retry launch…** confirmation.
+
+If the daemon disconnects, the last known session is retained until recovery.
+Reconnection only restores observation: it does not apply a skipped GPU profile
+later. File-change notifications refresh library entries and saved settings;
+background worker completion uses Qt signals. Bounded transport waits, reconnect
+backoff, and periodic recovery scans remain; none is used to classify a launch
+as failed or unwrapped.
+
+For a diagnostic snapshot, run:
+
+```bash
+python -m runtime.daemon_client launcher-sessions
+```
+
 Fixed profiles work independently of the game's graphics API. Overlay and
 Adaptive frame telemetry require Vulkan, including DXVK and vkd3d-proton.
 Known native OpenGL games have those controls disabled; fixed profiles and

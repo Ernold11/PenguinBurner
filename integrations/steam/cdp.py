@@ -21,7 +21,6 @@ import json
 import os
 import socket
 import struct
-import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -491,15 +490,32 @@ class SteamCdpClient:
         *,
         verify_timeout_s: float = 5.0,
     ) -> bool:
-        """Write and confirm by read-back polling (MoonDeck's pattern)."""
-        self.evaluate(
-            f"SteamClient.Apps.SetAppLaunchOptions({int(app_id)},"
-            f" {json.dumps(launch_options)})"
-        )
-        deadline = time.monotonic() + verify_timeout_s
-        while True:
-            if self.app_launch_options(app_id) == launch_options:
-                return True
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.2)
+        """Subscribe before writing; confirm the matching app-details event."""
+        timeout_ms = max(100, int(verify_timeout_s * 1000))
+        return self.evaluate(
+            "new Promise((resolve) => {"
+            f" const appId = {int(app_id)};"
+            f" const expected = {json.dumps(launch_options)};"
+            " let reg = null, timer = null, done = false, issued = false;"
+            " let latest = null;"
+            " const cleanup = () => {"
+            "   if (timer !== null) clearTimeout(timer);"
+            "   try { reg?.unregister(); } catch (err) {} reg = null;"
+            " };"
+            " const finish = (value) => {"
+            "   if (done) return;"
+            "   done = true; cleanup(); resolve(value);"
+            " };"
+            f" timer = setTimeout(() => finish(false), {timeout_ms});"
+            " try {"
+            "   reg = SteamClient.Apps.RegisterForAppDetails(appId, (details) => {"
+            "     latest = details?.strLaunchOptions;"
+            "     if (issued && latest === expected) finish(true);"
+            "   });"
+            "   issued = true;"
+            "   SteamClient.Apps.SetAppLaunchOptions(appId, expected);"
+            "   if (latest === expected) finish(true);"
+            "   if (done) cleanup();"
+            " } catch (err) { finish(false); }"
+            "})"
+        ) is True

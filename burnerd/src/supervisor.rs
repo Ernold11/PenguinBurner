@@ -10,14 +10,17 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,9 +44,7 @@ const ACTIVE_RUNTIME_STATE_PATH: &str = "/run/penguin-burner/active-runtime.json
 const APPLIED_RUNTIME_HISTORY_PATH: &str = "/run/penguin-burner/applied-runtime-history.json";
 const BOOT_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/boot-runtime.json";
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
-const GAME_RESTORE_GRACE: Duration = Duration::from_secs(3);
 const GAME_WATCH_INTERVAL: Duration = Duration::from_millis(250);
-const TEST_GAME_RESTORE_GRACE: Duration = Duration::from_millis(50);
 const TEST_GAME_WATCH_INTERVAL: Duration = Duration::from_millis(20);
 const BOOT_RUNTIME_SET_FORMAT_VERSION: u32 = 1;
 const APPLIED_RUNTIME_HISTORY_FORMAT_VERSION: u32 = 1;
@@ -285,9 +286,8 @@ struct ProfileJob {
 
 struct GameWatch {
     app_id: String,
-    pidfd: Option<OwnedFd>,
+    lifetime_fd: Option<OwnedFd>,
     process_start_time: Option<u64>,
-    exited_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -304,6 +304,8 @@ pub struct Supervisor {
     child_generation: u64,
     stop_timeout: Duration,
     game_runtime: GameRuntimeState,
+    game_watch_wake: UnixStream,
+    game_watch_receiver: Option<UnixStream>,
     last_applied_specs: BTreeMap<String, RuntimeSpec>,
     boot_replay: Vec<Value>,
 }
@@ -316,12 +318,20 @@ impl Default for Supervisor {
 
 impl Supervisor {
     pub fn new() -> Self {
+        let (receiver, wake) = UnixStream::pair().expect("game watch wake socket");
+        receiver
+            .set_nonblocking(true)
+            .expect("nonblocking game watch receiver");
+        wake.set_nonblocking(true)
+            .expect("nonblocking game watch wakeup");
         Supervisor {
             profile: None,
             child: None,
             child_generation: 0,
             stop_timeout: ENGINE_STOP_TIMEOUT,
             game_runtime: GameRuntimeState::default(),
+            game_watch_wake: wake,
+            game_watch_receiver: Some(receiver),
             last_applied_specs: BTreeMap::new(),
             boot_replay: Vec::new(),
         }
@@ -409,14 +419,6 @@ fn test_timings_enabled() -> bool {
     env::var_os("PENGUIN_BURNERD_TEST_TIMINGS").is_some()
 }
 
-fn game_restore_grace() -> Duration {
-    if test_timings_enabled() {
-        TEST_GAME_RESTORE_GRACE
-    } else {
-        GAME_RESTORE_GRACE
-    }
-}
-
 fn game_watch_interval() -> Duration {
     if test_timings_enabled() {
         TEST_GAME_WATCH_INTERVAL
@@ -439,30 +441,30 @@ impl GameWatch {
         // SAFETY: pidfd_open has no pointer arguments; `pid` and flags are
         // validated scalar values, and a nonnegative result is a new fd.
         let raw_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
-        let pidfd = if raw_fd >= 0 {
+        let process_fd = if raw_fd >= 0 {
             // SAFETY: pidfd_open returned a new owned descriptor on success.
             Some(unsafe { OwnedFd::from_raw_fd(raw_fd as i32) })
         } else {
             None
         };
-        let process_start_time = if pidfd.is_none() {
+        let lifetime_fd = crate::sessions::watch_lifetime(pid)?.or(process_fd);
+        let process_start_time = if lifetime_fd.is_none() {
             process_start_time(pid)
         } else {
             None
         };
-        if pidfd.is_none() && process_start_time.is_none() {
+        if lifetime_fd.is_none() && process_start_time.is_none() {
             return Err(format!("watch_pid {pid} is not a running process"));
         }
         Ok(Self {
             app_id,
-            pidfd,
+            lifetime_fd,
             process_start_time,
-            exited_at: None,
         })
     }
 
     fn running(&self, pid: u32) -> bool {
-        if let Some(pidfd) = &self.pidfd {
+        if let Some(pidfd) = &self.lifetime_fd {
             let mut pollfd = libc::pollfd {
                 fd: pidfd.as_raw_fd(),
                 events: libc::POLLIN,
@@ -513,11 +515,65 @@ impl Supervisor {
 /// guards against PID reuse where the kernel supports it; the `/proc` start time
 /// is the fallback on older kernels.
 pub fn start_game_watch_monitor(sup: &Arc<Mutex<Supervisor>>) {
+    let Some(mut wake) = guard(sup).game_watch_receiver.take() else {
+        return;
+    };
     let weak = Arc::downgrade(sup);
     thread::Builder::new()
         .name("penguin-burner-game-watch".to_string())
         .spawn(move || loop {
-            thread::sleep(game_watch_interval());
+            let (handles, timeout) = {
+                let Some(sup) = weak.upgrade() else {
+                    return;
+                };
+                let supervisor = guard(&sup);
+                let mut handles = Vec::new();
+                let mut timeout: Option<Duration> = None;
+                for watch in supervisor.game_runtime.watches.values() {
+                    if let Some(fd) = &watch.lifetime_fd {
+                        match fd.try_clone() {
+                            Ok(fd) => handles.push(fd),
+                            Err(_) => {
+                                let fallback = game_watch_interval();
+                                timeout = Some(timeout.map_or(fallback, |old| old.min(fallback)));
+                            }
+                        }
+                    } else {
+                        // Older kernels lack pidfd: retain identity-checked
+                        // reconciliation there, not on the normal event path.
+                        let fallback = game_watch_interval();
+                        timeout = Some(timeout.map_or(fallback, |old| old.min(fallback)));
+                    }
+                }
+                (handles, timeout)
+            };
+            let mut fds = vec![libc::pollfd {
+                fd: wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }];
+            fds.extend(handles.iter().map(|fd| libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }));
+            let timeout_ms =
+                timeout.map_or(-1, |d| d.as_millis().clamp(1, i32::MAX as u128) as i32);
+            // SAFETY: all descriptors are owned above and fds remains valid.
+            let result =
+                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+            if result < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                logging::error("game-watch event wait failed");
+                return;
+            }
+            if fds[0].revents & libc::POLLHUP != 0 {
+                return;
+            }
+            let mut bytes = [0; 256];
+            while wake.read(&mut bytes).is_ok_and(|n| n > 0) {}
             let Some(sup) = weak.upgrade() else {
                 return;
             };
@@ -553,24 +609,21 @@ fn apply_inactive_spec_and_stop(
 }
 
 fn reap_game_watches(sup: &Mutex<Supervisor>) {
-    let now = Instant::now();
-    let grace = game_restore_grace();
-    let mut supervisor = guard(sup);
+    if let Err(error) = restore_finished_game(&mut guard(sup)) {
+        logging::error(&error);
+    }
+}
+
+fn restore_finished_game(supervisor: &mut Supervisor) -> Result<(), String> {
     if supervisor.game_runtime.watches.is_empty() {
-        return;
+        return Ok(());
     }
-    for (&pid, watch) in &mut supervisor.game_runtime.watches {
-        if watch.exited_at.is_none() && !watch.running(pid) {
-            watch.exited_at = Some(now);
-        }
-    }
-    supervisor.game_runtime.watches.retain(|_, watch| {
-        watch
-            .exited_at
-            .is_none_or(|exited_at| now.duration_since(exited_at) < grace)
-    });
+    supervisor
+        .game_runtime
+        .watches
+        .retain(|pid, watch| watch.running(*pid));
     if !supervisor.game_runtime.watches.is_empty() {
-        return;
+        return Ok(());
     }
 
     let should_restore = supervisor.game_runtime.override_active;
@@ -578,13 +631,10 @@ fn reap_game_watches(sup: &Mutex<Supervisor>) {
     let standing_spec = supervisor.game_runtime.standing_spec.take();
     let target_restore_spec = supervisor.game_runtime.restore_spec.take();
     if !should_restore || supervisor.child_running_kind().is_some() {
-        return;
+        return Ok(());
     }
     let game_spec = supervisor.profile.as_ref().map(|job| job.spec.clone());
-    if let Err(error) = supervisor.stop_engine_for_child("the standing runtime after game exit") {
-        logging::error(&error);
-        return;
-    }
+    supervisor.stop_engine_for_child("the standing runtime after game exit")?;
 
     let restore_target =
         target_restore_spec.or_else(|| game_spec.as_ref().map(RuntimeSpec::stock_fallback));
@@ -593,18 +643,15 @@ fn reap_game_watches(sup: &Mutex<Supervisor>) {
         .map(|spec| spec.gpu.uuid.as_str())
         .unwrap_or_default();
     if let Some(target_spec) = restore_target.filter(|spec| spec.gpu.uuid != standing_gpu_uuid) {
-        if let Err(error) = apply_inactive_spec_and_stop(
-            &mut supervisor,
+        apply_inactive_spec_and_stop(
+            supervisor,
             target_spec,
             "restore game target GPU after game exit",
-        ) {
-            logging::error(&error);
-            return;
-        }
+        )?;
     }
 
     let Some(spec) = standing_spec else {
-        return;
+        return Ok(());
     };
     match profile::start(spec.clone()) {
         Ok(engine) => {
@@ -612,14 +659,15 @@ fn reap_game_watches(sup: &Mutex<Supervisor>) {
         }
         Err(error) => {
             let (message, failed_engine) = error.into_parts();
-            logging::error(&format!(
-                "failed to restore standing runtime after game exit: {message}"
-            ));
             if let Some(engine) = failed_engine {
                 supervisor.profile = Some(ProfileJob { engine, spec });
             }
+            return Err(format!(
+                "failed to restore standing runtime after game exit: {message}"
+            ));
         }
     }
+    Ok(())
 }
 
 /// `PENGUIN_BURNER_DAEMON_PROGRAM_FILE` resolved absolute, else this binary's path.
@@ -1176,6 +1224,9 @@ pub fn start_game_runtime_profile(
     let gpu_uuid = spec.gpu.uuid.clone();
 
     let mut supervisor = guard(sup);
+    // A new launch can beat the monitor thread to the previous exit event.
+    // Reconcile under the same lock before deciding which live game owns GPU.
+    restore_finished_game(&mut supervisor)?;
     match supervisor.child_running_kind() {
         Some(ChildKind::Scan) => {
             return Err(
@@ -1288,6 +1339,7 @@ pub fn start_game_runtime_profile(
                 supervisor.game_runtime.restore_spec = restore_spec;
             }
             supervisor.game_runtime.watches.insert(watch_pid, watch);
+            let _ = supervisor.game_watch_wake.write(&[1]);
             supervisor.game_runtime.override_active = true;
             Ok(serde_json::json!({
                 "started": true,
@@ -2910,6 +2962,64 @@ mod tests {
     }
 
     #[test]
+    fn relaunch_reclaims_exited_owner_before_monitor_runs() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let _state_guard = StateEnvGuard::new(&dir.path().join("active-runtime.json"));
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        let sup = Mutex::new(Supervisor::new());
+        apply_runtime_spec(&sup, RuntimeSpec::test_static("GPU-A", "standing")).unwrap();
+        let mut first = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        start_game_runtime_profile(
+            &sup,
+            RuntimeSpec::test_stock("GPU-B"),
+            first.id(),
+            "heroic:first".into(),
+        )
+        .unwrap();
+        let refused = start_game_runtime_profile(
+            &sup,
+            RuntimeSpec::test_stock("GPU-C"),
+            std::process::id(),
+            "lutris:second".into(),
+        )
+        .unwrap();
+        assert_eq!(refused["reason"], "first-game-runtime-active");
+        first.kill().unwrap();
+        first.wait().unwrap();
+        // Deliberately no monitor and no grace-period sleep: launch admission
+        // must consume the already-ready exit handle under its own lock.
+        let started = start_game_runtime_profile(
+            &sup,
+            RuntimeSpec::test_stock("GPU-C"),
+            std::process::id(),
+            "lutris:second".into(),
+        )
+        .unwrap();
+        assert_eq!(started["started"], true);
+        let running = guard(&sup);
+        assert_eq!(running.game_runtime.watches.len(), 1);
+        assert_eq!(
+            running
+                .game_runtime
+                .standing_spec
+                .as_ref()
+                .unwrap()
+                .active_profile_id(),
+            "standing"
+        );
+        assert_eq!(
+            running.last_applied_specs.get("GPU-B").unwrap().mode_name(),
+            "stock"
+        );
+        drop(running);
+        shutdown(&sup);
+    }
+
+    #[test]
     fn game_profiles_preserve_target_gpu_fan_policy_on_launch_and_reapply() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // Standing fan, target GPU, remembered target, Stock, explicit fan,
@@ -2996,7 +3106,8 @@ mod tests {
                     .watches
                     .get_mut(&std::process::id())
                     .unwrap();
-                watch.exited_at = Some(Instant::now() - Duration::from_secs(10));
+                watch.lifetime_fd = None;
+                watch.process_start_time = Some(0);
             }
             reap_game_watches(&sup);
             {
@@ -3072,12 +3183,13 @@ mod tests {
                     .active_profile_id(),
                 "profile-b"
             );
-            running
+            let watch = running
                 .game_runtime
                 .watches
                 .get_mut(&std::process::id())
-                .unwrap()
-                .exited_at = Some(Instant::now() - Duration::from_secs(10));
+                .unwrap();
+            watch.lifetime_fd = None;
+            watch.process_start_time = Some(0);
         }
         reap_game_watches(&sup);
 
@@ -3212,9 +3324,8 @@ mod tests {
                 std::process::id(),
                 GameWatch {
                     app_id: "42".to_string(),
-                    pidfd: None,
+                    lifetime_fd: None,
                     process_start_time: process_start_time(std::process::id()),
-                    exited_at: None,
                 },
             );
         }

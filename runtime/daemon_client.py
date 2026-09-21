@@ -145,6 +145,40 @@ def daemon_status(
     return daemon_request("status", socket_path=socket_path, timeout_s=timeout_s)
 
 
+def register_launcher_session(app_id: str, session_id: str) -> dict[str, Any]:
+    """Register this wrapper through peer credentials, independently of GPU setup."""
+    return daemon_payload_request(
+        {"method": "register_launcher_session", "app_id": app_id, "session_id": session_id},
+        socket_path=_resolved_socket_path(None),
+    )
+
+
+def update_launcher_session(session_id: str, *, phase: str, profile: str) -> None:
+    daemon_payload_request(
+        {"method": "update_launcher_session", "session_id": session_id,
+         "phase": phase, "profile": profile},
+        socket_path=_resolved_socket_path(None),
+    )
+
+
+def launcher_sessions() -> dict[str, Any]:
+    """Current session snapshot; absence does not prove an unwrapped launch."""
+    return daemon_request("launcher_sessions", socket_path=_resolved_socket_path(None))
+
+
+def reconcile_launcher_sessions() -> dict[str, Any]:
+    """Recover registrations missed across a service restart; never replay profiles."""
+    return daemon_request("reconcile_launcher_sessions", socket_path=_resolved_socket_path(None))
+
+
+def observe_launcher_session(pid: int, app_id: str, *, title: str = "") -> None:
+    """Ask the daemon to verify and watch a launcher process, without GPU writes."""
+    daemon_payload_request(
+        {"method": "observe_launcher_session", "pid": pid, "app_id": app_id, "title": title},
+        socket_path=_resolved_socket_path(None),
+    )
+
+
 def require_daemon_capabilities(
     *required: str,
     socket_path: str | Path | None = None,
@@ -792,6 +826,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status")
+    subparsers.add_parser("launcher-sessions", help="Show observed launcher sessions and integration evidence")
     subparsers.add_parser("stop-auto-uv")
     subparsers.add_parser("stop-runtime-profile")
     subparsers.add_parser("stop-profile-verification")
@@ -820,6 +855,9 @@ def main(argv: list[str] | None = None) -> int:
     args.socket = _resolved_socket_path(args.socket)
 
     try:
+        if args.command == "launcher-sessions":
+            print(json.dumps(daemon_request("launcher_sessions", socket_path=args.socket), indent=2))
+            return 0
         if args.command == "status":
             print(
                 json.dumps(daemon_status(socket_path=args.socket), indent=2),

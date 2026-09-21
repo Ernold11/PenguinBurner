@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from integrations.heroic import launch_sync as sync
+from integrations.launchers.library import LaunchNotStartedError
 
 
 @pytest.fixture
@@ -96,7 +97,7 @@ def test_busy_launcher_is_neither_stopped_nor_launched_stale(tmp_path, config, m
         return {'launchers': {'41': 'boot:old'}, 'busy': True}
     monkeypatch.setattr(sync, '_probe', probe)
     monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
-    with pytest.raises(RuntimeError, match='is busy'):
+    with pytest.raises(LaunchNotStartedError, match='is busy'):
         sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert calls == []
 
@@ -111,9 +112,18 @@ def test_restart_timeout_does_not_launch_with_old_settings(tmp_path, config, mon
     monkeypatch.setattr(sync, '_probe', probe)
     monkeypatch.setattr(sync, '_RESTART_TIMEOUT_S', 0)
     monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
-    with pytest.raises(RuntimeError, match='did not exit'):
+    with pytest.raises(LaunchNotStartedError, match='did not exit'):
         sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert len(stops) == 1
+    assert not calls
+
+
+def test_malformed_settings_are_a_known_pre_dispatch_failure(tmp_path, config, monkeypatch):
+    (config / 'GamesConfig/Turkey.json').write_text('[]')
+    calls = []
+    monkeypatch.setattr(sync, 'start_on_host', lambda command: calls.append(command))
+    with pytest.raises(LaunchNotStartedError):
+        sync.launch_with_current_settings(['heroic'], home=tmp_path)
     assert not calls
 
 
@@ -204,3 +214,19 @@ def test_flatpak_main_with_flattened_title_uses_parent_environment(tmp_path, con
     result = subprocess.run([sys.executable, '-c', script, str(config), '{}'],
                             capture_output=True, text=True, check=True)
     assert json.loads(result.stdout) == {'launchers': {'41': 'test-boot:123'}, 'busy': False}
+
+
+def test_real_restart_wait_timeout_preserves_unresponsive_launcher(tmp_path, config, monkeypatch):
+    code = "import signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); sys.stdin.readline()"
+    env = dict(os.environ, XDG_CONFIG_HOME=str(config.parent))
+    with subprocess.Popen(['heroic', '-c', code], executable=sys.executable, env=env,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert child.stdout.readline().strip() == 'ready'
+            state = sync._probe(config)
+            monkeypatch.setattr(sync, '_RESTART_TIMEOUT_S', 0.05)
+            with pytest.raises(RuntimeError):
+                sync._probe(config, stop=state['launchers'])
+            assert child.poll() is None
+        finally:
+            child.communicate('\n', timeout=5)

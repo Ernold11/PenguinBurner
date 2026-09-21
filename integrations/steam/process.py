@@ -6,14 +6,17 @@ launcher, and is solved once in integrations/launchers/host_process.py.
 
 from __future__ import annotations
 
+import json
+import os
 import re
-import time
+import sys
 from pathlib import Path
 
 from integrations.launchers.host_process import (
     HOST_PGREP,
     host_pgrep,
     run_on_host,
+    running_in_flatpak,
     start_on_host,
 )
 
@@ -53,6 +56,20 @@ def running_steam_game_ids() -> frozenset[str] | None:
     return frozenset(ids)
 
 
+def running_steam_processes() -> dict[str, tuple[int, ...]] | None:
+    """Recovery discovery only; kernel process events own the lifetime."""
+    matches = host_pgrep(r"[S]teamLaunch AppId=")
+    if matches is None:
+        return None
+    games: dict[str, tuple[int, ...]] = {}
+    for pid, line in matches:
+        match = _STEAM_LAUNCH_APPID_RE.search(line)
+        if match:
+            app_id = match.group(1)
+            games[app_id] = (*games.get(app_id, ()), pid)
+    return games
+
+
 # Read only launcher identity, never export the rest of a process environment.
 _STEAM_INSTALLATIONS = """
 import os
@@ -87,21 +104,60 @@ def steam_available(home: Path | None = None) -> bool:
     return steam_installation(home).command() is not None
 
 
+# Open identity-bound handles BEFORE requesting shutdown. An operation timeout
+# bounds the settings workflow; it is never evidence that a game failed/exited.
+_STEAM_SHUTDOWN = r'''
+import os, selectors, subprocess, sys, json, time
+from pathlib import Path
+handles = []
+try:
+    with selectors.DefaultSelector() as selector:
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fd = os.pidfd_open(int(entry.name))
+            except ProcessLookupError:
+                continue
+            try:
+                if entry.stat().st_uid == os.getuid() and (entry / 'comm').read_text().strip() == 'steam':
+                    selector.register(fd, selectors.EVENT_READ)
+                    handles.append(fd)
+                else:
+                    os.close(fd)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                os.close(fd)
+        if selector.get_map():
+            subprocess.run(json.loads(sys.argv[1]), timeout=10, check=True)
+        deadline = time.monotonic() + float(sys.argv[2])
+        while selector.get_map():
+            events = selector.select(max(0, deadline - time.monotonic()))
+            if not events:
+                raise RuntimeError('Steam shutdown was not confirmed')
+            for key, _ in events:
+                selector.unregister(key.fd)
+finally:
+    for fd in handles:
+        os.close(fd)
+'''
+
+
 def shutdown_steam(*, timeout_s: float = 30.0, home: Path | None = None) -> bool:
-    """Ask Steam to exit cleanly and wait until the process is gone."""
+    """Ask Steam to exit and wait for kernel process-exit notifications."""
     if not steam_running():
         return True
     if not steam_matches_installation(home):
         return False
     command = steam_installation(home).command("-shutdown")
-    if command is None or run_on_host(command, timeout=10.0) is None:
+    if command is None:
         return False
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not steam_running():
-            return True
-        time.sleep(0.5)
-    return not steam_running()
+    python = (os.environ.get("PENGUIN_BURNER_HOST_PYTHON") or "/usr/bin/python3"
+              if running_in_flatpak() else sys.executable)
+    result = run_on_host(
+        [python, "-c", _STEAM_SHUTDOWN, json.dumps(command), str(timeout_s)],
+        timeout=timeout_s + 13.0,
+    )
+    return result is not None and result.returncode == 0 and not steam_running()
 
 
 def launch_steam(*, silent: bool = True, home: Path | None = None) -> bool:

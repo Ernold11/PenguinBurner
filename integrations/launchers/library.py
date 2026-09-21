@@ -43,6 +43,10 @@ WRITE_READY = "ready"
 WRITE_NEEDS_SETUP = "needs-setup"
 
 
+class LaunchNotStartedError(RuntimeError):
+    """Preparation failed before any launch request was dispatched."""
+
+
 @dataclass(frozen=True)
 class LibraryGame:
     """A game as the library list needs it, whichever launcher owns it."""
@@ -309,7 +313,11 @@ class LaunchableSource(Protocol):
     """
 
     def launch(self, game_id: str) -> tuple[bool, str]:
-        """Start a game. Returns (started, what to tell the user)."""
+        """Dispatch a launch. False guarantees no request was sent.
+
+        Raise LaunchNotStartedError for preparation failures. Other exceptions
+        leave dispatch uncertain, so the UI must retain the launch attempt.
+        """
         ...
 
     def stop(self, game_id: str) -> tuple[bool, str]:
