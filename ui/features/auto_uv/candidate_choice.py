@@ -7,24 +7,28 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Callable
+from collections.abc import Callable
+from typing import Any, cast
 
-from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
-from .final_choice_ranking import final_choice_sort_label
-from .final_choice_ranking import sort_candidates_for_final_choice
-from .final_choice_ranking import best_final_choice_candidate_id
+from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import (
+    AutoUvFinalChoiceDiscarded,
+    AutoUvProbeSummary,
+)
 from auto_uv.persistence.auto_uv_persisted_json_files import (
     auto_uv_stop_requested,
     final_choice_request_path,
     final_choice_response_path,
     safe_json_write,
 )
-from auto_uv.domain.types import (
-    AutoUvFinalChoiceDiscarded,
-    AutoUvProbeSummary,
+from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
+
+from .final_choice_ranking import (
+    best_final_choice_candidate_id,
+    final_choice_sort_label,
+    sort_candidates_for_final_choice,
 )
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
-from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 
 
 def choose_final_verification_candidate(
@@ -98,6 +102,7 @@ def choose_final_verification_candidate(
         request_reason=str(request_reason or "sweep-complete"),
         discard_returns_none=False,
     )
+    assert selected is not None
 
     selected_plan = candidate_plan_from_record(selected) or stable_plan
     selected_voltage_mv = int(selected.get("candidate_voltage_mv") or 0)
@@ -138,8 +143,8 @@ def choose_recovery_final_verification_candidate(
         if not candidate_id:
             continue
         try:
-            voltage_mv = int(record.get("candidate_voltage_mv"))
-            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+            voltage_mv = int(cast(Any, record.get("candidate_voltage_mv")))
+            lock_clock_mhz = int(cast(Any, record.get("lock_clock_mhz")))
         except (TypeError, ValueError):
             continue
         if voltage_mv <= 0 or lock_clock_mhz <= 0:
@@ -184,8 +189,8 @@ def choose_recovery_final_verification_candidate(
     selected_plan = candidate_plan_from_record(selected)
     if not selected_plan:
         return None
-    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
-    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    selected_voltage_mv = int(cast(Any, selected.get("candidate_voltage_mv")))
+    selected_lock_clock_mhz = int(cast(Any, selected.get("lock_clock_mhz")))
     try:
         tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
     except (TypeError, ValueError):
@@ -224,8 +229,8 @@ def choose_next_final_verification_candidate_after_failure(
         if not candidate_id:
             continue
         try:
-            voltage_mv = int(record.get("candidate_voltage_mv"))
-            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+            voltage_mv = int(cast(Any, record.get("candidate_voltage_mv")))
+            lock_clock_mhz = int(cast(Any, record.get("lock_clock_mhz")))
         except (TypeError, ValueError):
             continue
         if voltage_mv <= int(failed_voltage_mv) or lock_clock_mhz <= 0:
@@ -267,8 +272,8 @@ def choose_next_final_verification_candidate_after_failure(
     selected_plan = candidate_plan_from_record(selected)
     if not selected_plan:
         return None
-    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
-    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    selected_voltage_mv = int(cast(Any, selected.get("candidate_voltage_mv")))
+    selected_lock_clock_mhz = int(cast(Any, selected.get("lock_clock_mhz")))
     try:
         tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
     except (TypeError, ValueError):
@@ -638,7 +643,7 @@ def candidate_core_oc_mhz(
 ) -> int | None:
     existing = float_or_none(candidate.get("core_oc_mhz"))
     if existing is not None:
-        return int(round(existing))
+        return round(existing)
     baseline = (
         float(base_core_clock_mhz)
         if base_core_clock_mhz is not None
@@ -647,7 +652,7 @@ def candidate_core_oc_mhz(
     lock_clock = float_or_none(candidate.get("lock_clock_mhz"))
     if baseline is None or lock_clock is None:
         return None
-    return int(round(float(lock_clock) - float(baseline)))
+    return round(float(lock_clock) - float(baseline))
 
 
 def matching_probe_for_candidate(
@@ -674,7 +679,7 @@ def candidate_short_verification_duration_s(
     value = candidate.get("short_verification_duration_s")
     if use_recorded_duration and value not in (None, ""):
         try:
-            return max(1, int(round(float(value))))
+            return max(1, round(float(value)))
         except (TypeError, ValueError):
             pass
     return tiered_short_verification_duration_s(
@@ -737,7 +742,7 @@ def coerce_final_choice_duration_s(
     max_duration_s = max(1, int(max_s))
     min_duration_s = min(max(1, int(min_s)), max_duration_s)
     try:
-        duration_s = int(round(float(value)))
+        duration_s = round(float(value))
     except (TypeError, ValueError):
         duration_s = int(default_s)
     return max(min_duration_s, min(max_duration_s, int(duration_s)))
@@ -755,15 +760,15 @@ def probe_float(probe: AutoUvProbeSummary | None, field_name: str) -> float | No
 
 def float_or_none(value: object) -> float | None:
     try:
-        return None if value is None else float(value)
+        return None if value is None else float(cast(Any, value))
     except (TypeError, ValueError):
         return None
 
 
-def format_user_duration(duration_s: int | float | None) -> str:
+def format_user_duration(duration_s: float | None) -> str:
     if duration_s is None:
         return "n/a"
-    seconds = int(round(float(duration_s)))
+    seconds = round(float(duration_s))
     if seconds < 60:
         return f"{seconds}s"
     minutes, remaining_seconds = divmod(seconds, 60)

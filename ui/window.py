@@ -1,58 +1,62 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
+from pathlib import Path
 
 from cli.runtime_config_file import (
     silent_fan_curve_from_runtime_config,
     silent_fan_curve_to_runtime_config,
 )
 from common.penguin_burner_paths import default_user_config_dir
-
-from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from ui.assets import asset_image_path
 from ui.commands import scan_command
 from ui.components.auto_uv_tier_progress import AutoUvTierProgress
 from ui.components.curve_plot import CurvePlot
+from ui.components.game_library_panel import GameLibraryPanel
 from ui.components.log_view import LogView
 from ui.components.overlay_config import OverlayConfigPanel
 from ui.components.profile_list import ProfileList
 from ui.components.runs_table import RunsTable
 from ui.components.scan_controls import ScanControls
 from ui.components.status_header import StatusHeader
-from ui.components.game_library_panel import GameLibraryPanel
-from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.constants import APP_DISPLAY_NAME
-from .controllers.command import CommandController
-from .controllers.scan import ScanController
-from .controllers.verify import VerifyController
-from ui.features.curves.curve_tabs import CurveTabs
+from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.dialogs.about import show_about_dialog
 from ui.dialogs.final_choice import select_final_candidate
 from ui.dialogs.scan_tuning import select_scan_tuning
-from .error_reporting import ErrorReporter
+from ui.features.curves.curve_tabs import CurveTabs
+from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
+from ui.features.profiles.profile_actions import ProfileActionsMixin
+from ui.features.profiles.profiles import (
+    adaptive_profile_tier_labels,
+    load_profile_summaries,
+    penguin_burner_runtime_is_active,
+    runner_status_parts,
+    running_auto_uv_profile_info,
+    systemd_autostart_profile_info,
+)
+from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from ui.features.tuning.gpu_selection import (
     detected_gpu_choices,
     gpu_choices_with_fallback,
     persist_runtime_gpu_index,
 )
-from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
-from ui.features.tuning.final_choice_controller import handle_final_choice_request
-from . import theme
-from .models import candidate_id_from_payload
-from .models import event_base_points
-from .models import event_points
-from .models import stage_title
-from .models import status_value
-from .models import top_status_text
-from ui.features.profiles.profiles import load_profile_summaries
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from ui.features.profiles.profiles import penguin_burner_runtime_is_active
-from ui.features.profiles.profiles import runner_status_parts
-from ui.features.profiles.profiles import running_auto_uv_profile_info
-from ui.features.profiles.profiles import systemd_autostart_profile_info
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
-from ui.features.profiles.profile_actions import ProfileActionsMixin
+
+from . import theme
+from .controllers.command import CommandController
+from .controllers.scan import ScanController
+from .controllers.verify import VerifyController
+from .error_reporting import ErrorReporter
+from .models import (
+    candidate_id_from_payload,
+    event_base_points,
+    event_points,
+    stage_title,
+    status_value,
+    top_status_text,
+)
 from .styles import STYLESHEET
 
 
@@ -268,10 +272,7 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
         )
-        context_menu_policy = getattr(
-            getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt),
-            "CustomContextMenu",
-        )
+        context_menu_policy = getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt).CustomContextMenu
         self.profile_list.table.setContextMenuPolicy(context_menu_policy)
         self.profile_list.table.customContextMenuRequested.connect(
             self._show_profile_context_menu
@@ -339,14 +340,14 @@ class MainWindow(ProfileActionsMixin):
 
         try:
             daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return  # not running / not installed — do not nag a new user
         try:
             require_daemon_capabilities(expected_version=application_version())
             return  # running and compatible — nothing to do
         except DaemonCompatibilityError:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         ensure_daemon_ready_for_privileged_action(
             QtWidgets=self.QtWidgets,
@@ -400,7 +401,7 @@ class MainWindow(ProfileActionsMixin):
             return
         try:
             self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show(
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",
@@ -781,7 +782,7 @@ class MainWindow(ProfileActionsMixin):
             return
         try:
             self.gpu_index = persist_runtime_gpu_index(int(gpu_index))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show(
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",

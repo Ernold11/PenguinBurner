@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from runtime.support.vf_curve_plan import apply_plan
-from stability.q2rtx.long_stability_config import (
-    build_long_stability_test_config,
-    long_stability_workload_durations,
-)
-
+from auto_uv.curve.shipped_plan import assert_monotonic_editable_targets
 from auto_uv.domain.console_log import log_benchmark, log_phase, log_user_stage
+from auto_uv.domain.events import (
+    AutoUvEventCallback,
+    emit_auto_uv_event,
+)
 from auto_uv.domain.types import (
     AutoUvCriticalProbeError,
     AutoUvError,
@@ -18,26 +17,30 @@ from auto_uv.domain.types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from ..curve.rising_tail import tail_ceiling_clock_mhz
-from ..shared.positive_int import positive_int
-from auto_uv.probes.stability_decision import (
-    evaluate_stable_run,
-)
-from auto_uv.domain.events import (
-    AutoUvEventCallback,
-    emit_auto_uv_event,
-)
+from auto_uv.probes.event_payload import vf_curve_event_points
 from auto_uv.probes.events import (
     emit_voltage_probe_finished,
     emit_voltage_probe_started,
 )
-from auto_uv.probes.event_payload import vf_curve_event_points
+from auto_uv.probes.stability_decision import (
+    evaluate_stable_run,
+)
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from runtime.support.vf_curve_plan import apply_plan
+from stability.q2rtx.long_stability_config import (
+    build_long_stability_test_config,
+    long_stability_workload_durations,
+)
+
+from ..curve.rising_tail import tail_ceiling_clock_mhz
+from ..persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
+from ..persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
+from ..persistence.verified_candidate_result_file import write_latest_verified_candidate
+from ..shared.positive_int import positive_int
 from .crash_marker import (
     final_probe_crash_marker_details,
     memory_offset_from_gpu_policy,
 )
-from auto_uv.curve.shipped_plan import assert_monotonic_editable_targets
 from .fan_curve import (
     FinalVerificationFanCurveResult,
     write_final_verification_fan_curve_payload,
@@ -47,9 +50,6 @@ from .result_files import (
     write_final_verified_profile,
     write_last_stable_result_snapshot,
 )
-from ..persistence.verified_candidate_result_file import write_latest_verified_candidate
-from ..persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from ..persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
 
 
 def run_final_verification_and_save(
@@ -457,10 +457,10 @@ def log_final_summary(
     )
 
 
-def format_user_duration(duration_s: int | float | None) -> str:
+def format_user_duration(duration_s: float | None) -> str:
     if duration_s is None:
         return "n/a"
-    seconds = int(round(float(duration_s)))
+    seconds = round(float(duration_s))
     if seconds < 60:
         return f"{seconds}s"
     minutes, remaining_seconds = divmod(seconds, 60)

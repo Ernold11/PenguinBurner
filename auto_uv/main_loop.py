@@ -6,13 +6,23 @@ user final choice, final verification, and cleanup.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
-from typing import Any, Callable, cast
+from typing import Any, cast
 
-from stability.q2rtx.models import Q2RTXStabilityConfig
-from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
-
+from auto_uv.auto_oc.scoring import auto_oc_probe_key
+from auto_uv.auto_oc.target_search import run_custom_tier_target_search
+from auto_uv.base_uv_loop import BaseUvLoopIO, run_base_uv_loop
+from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
+from auto_uv.curve.measured_probe_lock_clock import (
+    probe_indicates_power_saturation,
+)
+from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
+from auto_uv.domain.console_log import log_phase, log_user_stage
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.scan_result import build_voltage_scan_result
+from auto_uv.domain.scan_settings import AutoUvScanSettings
 from auto_uv.domain.types import (
     AutoUvCriticalProbeError,
     AutoUvError,
@@ -23,16 +33,40 @@ from auto_uv.domain.types import (
     BaseLoadTarget,
     VfCurveCandidate,
 )
-from auto_uv.domain.scan_settings import AutoUvScanSettings
-from auto_uv.domain.console_log import log_phase, log_user_stage
-from auto_uv.domain.scan_result import build_voltage_scan_result
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
-from auto_uv.shared.positive_int import positive_int
+from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
+from auto_uv.final_verification.crash_marker import memory_offset_from_gpu_policy
+from auto_uv.final_verification.main_loop import run_final_verification_and_save
+from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
+from auto_uv.gpu.memory_clock_offset_user_option import (
+    driver_memory_offset_limit_mhz,
+)
+from auto_uv.performance_uv_loop import (
+    select_performance_auto_oc_candidate,
+    select_power_bound_clock_reclaim_candidate,
+)
+from auto_uv.persistence.auto_uv_persisted_json_files import (
+    auto_uv_stop_request_aborts_final_choice,
+    clear_auto_uv_stop_request,
+)
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
+from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
+from auto_uv.persistence.verified_candidate_result_file import (
+    read_verified_candidates,
+)
+from auto_uv.probes.event_payload import vf_curve_event_points
+from auto_uv.probes.runner import AutoUvProbeRunner
+from auto_uv.probes.runtime_guardrails import (
+    probe_failure_should_mark_voltage_unsafe,
+)
+from auto_uv.probes.voltage_probe import probe_voltage_candidate
 from auto_uv.run.baseline_probe import (
-    build_loaded_baseline_candidate,
     baseline_load_reference_power_limit_w,
-    require_probe_summary,
+    build_loaded_baseline_candidate,
     probe_loaded_baseline_with_backoff,
+    require_probe_summary,
     retarget_clock_ceiling_for_candidate,
     run_discovery_probe,
     run_discovery_probe_with_runner,
@@ -54,75 +88,44 @@ from auto_uv.run.crash_recovery import (
     recovery_initial_target_voltage_mv,
     replay_recovered_resume_probe_rows,
 )
-from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
-from ui.features.auto_uv.candidate_choice import (
-    choose_next_final_verification_candidate_after_failure,
-    choose_final_verification_candidate,
-    choose_recovery_final_verification_candidate,
-)
-from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
-from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
-from auto_uv.base_uv_loop import BaseUvLoopIO, run_base_uv_loop
-from auto_uv.performance_uv_loop import (
-    select_power_bound_clock_reclaim_candidate,
-    select_performance_auto_oc_candidate,
-)
-from auto_uv.curve.measured_probe_lock_clock import (
-    probe_indicates_power_saturation,
-)
-from auto_uv.probes.runner import AutoUvProbeRunner
-from auto_uv.probes.runtime_guardrails import (
-    probe_failure_should_mark_voltage_unsafe,
-)
-from auto_uv.probes.voltage_probe import probe_voltage_candidate
 from auto_uv.run.scan_runtime_settings import (
     adaptive_tier_option,
-    final_verification_duration_s as resolve_final_verification_duration_s,
     read_scan_runtime_settings,
 )
-from auto_uv.gpu.memory_clock_offset_user_option import (
-    driver_memory_offset_limit_mhz,
+from auto_uv.run.scan_runtime_settings import (
+    final_verification_duration_s as resolve_final_verification_duration_s,
 )
-from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
-    best_efficiency_candidate_index,
-    derive_efficiency_stop_streak_from_fps_variance,
-)
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
-from auto_uv.persistence.verified_candidate_result_file import (
-    read_verified_candidates,
-)
-from auto_uv.persistence.auto_uv_persisted_json_files import (
-    auto_uv_stop_request_aborts_final_choice,
-    clear_auto_uv_stop_request,
-)
-from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
-from auto_uv.probes.event_payload import vf_curve_event_points
 from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepEvent,
     LowerVoltageSweepResult,
     VoltageProbeOutcome,
 )
-from auto_uv.final_verification.crash_marker import memory_offset_from_gpu_policy
-from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_ADAPTIVE,
     AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_PERFORMANCE,
 )
-from auto_uv.scan_mode.uv_limits import (
-    uv_limit_power_limit_pct_for_gpu,
-    uv_limit_clock_target_range_for_gpu,
+from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
+    best_efficiency_candidate_index,
+    derive_efficiency_stop_streak_from_fps_variance,
 )
 from auto_uv.scan_mode.target_overrides import (
     custom_tier_target,
     tier_target_overrides,
 )
-from auto_uv.auto_oc.target_search import run_custom_tier_target_search
-from auto_uv.auto_oc.scoring import auto_oc_probe_key
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
-
+from auto_uv.scan_mode.uv_limits import (
+    uv_limit_clock_target_range_for_gpu,
+    uv_limit_power_limit_pct_for_gpu,
+)
+from auto_uv.shared.positive_int import positive_int
+from stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
+from ui.features.auto_uv.candidate_choice import (
+    choose_final_verification_candidate,
+    choose_next_final_verification_candidate_after_failure,
+    choose_recovery_final_verification_candidate,
+)
 
 ADAPTIVE_BASELINE_REUSE_CLOCK_TOLERANCE_MHZ = 15
 ADAPTIVE_BASELINE_REUSE_VOLTAGE_TOLERANCE_MV = 10
@@ -696,13 +699,13 @@ def run_voltage_frequency_undervolt_main_loop(
                             runner=tier_runner,
                             log=log,
                             event_callback=event_callback,
-                            label=f"{str(tier_mode)} stock curve",
+                            label=f"{tier_mode!s} stock curve",
                         )
                     )
                     probe_history.append(tier_discovery_summary)
                     if not bool(getattr(tier_discovery_result, "success", False)):
                         raise AutoUvError(
-                            f"adaptive {str(tier_mode)} stock baseline failed "
+                            f"adaptive {tier_mode!s} stock baseline failed "
                             "the Q2RTX probe: "
                             f"{getattr(tier_discovery_result, 'reason', 'unknown')}"
                         )
@@ -755,7 +758,7 @@ def run_voltage_frequency_undervolt_main_loop(
                     log_phase(
                         log,
                         "auto-uv",
-                        f"adaptive {str(tier_mode)} capped baseline accepted "
+                        f"adaptive {tier_mode!s} capped baseline accepted "
                         f"{int(tier_baseline_candidate.voltage_mv)}mV@"
                         f"{int(tier_baseline_candidate.target_mhz)}MHz "
                         f"power-limit={_format_power_limit_w(gpu.power_limit_w)}",
@@ -1018,7 +1021,7 @@ def run_adaptive_tier_scans(
             apply_pending_power_limit(
                 gpu,
                 log=log,
-                purpose=f"adaptive {str(tier_mode)} scan",
+                purpose=f"adaptive {tier_mode!s} scan",
             )
             tier_runner = configure_tier_probe_runner()
         except (RuntimeError, OSError) as tier_error:
@@ -1299,7 +1302,7 @@ def run_adaptive_tier_descent(
         outcome = runner.probe_sweep_candidate(
             candidate,
             stable_history=tier_history,
-            phase_label=f"{str(tier_mode)}-candidate",
+            phase_label=f"{tier_mode!s}-candidate",
         )
         if outcome.raw_probe is not None:
             probe_history.append(outcome.raw_probe)
@@ -1486,7 +1489,7 @@ def apply_adaptive_tier_memory_offset(
             applied = gpu.gpu.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(target_mhz)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log(
                 f"Auto-UV memory offset ({tier_mode}): failed to apply "
                 f"{target_mhz:+d} MHz; keeping {current_mhz:+d} MHz: {exc}"
@@ -1668,7 +1671,7 @@ def adaptive_tier_power_limit_w(
         watts = float(scan_request_w) * float(power_limit_pct) / float(balanced_pct)
     else:
         watts = float(baseline_power_limit_w) * float(power_limit_pct) / 100.0
-    return min(int(round(watts)), int(baseline_power_limit_w))
+    return min(round(watts), int(baseline_power_limit_w))
 
 
 def log_lower_voltage_sweep_events(
@@ -2107,7 +2110,7 @@ def run_recovered_previous_crash_selection(
     )
     baseline_lock_clock_mhz = positive_int(
         recovery_record.get("base_lock_clock_mhz")
-    ) or int(round(float(baseline_clock_mhz or recovery_lock_clock_mhz)))
+    ) or round(float(baseline_clock_mhz or recovery_lock_clock_mhz))
     baseline_candidate = VfCurveCandidate(
         label="previous-crash-resume-baseline",
         voltage_mv=int(baseline_voltage_mv),
@@ -2172,7 +2175,7 @@ def run_recovered_previous_crash_selection(
     log_phase(
         log,
         "crash-recovery",
-        f"resuming {str(settings.auto_uv_mode)} Auto-UV from saved candidate "
+        f"resuming {settings.auto_uv_mode!s} Auto-UV from saved candidate "
         "without baseline probe "
         f"candidate={int(recovery_voltage_mv)}mV@"
         f"{int(recovery_lock_clock_mhz)}MHz "

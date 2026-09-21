@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-from ui.constants import MAX_FINAL_VERIFICATION_DURATION_S
+from ui.constants import (
+    DEFAULT_FINAL_VERIFICATION_DURATION_S,
+    MAX_FINAL_VERIFICATION_DURATION_S,
+)
 
 
 @dataclass(slots=True)
@@ -97,6 +99,6 @@ def handle_final_choice_request(
 
 def duration_seconds(value, default_s: int) -> int:
     try:
-        return max(1, int(round(float(value))))
+        return max(1, round(float(value)))
     except (TypeError, ValueError):
         return int(default_s)

@@ -3,20 +3,20 @@ from __future__ import annotations
 import base64
 import json
 import os
-from pathlib import Path
 import pwd
 import shutil
 import sys
-from typing import Mapping
+from collections.abc import Mapping
+from pathlib import Path
 
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     ADAPTIVE_TIER_OPTION_SUFFIXES,
     adaptive_tier_option_key,
 )
+from common.privileged_env import env_command_prefix
 from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ui.features.tuning.gpu_selection import runtime_gpu_index
-
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
@@ -155,8 +155,7 @@ def _privileged_command_base() -> list[str] | None:
     escalator = shutil.which("pkexec") or shutil.which("sudo")
     if not escalator:
         return None
-    env = shutil.which("env") or "/usr/bin/env"
-    return [escalator, env]
+    return [escalator, *env_command_prefix()]
 
 
 def _privileged_env() -> list[str]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from typing import Callable
+from collections.abc import Callable
 
 from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
 from runtime.support.runtime_service import daemon_worker_registration_error
@@ -58,7 +58,7 @@ def ensure_daemon_ready_for_privileged_action(
             "PenguinBurner can update and restart it now. This may ask for "
             "your administrator password once."
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         unavailable_reason = str(exc)
         prompt = (
             f"{action_label} requires the PenguinBurner root hardware service.\n\n"
@@ -111,7 +111,7 @@ def ensure_daemon_ready_for_privileged_action(
 
     try:
         check()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         QtWidgets.QMessageBox.critical(
             parent,
             "PenguinBurner Hardware Service",

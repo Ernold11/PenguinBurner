@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles import game_profile
 
 import integrations.steam.manager as manager_module
@@ -21,6 +22,9 @@ from integrations.steam.users import STEAMID64_BASE
 
 ACCOUNT_ID = "78675700"
 APP_ID = "10"
+#: The identity the daemon registers this game under: namespaced, because it
+#: keys running games by one opaque string shared with the other launchers.
+GAME_KEY = "steam:10"
 
 
 class _FakeCdpClient:
@@ -56,7 +60,6 @@ class _FakeCdpClient:
                 if tool_name == "proton_experimental"
                 else tool_name
             ),
-            compat_tool_priority=details.compat_tool_priority,
             platforms=details.platforms,
         )
 
@@ -121,13 +124,13 @@ def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationMa
             launch_options="gamemoderun %command%",
             compat_tool_name="proton_experimental",
             compat_tool_display_name="Proton Experimental",
-            compat_tool_priority=75,
             platforms=("windows", "linux"),
         )
     }
     _FakeCdpClient.fail = False
     monkeypatch.setattr(manager_module, "SteamCdpClient", _FakeCdpClient)
     monkeypatch.setattr(manager_module, "steam_running", lambda: True)
+    monkeypatch.setattr(manager_module, "steam_matches_installation", lambda home: True)
     return SteamIntegrationManager(
         home=steam_home,
         settings_path=tmp_path / "steam-game-settings.json",
@@ -157,7 +160,7 @@ def test_library_uses_one_batch_and_keeps_cached_details_for_missing_apps(manage
     fresh = SteamAppDetails(
         launch_options='env TITLE="other game" %command%',
         compat_tool_name="GE-Proton10-34", compat_tool_display_name="GE-Proton10-34",
-        compat_tool_priority=75, platforms=("windows",),
+        platforms=("windows",),
     )
     calls = []
 
@@ -181,7 +184,6 @@ def test_refresh_marks_native_only_when_steam_api_reports_no_compat_tool(
         launch_options="gamemoderun %command%",
         compat_tool_name="",
         compat_tool_display_name="",
-        compat_tool_priority=0,
         platforms=("windows", "linux"),
     )
 
@@ -242,6 +244,34 @@ def test_bulk_apply_hot_reapplies_only_watched_running_games(
     manager.set_all_games_enabled([APP_ID], True)
 
     assert reapplied == [APP_ID]
+
+
+def test_the_daemons_watch_list_is_read_as_steam_app_ids(manager, monkeypatch) -> None:
+    """The list is every launcher's running games under one opaque key each.
+
+    Reading it back has to keep this launcher's games and drop the rest --
+    matching the bare string would have a Lutris game 10 answer for Steam
+    app 10.
+    """
+    import runtime.daemon_client as daemon_client
+
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "watched": [
+                    {"pid": 1, "app_id": GAME_KEY},
+                    {"pid": 2, "app_id": f"lutris:{APP_ID}"},
+                    # A wrapper from before Steam was namespaced.
+                    {"pid": 3, "app_id": "620"},
+                    {"pid": 4, "app_id": ""},
+                ]
+            }
+        },
+    )
+
+    assert manager._watched_running_app_ids() == frozenset({APP_ID, "620"})
 
 
 def test_bulk_overlay_show_updates_wrapper_flag(manager, monkeypatch) -> None:
@@ -509,7 +539,9 @@ def test_overlay_change_updates_live_override(manager, monkeypatch, tmp_path, en
     manager.refresh()
     assert manager.set_game_enabled(APP_ID, True).ok
     assert manager.set_game_overlay(APP_ID, enabled).ok
-    result = manager.hot_reapply_overlay(APP_ID)
+    from integrations.steam.library_source import SteamLibrarySource
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({GAME_KEY}))
+    result = SteamLibrarySource(manager).after_setting_write(APP_ID, "set_game_overlay")
     assert result is not None and result.ok
     assert override.read_text() == ("1" if enabled else "0")
 
@@ -524,7 +556,9 @@ def test_overlay_edit_for_idle_game_does_not_touch_live_override(
     override.write_text("1")
     monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
     monkeypatch.setattr(manager, "running_game_ids", lambda: running)
-    assert manager.hot_reapply_overlay(APP_ID) is None
+    from integrations.steam.library_source import SteamLibrarySource
+    result = SteamLibrarySource(manager).after_setting_write(APP_ID, "set_game_overlay")
+    assert (result is not None and not result.ok) if running is None else result is None
     assert override.read_text() == "1"
 
 
@@ -538,15 +572,30 @@ def test_bulk_overlay_updates_live_visibility_without_reapplying_profile(
     monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({APP_ID}))
     manager.refresh()
     assert manager.set_game_enabled(APP_ID, True).ok
-    assert manager.set_all_games_overlay([APP_ID], True).ok
+    from integrations.steam.library_source import SteamLibrarySource
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({GAME_KEY}))
+    source = SteamLibrarySource(manager)
+    result = manager.set_all_games_overlay([APP_ID], True)
+    assert result.ok
+    assert source.after_bulk_write("set_all_games_overlay", result).ok
     assert override.read_text() == "1"
     monkeypatch.setattr("overlay.state.write_overlay_override", lambda _enabled: False)
     result = manager.set_all_games_overlay([APP_ID], False)
-    assert not result.ok
-    assert "live visibility update failed" in result.message
+    followup = source.after_bulk_write("set_all_games_overlay", result)
+    assert result.ok and not followup.ok
+    assert "live visibility update failed" in followup.message
 
 
-def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> None:
+@pytest.mark.parametrize("watched_id", [GAME_KEY, APP_ID])
+def test_hot_reapply_pushes_profile_to_running_game(
+    manager, monkeypatch, watched_id
+) -> None:
+    """Either spelling of the identity finds the session.
+
+    The wrapper registers the namespaced key; a game started before that was
+    written registered the bare app id and can still be running when the user
+    changes a setting.
+    """
     import runtime.daemon_client as daemon_client
     import integrations.steam.game_runtime as game_runtime
 
@@ -560,7 +609,11 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
             "state": "runtime_profile_running",
             "game_runtime": {
                 "active": True,
-                "watched": [{"pid": 4242, "app_id": APP_ID}],
+                "watched": [
+                    # Another launcher's game, which this must not answer for.
+                    {"pid": 99, "app_id": f"lutris:{APP_ID}"},
+                    {"pid": 4242, "app_id": watched_id},
+                ],
             },
         },
     )
@@ -573,7 +626,7 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
         lambda profiles, **_kwargs: {"balanced": {"profile_id": "profile-9"}},
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
@@ -589,7 +642,7 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     result = manager.hot_reapply(APP_ID)
     assert result is not None and result.ok
     assert calls == [
-        (["--auto-uv-profile", "profile-9", "--gpu-index", "0"], 4242, APP_ID)
+        (["--auto-uv-profile", "profile-9", "--gpu-index", "0"], 4242, GAME_KEY)
     ]
 
 
@@ -628,7 +681,7 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
@@ -648,7 +701,7 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
                 "0",
             ],
             4242,
-            APP_ID,
+            GAME_KEY,
         )
     ]
 
@@ -673,7 +726,7 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
@@ -708,7 +761,7 @@ def test_hot_reapply_targets_saved_gpu_for_stock(manager, monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [
@@ -750,7 +803,7 @@ def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> No
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
@@ -838,8 +891,60 @@ def test_enabling_reads_the_original_off_the_live_line_not_a_stale_snapshot(
 
     manager._apply("620", replace(stale, enabled=True))
 
-    stored = manager._setting("620")
+    stored = manager.game_setting("620")
     assert stored.original_launch_options == live
     # And the line Steam now carries is that same command, wrapped.
     written = manager._launch_options["620"]
     assert injection_state(written).wrapped is True
+
+
+@pytest.mark.parametrize("running_id", [APP_ID, "failed"])
+def test_bulk_overlay_live_followup_excludes_failed_steam_writes(manager, monkeypatch, tmp_path, running_id):
+    from integrations.steam.library_source import SteamLibrarySource
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    manager.refresh()
+    assert manager.set_game_enabled(APP_ID, True).ok
+    original = manager.set_game_overlay
+    monkeypatch.setattr(manager, "set_game_overlay", lambda app_id, enabled:
+                        manager_module.ApplyResult(False, "refused") if app_id == "failed" else original(app_id, enabled))
+    monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({running_id}))
+    monkeypatch.setattr("integrations.launchers.live_overlay.wrapped_game_keys", lambda: frozenset({f"steam:{running_id}"}))
+    path = tmp_path / "overlay-override"
+    path.write_text("0")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(path))
+    result = manager.set_all_games_overlay(["failed", APP_ID], True)
+    assert not result.ok and result.applied_game_ids == (APP_ID,)
+    followup = SteamLibrarySource(manager).after_bulk_write("set_all_games_overlay", result)
+    assert (followup is not None) == (running_id == APP_ID)
+    assert path.read_text() == ("1" if running_id == APP_ID else "0")
+
+
+@pytest.mark.parametrize('preflight_ok', [False, True])
+def test_flatpak_steam_wrapper_write_targets_selected_library(manager, steam_home, monkeypatch, preflight_ok):
+    from integrations.launchers import flatpak, installation
+    from integrations.steam.users import steam_installation
+
+    root = steam_home / '.local/share/Steam'
+    sandbox = steam_home / '.var/app/com.valvesoftware.Steam/.local/share/Steam'
+    sandbox.parent.mkdir(parents=True)
+    root.rename(sandbox)
+    # A running native client is forbidden; this fake CDP belongs to Flatpak.
+    monkeypatch.setattr(manager_module, 'steam_matches_installation', lambda home: True)
+    monkeypatch.setattr(installation, 'host_command_path', lambda name: None)
+    prepared = []
+    def prepare(selected):
+        prepared.append(selected)
+        if not preflight_ok:
+            raise RuntimeError('sandbox failed')
+    monkeypatch.setattr(flatpak, 'ensure_integration', prepare)
+    manager.refresh()
+    selected = steam_installation(steam_home)
+    result = manager.set_game_enabled(APP_ID, True)
+    assert result.ok is preflight_ok
+    assert prepared == [selected]
+    if preflight_ok:
+        assert selected.wrapper in _FakeCdpClient.launch_options[APP_ID]
+        assert manager.set_game_enabled(APP_ID, False).ok
+    assert _FakeCdpClient.launch_options[APP_ID] == 'gamemoderun %command%'
+    assert not root.exists()

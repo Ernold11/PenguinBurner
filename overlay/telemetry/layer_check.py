@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import subprocess
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, cast
 
-from overlay.native_layer import LATENCY_LAYER_NAME
-from overlay.native_layer import native_layer_dirs
+from overlay.native_layer import LATENCY_LAYER_NAME, native_layer_dirs
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = f"{PENGUIN_BURNER_WRAPPER} %command%"
@@ -42,7 +42,7 @@ def check_latency_layer(
             env=check_env,
             check=False,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
             "layer_name": LATENCY_LAYER_NAME,
@@ -93,12 +93,12 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
         lines.extend(
             [
                 "Layer check example:",
-                f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
-                "PENGUIN_BURNER=1 vulkaninfo --summary",
+                (f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
+                "PENGUIN_BURNER=1 vulkaninfo --summary"),
             ]
         )
 
-    warnings = result.get("warnings") or []
+    warnings = cast(Any, result.get("warnings") or [])
     if warnings:
         lines.append("Layer warnings:")
         lines.extend(f"  {line}" for line in list(warnings)[:5])

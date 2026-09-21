@@ -6,19 +6,20 @@ This is the only Auto-UV module that creates NVAPI/NVML helpers and applies curv
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, cast
-
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from profiles.gpu_identity import normalized_gpu_identity
-from runtime.support.vf_curve_plan import apply_plan
-from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
+from typing import Any, cast
 
 from auto_uv.domain.types import AutoUvError, AutoUvPowerLimitApplyError
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     adaptive_tier_option_key,
 )
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from profiles.gpu_identity import normalized_gpu_identity
+from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
+from runtime.support.vf_curve_plan import apply_plan
+
 from .memory_clock_offset_user_option import auto_uv_memory_offset_mhz
 from .probe_clock_ceiling import ProbeClockCeilingController
 from .runtime_vf_offset_reset_check import assert_zero_runtime_vf_offsets
@@ -101,7 +102,7 @@ class LiveGpuVfCurveApplier:
             self.translated_gpu_policy.pop("power_limit_w", None)
             log(
                 "Auto-UV power limit: skipped unsupported fixed write for "
-                f"{str(purpose)}; "
+                f"{purpose!s}; "
                 "continuing without saved power limit"
             )
             return None
@@ -122,7 +123,7 @@ class LiveGpuVfCurveApplier:
             self.requested_power_limit_w = None
             raise AutoUvPowerLimitApplyError(
                 "Auto-UV power limit: unable to establish "
-                f"{int(requested_w)}W for {str(purpose)}; scan stopped before "
+                f"{int(requested_w)}W for {purpose!s}; scan stopped before "
                 f"probing under an unknown power regime: {exc}"
             ) from exc
         try:
@@ -138,7 +139,7 @@ class LiveGpuVfCurveApplier:
             self.requested_power_limit_w = None
             raise AutoUvPowerLimitApplyError(
                 "Auto-UV power limit: unable to read back "
-                f"{int(requested_w)}W for {str(purpose)}; scan stopped before "
+                f"{int(requested_w)}W for {purpose!s}; scan stopped before "
                 f"probing under an unknown power regime: {exc}"
             ) from exc
         self.translated_gpu_policy["power_limit_w"] = int(verified_power_limit_w)
@@ -147,7 +148,7 @@ class LiveGpuVfCurveApplier:
         self.requested_power_limit_w = None
         log(
             "Auto-UV power limit: applied "
-            f"{int(verified_power_limit_w)}W for {str(purpose)}"
+            f"{int(verified_power_limit_w)}W for {purpose!s}"
         )
         return int(verified_power_limit_w)
 
@@ -332,7 +333,7 @@ def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
             )
         if value in (None, ""):
             return None
-        power_limit_w = int(round(float(cast(Any, value))))
+        power_limit_w = round(float(cast(Any, value)))
     except (TypeError, ValueError) as exc:
         raise AutoUvError(f"invalid Auto-UV power limit: {value!r}") from exc
     return power_limit_w if power_limit_w > 0 else None
@@ -342,7 +343,7 @@ def _positive_power_limit_w(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(cast(Any, value))))
+        power_limit_w = round(float(cast(Any, value)))
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None

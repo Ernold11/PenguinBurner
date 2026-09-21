@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
-import math
 
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
-
 
 FAN_TEMP_STEP_C = 1.0
 FAN_SPEED_STEP_PCT = 1.0
@@ -262,7 +261,8 @@ def _fan_payload_with_points(
     points: list[tuple[float, float]],
 ) -> dict:
     payload = dict(fan_payload)
-    fan = dict(payload.get("fan") if isinstance(payload.get("fan"), dict) else {})
+    raw_fan = payload.get("fan")
+    fan = dict(raw_fan) if isinstance(raw_fan, dict) else {}
     fan["curve"] = _json_points(points)
     payload["fan"] = fan
     payload["manual_edit_source"] = "penguin-burner-ui"
@@ -370,6 +370,5 @@ def _clamp_float(value: float, minimum: float, maximum: float) -> float:
 
 
 def _clamp_int(value: int, minimum: int, maximum: int) -> int:
-    if maximum < minimum:
-        maximum = minimum
+    maximum = max(maximum, minimum)
     return max(int(minimum), min(int(maximum), int(value)))

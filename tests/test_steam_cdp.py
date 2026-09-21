@@ -196,7 +196,6 @@ def fake_steam():
                         if tool_name == "proton_experimental"
                         else tool_name
                     ),
-                    "compatToolPriority": 75,
                     "platforms": ["windows", "linux"],
                 }
 
@@ -281,7 +280,6 @@ def test_read_app_details_reports_steams_effective_compat_tool(fake_steam) -> No
     assert details.launch_options == "gamemoderun %command%"
     assert details.compat_tool_name == "proton_experimental"
     assert details.compat_tool_display_name == "Proton Experimental"
-    assert details.compat_tool_priority == 75
     assert details.platforms == ("windows", "linux")
 
 

@@ -11,10 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_host_integration
+from integrations.launchers.installation import native_command
 from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
+)
+from profiles.game_profile import (
+    GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
+    game_mode_uses_latency_markers,
+    normalize_game_mode,
+    normalize_game_target_fps,
 )
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 
@@ -26,28 +34,22 @@ from .cdp import (
     cdp_marker_present,
     ensure_cdp_marker,
 )
+from .identity import steam_app_id_from_game_key, steam_game_key
 from .launch_options import (
     inject_launch_options,
     injection_state,
     launch_options_problems,
     remove_injection,
+    retarget_wrapper,
 )
 from .library import InstalledSteamGame, installed_steam_games
-from .process import running_steam_game_ids, steam_running
+from .process import running_steam_game_ids, steam_matches_installation, steam_running
 from .settings import (
     SteamGameSetting,
     load_steam_game_settings,
     store_steam_game_setting,
 )
-from profiles.game_profile import (
-    GAME_MODE_ADAPTIVE,
-    GAME_MODE_DEFAULT,
-    GAME_MODE_NONE,
-    game_mode_uses_latency_markers,
-    normalize_game_mode,
-    normalize_game_target_fps,
-)
-from .users import SteamUser, active_steam_user
+from .users import SteamUser, active_steam_user, steam_installation
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class ApplyResult:
     ok: bool
     message: str
     launch_options: str = ""
+    applied_game_ids: tuple[str, ...] = ()
 
 
 class SteamIntegrationManager:
@@ -93,7 +96,7 @@ class SteamIntegrationManager:
         return steam_running()
 
     def cdp_ready(self) -> bool:
-        return cdp_available(timeout_s=1.0)
+        return steam_matches_installation(self._home) and cdp_available(timeout_s=1.0)
 
     def running_game_ids(self) -> frozenset[str] | None:
         """Every running Steam game's app id in one subprocess (for polling).
@@ -114,7 +117,7 @@ class SteamIntegrationManager:
         if not str(app_id).isdecimal():
             return ApplyResult(False, "invalid app id")
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 if not client.terminate_app_supported():
                     return ApplyResult(
                         False, "this Steam build does not expose TerminateApp"
@@ -149,6 +152,7 @@ class SteamIntegrationManager:
         *,
         read_launch_options: bool = True,
     ) -> tuple[SteamGameRow, ...]:
+        native_command.cache_clear()
         games = installed_steam_games(self._home)
         if read_launch_options:
             games = self._read_all_app_details(games)
@@ -227,7 +231,7 @@ class SteamIntegrationManager:
         authoritative for the runtime it actually selected through defaults.
         """
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 fresh_details = client.app_details_many(game.app_id for game in games)
         except SteamCdpError:
             fresh_details = {}
@@ -276,7 +280,6 @@ class SteamIntegrationManager:
             game,
             effective_compat_tool=details.compat_tool_name,
             effective_compat_tool_display=details.compat_tool_display_name,
-            effective_compat_tool_priority=details.compat_tool_priority,
             effective_platforms=details.platforms,
         )
 
@@ -284,18 +287,18 @@ class SteamIntegrationManager:
 
     def set_game_mode(self, app_id: str, mode: str) -> ApplyResult:
         mode = normalize_game_mode(mode)
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(app_id, replace(setting, mode=mode))
 
     def set_game_gpu(self, app_id: str, gpu_uuid: str) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(setting, gpu_uuid=str(gpu_uuid or "").strip()),
         )
 
     def set_game_enabled(self, app_id: str, enabled: bool) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(
@@ -306,11 +309,11 @@ class SteamIntegrationManager:
         )
 
     def set_game_overlay(self, app_id: str, overlay: bool) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(app_id, replace(setting, overlay=bool(overlay)))
 
     def set_game_target_fps(self, app_id: str, target_fps: float | None) -> ApplyResult:
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         return self._apply(
             app_id,
             replace(setting, target_fps=normalize_game_target_fps(target_fps)),
@@ -331,10 +334,10 @@ class SteamIntegrationManager:
             app_ids,
             lambda app_id: self.set_game_overlay(app_id, bool(overlay)),
             "overlay shown" if overlay else "overlay hidden",
-            live_overlay=True,
+            reapply_profile=False,
         )
 
-    def _apply_to_games(self, app_ids, action, label: str, *, live_overlay: bool = False) -> ApplyResult:
+    def _apply_to_games(self, app_ids, action, label: str, *, reapply_profile: bool = True) -> ApplyResult:
         ids = [str(app_id) for app_id in app_ids]
         failed: list[str] = []
         for app_id in ids:
@@ -345,39 +348,39 @@ class SteamIntegrationManager:
         # One daemon-status probe instead of one per game: only games the
         # daemon is currently watching can pick the change up live.
         applied = set(ids) - set(failed)
-        live_problems: list[str] = []
-        if live_overlay:
-            for app_id in (self.running_game_ids() or frozenset()) & applied:
-                result = self.hot_reapply_overlay(app_id)
-                if result is not None and not result.ok:
-                    live_problems.append(result.message)
-        else:
+        if reapply_profile:
             for app_id in self._watched_running_app_ids() & applied:
                 self.hot_reapply(app_id)
         games_word = "game" if changed == 1 else "games"
         message = f"PenguinBurner {label} for {changed} {games_word}."
-        if live_problems:
-            message += " " + " ".join(live_problems)
         if failed:
             return ApplyResult(
                 False,
                 f"{message} Failed for {len(failed)}: {', '.join(failed[:5])}.",
+                applied_game_ids=tuple(app_id for app_id in ids if app_id in applied),
             )
-        return ApplyResult(not live_problems, message)
+        return ApplyResult(True, message, applied_game_ids=tuple(ids))
 
     def _watched_running_app_ids(self) -> frozenset[str]:
+        """Steam games the daemon is watching right now, as Steam app ids.
+
+        The daemon holds one opaque game key per watched pid, and for Steam
+        that key is namespaced. Reading it back through the identity helper
+        drops the other launchers' games and understands the bare app id an
+        older wrapper still running would have registered.
+        """
         from runtime.daemon_client import daemon_status
 
         try:
             status = daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return frozenset()
         watched = (status.get("game_runtime") or {}).get("watched") or []
-        return frozenset(
-            str(entry.get("app_id"))
+        app_ids = (
+            steam_app_id_from_game_key(str(entry.get("app_id") or ""))
             for entry in watched
-            if entry.get("app_id")
         )
+        return frozenset(app_id for app_id in app_ids if app_id)
 
     def available_compat_tools(self, app_id: str) -> tuple[tuple[str, str], ...]:
         if app_id in self._compat_tools:
@@ -385,7 +388,7 @@ class SteamIntegrationManager:
         if self._compat_tools_unavailable:
             return ()
         try:
-            with SteamCdpClient(timeout_s=5.0) as client:
+            with self._client(timeout_s=5.0) as client:
                 if not client.compat_tool_selection_supported():
                     self._compat_tools_unavailable = True
                     return ()
@@ -405,7 +408,7 @@ class SteamIntegrationManager:
         if tool_name and tool_name not in available:
             return ApplyResult(False, "selected compatibility tool is unavailable")
         try:
-            with SteamCdpClient(timeout_s=5.0) as client:
+            with self._client(timeout_s=5.0) as client:
                 if not client.compat_tool_selection_supported():
                     return ApplyResult(False, "this Steam build cannot change Proton live")
                 client.specify_compat_tool(app_id, tool_name)
@@ -428,10 +431,17 @@ class SteamIntegrationManager:
         problems = launch_options_problems(text)
         if problems:
             return ApplyResult(False, "; ".join(problems))
+        if injection_state(text).wrapped:
+            try:
+                installation = steam_installation(self._home)
+                installation.ensure_integration()
+                text = retarget_wrapper(text, installation.wrapper)
+            except (OSError, RuntimeError, ValueError) as error:
+                return ApplyResult(False, f"PenguinBurner integration repair failed: {error}")
         write = self._write_launch_options(app_id, text)
         if not write.ok:
             return write
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         state = injection_state(text)
         if state.wrapped:
             self._store(
@@ -478,25 +488,28 @@ class SteamIntegrationManager:
         request with the same watch PID swaps the active profile in place.
         None means the game is not running (nothing to do).
         """
-        from runtime.daemon_client import daemon_status, start_game_runtime_profile
-
         from drivers.nvidia.daemon_gpu import DaemonGpuClient
-
         from profiles.game_profile import game_gpu_target, profile_argv_for_setting
+        from runtime.daemon_client import daemon_status, start_game_runtime_profile
 
         try:
             status = daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         watched = (status.get("game_runtime") or {}).get("watched") or []
+        # The daemon holds one opaque game key per watched pid; for Steam that
+        # is the namespaced identity, and an older wrapper still running has
+        # registered the bare app id. Both have to find this game.
+        wanted = str(app_id)
         pids = [
             int(entry["pid"])
             for entry in watched
-            if str(entry.get("app_id")) == str(app_id) and entry.get("pid")
+            if entry.get("pid")
+            and steam_app_id_from_game_key(str(entry.get("app_id") or "")) == wanted
         ]
         if not pids:
             return None
-        setting = self._setting(app_id)
+        setting = self.game_setting(app_id)
         argv = profile_argv_for_setting(setting)
         profile_mode_requested = setting.enabled and setting.mode not in {
             GAME_MODE_DEFAULT,
@@ -505,7 +518,7 @@ class SteamIntegrationManager:
         if profile_mode_requested:
             try:
                 identities = list(DaemonGpuClient.discover_identities())
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 return ApplyResult(False, f"could not detect target GPU: {error}")
             target = game_gpu_target(setting, identities)
             if target is None:
@@ -539,9 +552,11 @@ class SteamIntegrationManager:
             result = start_game_runtime_profile(
                 argv,
                 watch_pid=pids[0],
-                app_id=app_id,
+                # Re-registering the same pid: the identity it is registered
+                # under stays the one the launch wrapper wrote.
+                app_id=steam_game_key(app_id),
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             if "not a running process" in str(error):
                 # The game exited within the daemon's restore grace window.
                 return ApplyResult(True, "Game just exited; applies on next launch.")
@@ -550,18 +565,6 @@ class SteamIntegrationManager:
             reason = str(result.get("reason") or "daemon did not start the profile")
             return ApplyResult(False, f"live profile re-apply skipped: {reason}")
         return ApplyResult(True, "Profile re-applied to the running game.")
-
-    def hot_reapply_overlay(self, app_id: str) -> ApplyResult | None:
-        """Update the native layer only when this game's session is running."""
-        from overlay.state import write_overlay_override
-
-        running = self.running_game_ids()
-        if running is None or str(app_id) not in running:
-            return None
-        enabled = self._setting(app_id).overlay
-        if not write_overlay_override(enabled):
-            return ApplyResult(False, "Overlay saved, but live visibility update failed.")
-        return ApplyResult(True, f"Overlay switched {'on' if enabled else 'off'} live.")
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
         # Marker capture is an Adaptive prerequisite, not a second preference
@@ -585,17 +588,21 @@ class SteamIntegrationManager:
             )
         if setting.active:
             try:
-                ensure_host_integration()
+                steam_installation(self._home).ensure_integration()
             except (OSError, RuntimeError) as error:
                 return ApplyResult(
                     False,
                     f"PenguinBurner Steam integration repair failed: {error}",
                 )
-            desired = inject_launch_options(
-                current,
-                overlay=setting.overlay,
-                ingame_latency=setting.ingame_latency,
-            )
+            try:
+                desired = inject_launch_options(
+                    current,
+                    overlay=setting.overlay,
+                    ingame_latency=setting.ingame_latency,
+                    executable=steam_installation(self._home).wrapper,
+                )
+            except ValueError as error:
+                return ApplyResult(False, str(error))
             # The stored original is a snapshot taken when the wrapper last
             # went in, and it is only still the original while the wrapper is
             # still there. On an unwrapped line the live command *is* the
@@ -645,6 +652,11 @@ class SteamIntegrationManager:
 
     # -- helpers -------------------------------------------------------------
 
+    def _client(self, *, timeout_s: float) -> SteamCdpClient:
+        if not steam_matches_installation(self._home):
+            raise SteamCdpError("Close the other Steam installation before applying settings.")
+        return SteamCdpClient(timeout_s=timeout_s)
+
     def _store(self, app_id: str, setting: SteamGameSetting) -> None:
         user = self.active_user()
         store_steam_game_setting(
@@ -655,7 +667,8 @@ class SteamIntegrationManager:
             display_name=user.display_name if user is not None else "",
         )
 
-    def _setting(self, app_id: str) -> SteamGameSetting:
+    def game_setting(self, app_id: str) -> SteamGameSetting:
+        """Read the saved preference for the active Steam account."""
         user = self.active_user()
         if user is None:
             return SteamGameSetting()
@@ -667,7 +680,7 @@ class SteamIntegrationManager:
 
     def _write_launch_options(self, app_id: str, value: str) -> ApplyResult:
         try:
-            with SteamCdpClient(timeout_s=3.0) as client:
+            with self._client(timeout_s=3.0) as client:
                 if client.set_app_launch_options(app_id, value):
                     self._launch_options[app_id] = value
                     return ApplyResult(True, "Applied live.", launch_options=value)

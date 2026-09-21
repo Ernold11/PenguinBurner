@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
-from pathlib import Path
 import time
+from datetime import datetime
+from pathlib import Path
 
 from common.atomic_write import atomic_write_json
 from common.penguin_burner_paths import default_user_config_dir
 from profiles.gpu_identity import profile_gpu_uuid
-
 
 PROFILE_TIER_EFFICIENCY = "efficiency"
 PROFILE_TIER_BALANCED = "balanced"

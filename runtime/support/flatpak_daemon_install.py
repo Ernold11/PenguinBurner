@@ -9,7 +9,6 @@ from runtime.support.runtime_service import (
     LAST_RUNTIME_STATE_PATH,
 )
 
-
 FlatpakRuntimeAction = Literal["apply-intent", "migrate-legacy", "none"]
 
 
@@ -367,4 +366,4 @@ echo "Installed and enabled penguin-burnerd.service at $unit."
 echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
 """.strip()
     )
-    return "\n".join([_daemon_restart_and_wait_script(), script])
+    return f"{_daemon_restart_and_wait_script()}\n{script}"

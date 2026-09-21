@@ -25,6 +25,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 
 from .users import default_steam_root
@@ -59,7 +60,6 @@ class SteamAppDetails:
     launch_options: str
     compat_tool_name: str
     compat_tool_display_name: str
-    compat_tool_priority: int
     platforms: tuple[str, ...]
 
 
@@ -291,7 +291,7 @@ class SteamCdpClient:
     def close(self) -> None:
         self._socket.close()
 
-    def __enter__(self) -> "SteamCdpClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -433,8 +433,6 @@ class SteamCdpClient:
             "        compatToolDisplayName:"
             "          typeof details.strCompatToolDisplayName === 'string'"
             "            ? details.strCompatToolDisplayName : '',"
-            "        compatToolPriority: Number.isFinite(details.nCompatToolPriority)"
-            "          ? details.nCompatToolPriority : 0,"
             "        platforms: Array.isArray(details.vecPlatforms)"
             "          ? details.vecPlatforms : []"
             "      } : null);"
@@ -456,15 +454,10 @@ class SteamCdpClient:
         if not isinstance(value, dict):
             return None
         platforms = value.get("platforms")
-        try:
-            priority = int(value.get("compatToolPriority") or 0)
-        except (TypeError, ValueError):
-            priority = 0
         return SteamAppDetails(
             launch_options=str(value.get("launchOptions") or ""),
             compat_tool_name=str(value.get("compatToolName") or ""),
             compat_tool_display_name=str(value.get("compatToolDisplayName") or ""),
-            compat_tool_priority=priority,
             platforms=tuple(
                 str(platform).strip().lower()
                 for platform in platforms

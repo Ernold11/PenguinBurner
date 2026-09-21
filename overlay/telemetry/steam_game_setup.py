@@ -83,12 +83,10 @@ def installed_steam_game_presets(home: Path | None = None) -> tuple[SteamGamePre
 
 
 def default_steamapps_dirs(home: Path | None = None) -> tuple[Path, ...]:
-    home = Path.home() if home is None else home
-    candidates = [
-        home / ".local" / "share" / "Steam" / "steamapps",
-        home / ".steam" / "root" / "steamapps",
-        home / ".steam" / "steam" / "steamapps",
-    ]
+    from integrations.steam.users import default_steam_root
+
+    root = default_steam_root(home)
+    candidates = [root / "steamapps"] if root is not None else []
     for base in tuple(candidates):
         candidates.extend(_library_steamapps_dirs(base / "libraryfolders.vdf"))
 

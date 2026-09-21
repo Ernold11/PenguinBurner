@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Callable
 
+from auto_uv.domain.console_log import log_phase
+from auto_uv.domain.events import (
+    AutoUvEventCallback,
+    emit_auto_uv_event,
+)
+from auto_uv.domain.types import AutoUvCriticalProbeError, AutoUvProbeSummary
+from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING, AUTO_UV_STALL_TUNING
+from auto_uv.gpu.gpu_vf_curve_applier import verify_applied_power_limit_w
+from auto_uv.gpu.runtime_vf_offset_reset_check import (
+    assert_runtime_vf_offsets_match_plan,
+)
+from auto_uv.shared.probe_data_fields import percent
 from runtime.support.vf_curve_plan import apply_plan
 from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
@@ -18,35 +30,24 @@ from stability.q2rtx.runtime import (
 )
 from stability.q2rtx.telemetry import query_gpu_metrics
 
-from auto_uv.domain.console_log import log_phase
-from auto_uv.gpu.gpu_vf_curve_applier import verify_applied_power_limit_w
-from auto_uv.gpu.runtime_vf_offset_reset_check import assert_runtime_vf_offsets_match_plan
 from ..persistence.auto_uv_persisted_json_files import auto_uv_stop_requested
 from ..persistence.interrupted_probe_crash_cache import CRASH_CACHE_CANDIDATE_PHASES
-from auto_uv.domain.types import AutoUvCriticalProbeError, AutoUvProbeSummary
-from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING, AUTO_UV_STALL_TUNING
 from ..persistence.probe_in_progress_marker_file import (
     clear_probe_in_progress_marker,
     write_probe_in_progress_marker,
 )
-from auto_uv.shared.probe_data_fields import percent
+from ..persistence.unsafe_voltage_blacklist_file import record_unsafe_voltage
+from .live_abort import (
+    telemetry_live_abort_reason,
+)
 from .runtime_guardrails import (
     probe_failure_should_mark_voltage_unsafe,
     telemetry_sample_is_busy,
-)
-from .live_abort import (
-    telemetry_live_abort_reason,
 )
 from .summary import (
     saturated_probe_tail_samples,
     summarize_q2rtx_cuda_probe,
 )
-from auto_uv.domain.events import (
-    AutoUvEventCallback,
-    emit_auto_uv_event,
-)
-from ..persistence.unsafe_voltage_blacklist_file import record_unsafe_voltage
-
 
 UNSAFE_CLOCK_BINDING_LOWER_BINS = 2
 
@@ -532,7 +533,7 @@ def progress_target_duration_s(
     q2rtx_config: Q2RTXStabilityConfig,
     companion_duration_s: float,
     state: dict,
-    expected_total_duration_s: int | float | None = None,
+    expected_total_duration_s: float | None = None,
 ) -> float | None:
     if expected_total_duration_s not in (None, ""):
         try:
@@ -694,7 +695,7 @@ def unsafe_detail_text(details: dict | None) -> str:
     return ""
 
 
-def round_or_none(value: float | int | None) -> float | None:
+def round_or_none(value: float | None) -> float | None:
     if value is None:
         return None
     return round(float(value), 2)

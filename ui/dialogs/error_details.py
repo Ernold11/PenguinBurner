@@ -116,7 +116,7 @@ def critical_error_icon(QtGui, QtWidgets, widget):
     if not icon.isNull():
         return icon
     standard_pixmap = getattr(QtWidgets.QStyle, "StandardPixmap", QtWidgets.QStyle)
-    return widget.style().standardIcon(getattr(standard_pixmap, "SP_MessageBoxCritical"))
+    return widget.style().standardIcon(standard_pixmap.SP_MessageBoxCritical)
 
 
 def fixed_width_font(QtGui):
@@ -125,9 +125,9 @@ def fixed_width_font(QtGui):
         "SystemFont",
         QtGui.QFontDatabase,
     )
-    font = QtGui.QFontDatabase.systemFont(getattr(font_database_enum, "FixedFont"))
+    font = QtGui.QFontDatabase.systemFont(font_database_enum.FixedFont)
     style_hint_enum = getattr(QtGui.QFont, "StyleHint", QtGui.QFont)
-    font.setStyleHint(getattr(style_hint_enum, "Monospace"))
+    font.setStyleHint(style_hint_enum.Monospace)
     font.setFixedPitch(True)
     point_size = font.pointSize()
     font.setPointSize(max(8, min(point_size if point_size > 0 else 9, 9)))
@@ -140,4 +140,4 @@ def plain_text_no_wrap_mode(QtWidgets):
         "LineWrapMode",
         QtWidgets.QPlainTextEdit,
     )
-    return getattr(line_wrap_enum, "NoWrap")
+    return line_wrap_enum.NoWrap

@@ -6,10 +6,11 @@ stream live telemetry into it, then replace it with the final measured result.
 
 from __future__ import annotations
 
-from auto_uv.domain.types import VfCurveCandidate
 from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
-from .event_payload import probe_summary_event_payload, vf_curve_event_points
+from auto_uv.domain.types import VfCurveCandidate
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+
+from .event_payload import probe_summary_event_payload, vf_curve_event_points
 
 
 def emit_voltage_probe_started(
@@ -17,7 +18,7 @@ def emit_voltage_probe_started(
     candidate: VfCurveCandidate,
     *,
     stage: str,
-    target_duration_s: float | int | None = None,
+    target_duration_s: float | None = None,
 ) -> None:
     identity = voltage_probe_identity(
         candidate,
@@ -55,7 +56,7 @@ def voltage_probe_identity(
     candidate: VfCurveCandidate,
     *,
     stage: str,
-    target_duration_s: float | int | None = None,
+    target_duration_s: float | None = None,
 ) -> dict:
     payload = {
         "stage": str(stage),
@@ -128,7 +129,7 @@ def _ui_candidate_metadata(candidate: VfCurveCandidate) -> dict:
     }
 
 
-def _rounded(value: float | int | None) -> float | None:
+def _rounded(value: float | None) -> float | None:
     if value is None:
         return None
     return round(float(value), 2)

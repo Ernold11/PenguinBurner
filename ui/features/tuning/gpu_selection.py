@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from integrations.afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from integrations.afterburner.import_fan_curve import write_config
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class GpuChoice:
 def detected_gpu_choices() -> list[GpuChoice]:
     try:
         capabilities = DaemonGpuClient.discover_capabilities()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
     defaults = {item.identity.index: item.power.default_w for item in capabilities}
     return [
@@ -46,7 +46,7 @@ def gpu_choices_from_nvml_identities(identities) -> list[GpuChoice]:
     choices: list[GpuChoice] = []
     for identity in identities:
         try:
-            index = max(0, int(getattr(identity, "index")))
+            index = max(0, int(identity.index))
         except (TypeError, ValueError):
             continue
         if index in seen:
@@ -69,7 +69,7 @@ def runtime_gpu_index(config_path: str | Path | None = None) -> int:
     try:
         config = load_raw_runtime_config(path)
         return max(0, int(config.get("gpu", {}).get("index", 0)))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -102,7 +102,7 @@ def persist_runtime_gpu_index(
     path = default_runtime_config_path() if config_path is None else Path(config_path)
     try:
         config = load_raw_runtime_config(path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # An unreadable config must not become a destructive full rewrite:
         # continuing with {} would re-emit the file with only [gpu], silently
         # dropping every other section ([ui] persist-on-startup, [fan], ...).

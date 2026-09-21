@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 
 
-
-
 def pci_bus_number_from_bus_id(pci_bus_id: str) -> int | None:
     text = str(pci_bus_id or "").strip()
     if not text:

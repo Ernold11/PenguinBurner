@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import configparser
@@ -9,13 +7,13 @@ import struct
 from collections import Counter
 from pathlib import Path
 
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
 )
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from .vfcurve_describe import describe_afterburner_flatten_validation
 
@@ -54,7 +52,7 @@ def _detect_active_nvidia_gpus():
     detected = []
     try:
         identities = DaemonGpuClient.discover_identities()
-    except Exception:
+    except Exception:  # noqa: BLE001
         identities = []
     for identity in identities:
         pci_device_id = _parse_pci_device_id(identity.pci_device_id)
@@ -218,7 +216,7 @@ def load_afterburner_profile_settings(
 
 
 def point_map_by_voltage(points):
-    return {int(round(point["voltage_mv"])): point for point in points}
+    return {round(point["voltage_mv"]): point for point in points}
 
 
 class AfterburnerProfileSelectionError(RuntimeError):
@@ -242,7 +240,7 @@ def _describe_afterburner_profile_candidates(sections):
                 flatten_validation.get("baseline_section", "")
             ).strip()
             if margin_mv is not None and baseline_section:
-                label += f" uv=+{int(round(float(margin_mv)))}mV-vs-{baseline_section}"
+                label += f" uv=+{round(float(margin_mv))}mV-vs-{baseline_section}"
         labels.append(label)
     return ", ".join(labels)
 
@@ -793,18 +791,18 @@ def validate_afterburner_flatten_candidate(section_info, *, baseline_sections):
             reason = (
                 f"flatten target {int(lock_clock_mhz)}MHz@{int(lock_voltage_mv)}mV is not below "
                 f"{baseline_section['section']} at the same clock "
-                f"({int(round(baseline_required_voltage_mv))}mV)"
+                f"({round(baseline_required_voltage_mv)}mV)"
             )
 
         return {
             "valid": valid,
             "reason": reason,
             "baseline_section": str(baseline_section["section"]),
-            "selected_voltage_mv": int(round(float(lock_voltage_mv))),
-            "selected_clock_mhz": int(round(float(lock_clock_mhz))),
-            "baseline_required_voltage_mv": int(round(baseline_required_voltage_mv)),
+            "selected_voltage_mv": round(float(lock_voltage_mv)),
+            "selected_clock_mhz": round(float(lock_clock_mhz)),
+            "baseline_required_voltage_mv": round(baseline_required_voltage_mv),
             "baseline_same_voltage_clock_mhz": (
-                int(round(baseline_same_voltage_clock_mhz))
+                round(baseline_same_voltage_clock_mhz)
                 if baseline_same_voltage_clock_mhz is not None
                 else None
             ),
@@ -829,9 +827,9 @@ def derive_afterburner_dynamic_lock(points):
 
     return {
         "source": "flat-tail",
-        "lock_clock_mhz": int(round(flat_tail["frequency_mhz"])),
-        "lock_voltage_mv": int(round(flat_tail["start_voltage_mv"])),
-        "end_voltage_mv": int(round(flat_tail["end_voltage_mv"])),
+        "lock_clock_mhz": round(flat_tail["frequency_mhz"]),
+        "lock_voltage_mv": round(flat_tail["start_voltage_mv"]),
+        "end_voltage_mv": round(flat_tail["end_voltage_mv"]),
         "tail_point_count": int(flat_tail["point_count"]),
     }
 

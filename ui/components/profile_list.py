@@ -3,19 +3,20 @@ from __future__ import annotations
 from datetime import datetime
 from math import isfinite
 
-from profiles.uv.profile_store import profile_presentation_name
 from profiles.gpu_identity import (
+    GPU_COMPATIBILITY_LEGACY,
+    GPU_COMPATIBILITY_MATCH,
     profile_gpu_compatibility,
     profile_gpu_label,
     profile_gpu_uuid,
 )
-from profiles.gpu_identity import GPU_COMPATIBILITY_LEGACY, GPU_COMPATIBILITY_MATCH
+from profiles.uv.profile_store import profile_presentation_name
 from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
 )
-from .. import theme
 
+from .. import theme
 
 GOOD_DELTA_COLOR = theme.GOOD
 BAD_DELTA_COLOR = theme.ERROR
@@ -24,7 +25,7 @@ PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 5, 6, 7, 8})
 
 
 class ProfileList:
-    COLUMNS = [
+    COLUMNS = (
         "Date",
         "Profile",
         "GPU",
@@ -37,7 +38,7 @@ class ProfileList:
         "Mem",
         "Tier",
         "Source",
-    ]
+    )
     DATE_COLUMN = 0
     PROFILE_COLUMN = 1
     GPU_COLUMN = 2
@@ -395,7 +396,9 @@ class ProfileList:
             target_choice = self._gpu_choices[0]
         self._target_gpu_uuid = target_uuid
         self._target_gpu_index = (
-            int(getattr(target_choice, "index")) if target_choice is not None else None
+            int(getattr(target_choice, "index", -1))
+            if target_choice is not None
+            else None
         )
         self._populate_target_gpu_combo(target_uuid)
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
@@ -455,7 +458,7 @@ class ProfileList:
         )
         self._target_gpu_uuid = uuid
         self._target_gpu_index = (
-            int(getattr(choice, "index")) if choice is not None else None
+            int(getattr(choice, "index", -1)) if choice is not None else None
         )
         self.set_main_gpu_state(checked=False, has_boot_profile=False)
         self._sync_target_gpu_presentation()
@@ -754,7 +757,7 @@ class ProfileList:
 def _standard_trash_icon(QtWidgets, widget):
     style = widget.style()
     standard_pixmap = getattr(QtWidgets.QStyle, "StandardPixmap", QtWidgets.QStyle)
-    return style.standardIcon(getattr(standard_pixmap, "SP_TrashIcon"))
+    return style.standardIcon(standard_pixmap.SP_TrashIcon)
 
 
 def _sortable_item_class(QtWidgets, sort_role: int):
@@ -842,7 +845,7 @@ def _format_number(value, *, precision: int) -> str:
         return ""
     precision = max(0, min(int(precision), 4))
     if precision <= 0:
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{precision}f}"
 
 
@@ -1149,9 +1152,7 @@ def _profile_matches_preference(
     candidate_id = str(profile.get("candidate_id", ""))
     if preferred_profile_id and profile_id == str(preferred_profile_id):
         return True
-    if preferred_candidate_id and candidate_id == str(preferred_candidate_id):
-        return True
-    return False
+    return bool(preferred_candidate_id and candidate_id == str(preferred_candidate_id))
 
 
 def _promote_preferred_profile(

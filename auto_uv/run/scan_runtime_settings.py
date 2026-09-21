@@ -4,8 +4,11 @@ import os
 from dataclasses import dataclass
 from typing import Any, cast
 
-from stability.q2rtx.models import Q2RTXStabilityConfig
-
+from auto_uv.domain.types import AutoUvError
+from auto_uv.domain.user_options import (
+    AUTO_UV_DEFAULTS,
+    AUTO_UV_METRIC_TUNING,
+)
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     AUTO_UV_MODE_BALANCED,
@@ -14,12 +17,8 @@ from auto_uv.scan_mode.auto_uv_mode import (
     adaptive_tier_option_key,
     normalize_auto_uv_mode,
 )
-from auto_uv.domain.types import AutoUvError
-from auto_uv.domain.user_options import (
-    AUTO_UV_DEFAULTS,
-    AUTO_UV_METRIC_TUNING,
-)
 from auto_uv.scan_mode.target_overrides import validate_tier_target_overrides
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 
 @dataclass(frozen=True, slots=True)

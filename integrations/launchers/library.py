@@ -171,6 +171,58 @@ class LauncherBulkAction:
     enabled_only: bool = False
 
 
+def library_bulk_actions() -> tuple[LauncherBulkAction, ...]:
+    """Shared wrapper and overlay actions for every supported library."""
+    return (
+        LauncherBulkAction(
+            key="enable_all",
+            label="Enable PenguinBurner for all games",
+            setter="set_all_games_enabled",
+            value=True,
+            affects="enabled",
+            confirm=(
+                "Add the PenguinBurner wrapper to the launch command of "
+                "{count} {games}?\n\nSaved overlay choices are preserved, and "
+                "MangoHud is disabled in wrapped games. \"Disable "
+                "PenguinBurner for all games\" restores each game's own "
+                "launch command."
+            ),
+        ),
+        LauncherBulkAction(
+            key="disable_all",
+            label="Disable PenguinBurner for all games",
+            setter="set_all_games_enabled",
+            value=False,
+            affects="enabled",
+            confirm=(
+                "Remove the PenguinBurner wrapper from {count} {games} and "
+                "restore their own launch command?"
+            ),
+        ),
+        LauncherBulkAction(
+            key="overlay_all",
+            label="Show In-Game overlay for enabled games",
+            setter="set_all_games_overlay",
+            value=True,
+            affects="overlay",
+            enabled_only=True,
+            confirm=(
+                "Show the In-Game overlay in {count} PenguinBurner-enabled "
+                "{games}?"
+            ),
+        ),
+        LauncherBulkAction(
+            key="overlay_none",
+            label="Hide In-Game overlay for enabled games",
+            setter="set_all_games_overlay",
+            value=False,
+            affects="overlay",
+            enabled_only=True,
+            confirm="Hide the In-Game overlay in {count} {games}?",
+        ),
+    )
+
+
 @runtime_checkable
 class LauncherSource(Protocol):
     """Everything the library tab may ask of a launcher.
@@ -190,8 +242,7 @@ class LauncherSource(Protocol):
     display_name: str
     #: File name under ui/assets used as this launcher's badge.
     icon_asset: str
-    #: Whether PenguinBurner can start a game itself. Steam exposes an API for
-    #: it, Lutris does not.
+    #: Whether PenguinBurner can ask this launcher to start a game.
     can_launch: bool
 
     def available(self) -> bool:
@@ -230,12 +281,19 @@ class LauncherSource(Protocol):
         ...
 
     def after_setting_write(self, game_id: str, setter: str) -> object | None:
-        """Optional launcher-owned follow-up after a successful setting write.
+        """Required follow-up after a successful setting write.
 
-        Runs on the same worker as the write. Launchers without a live runtime
-        action return None; Steam uses it to re-apply profile settings to a
-        game the daemon is already watching.
+        Inherit LiveOverlaySource so overlay changes reach running wrapped
+        games. Extend via super() for launcher-specific profile updates.
         """
+        ...
+
+    def after_bulk_write(self, setter: str, result) -> object | None:
+        """Inherit shared live overlay handling for successfully saved ids."""
+        ...
+
+    def saved_overlay(self, game_id: str) -> bool:
+        """Return the just-saved preference, not the previous library snapshot."""
         ...
 
 
@@ -264,6 +322,10 @@ class LaunchableSource(Protocol):
         None means the check itself failed, which is not the same as nothing
         running: the caller must hold what it knows rather than read a stalled
         probe as every game having exited.
+
+        An adapter may also expose external_game_ids() -> frozenset[str], a
+        cached subset from this poll that must be closed in the launcher.
+        Observing those games does not authorize stop() to signal their PIDs.
         """
         ...
 

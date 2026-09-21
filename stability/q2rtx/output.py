@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 from pathlib import Path
-import json
 
 from .constants import (
-    FATAL_OUTPUT_REGEXES,
     FATAL_OUTPUT_PATTERNS,
+    FATAL_OUTPUT_REGEXES,
 )
 from .models import (
     Q2RTXBenchmarkSummary,

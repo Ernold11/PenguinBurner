@@ -2,23 +2,22 @@
 
 import atexit
 import functools
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
     run_auto_uv_foreground_command,
 )
-from profiles.uv.profile_store import auto_uv_profiles_dir
+from cli.arguments import parse_arguments
+from cli.entry import dispatch_cli
 from cli.interactive_terminal_prompt import prompt_yes_no as cli_prompt_yes_no
 from cli.json_event_output import emit_cli_json_event
 from cli.main_command_routing import (
     MainCommandRoutingDependencies,
     route_main_command,
 )
-from cli.arguments import parse_arguments
-from cli.entry import dispatch_cli
 from cli.runtime_config_file import (
     load_runtime_config,
 )
@@ -28,6 +27,8 @@ from common.penguin_burner_paths import (
     default_saved_uv_dir,
     default_user_config_dir,
 )
+from profiles.uv.profile_store import auto_uv_profiles_dir
+from profiles.verification.runner import run_profile_verification
 from runtime.support.runtime_debug import (
     close_debug_log,
     close_stdio_capture,
@@ -35,8 +36,6 @@ from runtime.support.runtime_debug import (
     enable_debug_logging,
 )
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
-from profiles.verification.runner import run_profile_verification
-
 
 atexit.register(close_debug_log)
 atexit.register(close_stdio_capture)

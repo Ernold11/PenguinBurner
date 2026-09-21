@@ -7,23 +7,25 @@ before final verification.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from auto_uv.auto_oc.search import run_auto_oc_candidate_search
 from auto_uv.domain.console_log import log_phase
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
+from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
 from auto_uv.probes.runner import AutoUvProbeRunner
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_PERFORMANCE,
 )
-from auto_uv.scan_mode.uv_limits import uv_limit_profile_target_for_gpu
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     best_efficiency_candidate_index,
 )
+from auto_uv.scan_mode.uv_limits import uv_limit_profile_target_for_gpu
 
 
 def select_performance_auto_oc_candidate(
@@ -43,7 +45,7 @@ def select_performance_auto_oc_candidate(
     tail_rise_bins: int = 0,
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
-    measured_baseline_clock_mhz: float | int | None = None,
+    measured_baseline_clock_mhz: float | None = None,
 ) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, dict]:
     if str(auto_uv_mode) != AUTO_UV_MODE_PERFORMANCE:
         return (
@@ -113,7 +115,7 @@ def select_power_bound_clock_reclaim_candidate(
     probe_history: list[AutoUvProbeSummary],
     log: Callable[[str], None],
     tail_rise_bins: int = 0,
-    measured_baseline_clock_mhz: float | int | None = None,
+    measured_baseline_clock_mhz: float | None = None,
 ) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, dict]:
     """Raise clock at the proven voltage after a capped savings-tier descent."""
     mode = str(auto_uv_mode)
@@ -212,7 +214,7 @@ def select_power_bound_clock_reclaim_candidate(
 def performance_auto_oc_progress_metadata(
     *,
     endpoint,
-    measured_baseline_clock_mhz: float | int | None,
+    measured_baseline_clock_mhz: float | None,
     selected_clock_mhz: int,
 ) -> dict:
     """Auto-OC offset metadata relative to the measured baseline clock."""
@@ -220,8 +222,8 @@ def performance_auto_oc_progress_metadata(
         return {}
     baseline_clock = float(measured_baseline_clock_mhz)
     endpoint_clock = int(endpoint.clock_mhz)
-    limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
-    applied_mhz = int(round(float(selected_clock_mhz) - baseline_clock))
+    limit_mhz = round(float(endpoint_clock) - baseline_clock)
+    applied_mhz = round(float(selected_clock_mhz) - baseline_clock)
     return {
         "auto_oc": True,
         "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),

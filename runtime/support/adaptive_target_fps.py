@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import math
 import os
-from pathlib import Path
 import tomllib
+from collections.abc import Mapping
+from pathlib import Path
 
 from common.penguin_burner_paths import default_runtime_config_path
-
 
 ADAPTIVE_TARGET_FPS_ENV = "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS"
 ADAPTIVE_TARGET_FPS_ENV_ALIAS = "PB_ADAPTIVE_TARGET_FPS"

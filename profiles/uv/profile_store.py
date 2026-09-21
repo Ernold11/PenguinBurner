@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Sequence
 from datetime import datetime
-import json
 from pathlib import Path
-import re
 
 from common.atomic_write import atomic_write_json
+from common.penguin_burner_paths import (
+    claim_desktop_user_ownership,
+    default_user_config_dir,
+)
 from profiles.gpu_identity import (
     normalized_gpu_identity,
     profile_gpu_identity,
     profile_gpu_label,
     profile_gpu_uuid,
 )
-from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 from .profile_tiers import (
     load_profile_tier_assignments,
@@ -21,7 +24,6 @@ from .profile_tiers import (
     migrate_legacy_profile_tier_to_gpu,
     profile_tier_summary_fields,
 )
-
 
 _PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _USER_EDITED_PROFILE_SOURCE = "user-edited"
@@ -764,7 +766,7 @@ def _display_number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     if precision <= 0:
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{int(precision)}f}"
 
 

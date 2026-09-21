@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import pwd
 import struct
+from pathlib import Path
 
 from .constants import (
     PAK_ENTRY_SIZE,
@@ -175,7 +175,7 @@ def resolve_workload(
             chosen = discovered.get(name.lower())
             if chosen is not None or name.lower() in discovered:
                 return name, chosen
-        chosen_name = sorted(discovered)[0]
+        chosen_name = min(discovered)
         return chosen_name, discovered[chosen_name]
 
     raise StabilityTestError(

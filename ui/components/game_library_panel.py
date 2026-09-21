@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from integrations.launchers.library import (
     FIELD_CHOICE,
@@ -51,8 +51,8 @@ from .preference_rows import (
     preference_group,
     preference_row,
 )
-from .toggle_switch import make_toggle_switch
 from .spinner import make_spinner
+from .toggle_switch import make_toggle_switch
 
 _MODE_LABELS = {
     GAME_MODE_ADAPTIVE: "Adaptive",
@@ -85,7 +85,7 @@ _GAME_STATE_POLL_MS = 1500
 _PENDING_LAUNCH_S = 120.0  # for the launcher's session to appear after Play
 _PENDING_STOP_S = 30.0  # for a stop request to take effect
 _CONFIRMED_GONE_POLLS = 2  # consecutive not-running polls before Stopped
-_ACTIVE_GAME_STATES = ("launching", "running", "stopping")
+_ACTIVE_GAME_STATES = ("launching", "running", "external", "stopping")
 
 #: Re-read every library on a timer, so a game installed while the tab is open
 #: turns up without the user pressing anything. The cheap pass, not the deep
@@ -109,6 +109,7 @@ class _TrackedGame:
     state: str
     deadline: float = 0.0  # monotonic grace cutoff while launching/stopping
     misses: int = 0  # consecutive polls that did not see the session
+    warning: str = ""
 
 
 @dataclass
@@ -303,9 +304,12 @@ class GameLibraryPanel:
         self._write_busy = False
         self._stop_thread: threading.Thread | None = None
         self._stop_result: tuple[bool, str] | None = None
+        self._launch_thread: threading.Thread | None = None
+        self._launch_result: tuple[bool, str] | None = None
         self._tracked: dict[str, _TrackedGame] = {}
         self._poll_thread: threading.Thread | None = None
         self._poll_result: dict[str, frozenset[str] | None] = {}
+        self._poll_external: dict[str, frozenset[str]] = {}
 
         self.widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.widget)
@@ -527,6 +531,11 @@ class GameLibraryPanel:
         self.play_button.clicked.connect(self._play_stop_clicked)
         hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
+        self.launch_warning_label = self.QtWidgets.QLabel("")
+        self.launch_warning_label.setObjectName("gameLaunchWarning")
+        self.launch_warning_label.setWordWrap(True)
+        self.launch_warning_label.hide()
+        page.addWidget(self.launch_warning_label)
         self.compatibility_label = self.QtWidgets.QLabel("")
         self.compatibility_label.setObjectName("gameCompatibility")
         self.compatibility_label.setWordWrap(True)
@@ -551,7 +560,7 @@ class GameLibraryPanel:
             title="Wrap this game",
             subtitle=(
                 "Puts the PenguinBurner wrapper in this game's launch command. "
-                "Off, the launcher starts it untouched."
+                "Configured for the next launch; this does not verify that a running game loaded it."
             ),
             control=self.enable_switch,
         )
@@ -573,10 +582,12 @@ class GameLibraryPanel:
             QtWidgets=self.QtWidgets,
             QtCore=self.QtCore,
             rows_layout=tuning_rows,
-            title="Auto-UV mode",
+            title="Saved Auto-UV mode",
             subtitle=(
                 "Adaptive switches tiers from live frame pacing. A named tier "
-                "pins that one profile; Stock pins the factory GPU state."
+                "pins that one profile; Stock pins the factory GPU state. "
+                "Changes apply live to a wrapped game; the status below reports "
+                "whether the running mode was updated."
             ),
             control=self.mode_combo,
         )
@@ -701,7 +712,7 @@ class GameLibraryPanel:
         """Ask the daemon which GPUs exist. Runs on the scan worker thread."""
         try:
             return tuple(self._gpu_choices_source())
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ()
 
     def _apply_gpu_choices(self, choices) -> bool:
@@ -1175,16 +1186,14 @@ class GameLibraryPanel:
         self._select_key(str(item.data(self.QtCore.Qt.UserRole) or ""))
 
     def _select_key(self, key: str) -> None:
-        if key != self._selected_key:
-            # Whatever is typed but unsaved belongs to the game it was typed
-            # for; save it before the pane is refilled for another one.
-            # (QPlainTextEdit has no editingFinished, so the click that moves
-            # the selection is the boundary that saves a command edit.)
-            if not self._flush_pending_field_edit():
-                # QListWidget has already moved its highlight when this came
-                # from a click. Keep it on the game that still owns the draft.
-                self._select_list_row(self._selected_key)
-                return
+        # Whatever is typed but unsaved belongs to the game it was typed for;
+        # save it before the pane is refilled for another one. QPlainTextEdit
+        # has no editingFinished, so selection changes are the save boundary.
+        if key != self._selected_key and not self._flush_pending_field_edit():
+            # QListWidget has already moved its highlight when this came from a
+            # click. Keep it on the game that still owns the draft.
+            self._select_list_row(self._selected_key)
+            return
         game = self._game_for_key(key)
         if game is None:
             return
@@ -1211,6 +1220,7 @@ class GameLibraryPanel:
                 self.title_label.setText("Select a game")
                 self.metadata_label.setText("")
                 self.play_button.setVisible(False)
+                self.launch_warning_label.hide()
                 self.compatibility_label.hide()
                 self._set_gated(False)
                 self.enable_switch.setEnabled(False)
@@ -1613,6 +1623,7 @@ class GameLibraryPanel:
             game
             for game in self._games
             if game.launcher in wanted and (game.enabled or not action.enabled_only)
+            and (action.affects != "overlay" or not action.value or game.overlay_supported)
         ]
 
     def _bulk_would_change(self, action, sources) -> bool:
@@ -1681,6 +1692,12 @@ class GameLibraryPanel:
                         message = str(getattr(result, "message", "") or "")
                         if message:
                             messages.append(f"{source.launcher_id}: {message}")
+                        after_write = getattr(source, "after_bulk_write", None)
+                        if after_write is not None:
+                            followup = after_write(action.setter, result)
+                            if followup is not None:
+                                ok = followup.ok and ok
+                                messages.append(f"{source.launcher_id}: {followup.message}")
                 except Exception as error:  # noqa: BLE001 - launcher boundary
                     ok = False
                     messages.append(f"{source.launcher_id}: {type(error).__name__}: {error}")
@@ -2036,6 +2053,10 @@ class GameLibraryPanel:
         label shows; transitional states keep it disabled, and the grace
         deadlines in _apply_game_states guarantee they resolve back.
         """
+        track = self._tracked.get(self._selected_key) if game is not None else None
+        warning = track.warning if track else ""
+        self.launch_warning_label.setText(warning)
+        self.launch_warning_label.setVisible(bool(warning))
         if not self._can_launch(game):
             self.play_button.setVisible(False)
             return
@@ -2046,6 +2067,9 @@ class GameLibraryPanel:
             text, enabled, play_state = "Starting…", False, "starting"
         elif state == "running":
             text, enabled, play_state = "Stop", True, "running"
+        elif state == "external":
+            source = self._by_launcher[self._selected_key.partition(":")[0]]
+            text, enabled, play_state = f"Running in {source.display_name}", False, "external"
         elif state == "stopping":
             # Live, not greyed out. A launcher's stop is a request its game may
             # shrug off -- Lutris passes one SIGTERM on and only insists when
@@ -2058,7 +2082,8 @@ class GameLibraryPanel:
             text, enabled, play_state = "Play", True, "idle"
         self.play_button.setText(text)
         self.play_button.setEnabled(
-            enabled and not self._write_busy and self._stop_thread is None
+            enabled and not self._write_busy
+            and self._stop_thread is None and self._launch_thread is None
         )
         self.play_button.setToolTip(
             wrapped_tooltip(
@@ -2087,11 +2112,34 @@ class GameLibraryPanel:
 
     def _play_game(self, game: LibraryGame) -> None:
         source = self._by_launcher.get(game.launcher)
-        if source is None:
+        if source is None or self._launch_thread is not None or self._write_busy:
             return
-        started, message = source.launch(game.game_id)
-        if started:
-            self._set_game_state(game_key(game), "launching")
+        self._launch_result = None
+
+        def run() -> None:
+            try:
+                with self._library_lock:
+                    self._launch_result = source.launch(game.game_id)
+            except Exception as error:  # noqa: BLE001 - launcher boundary
+                self._launch_result = (False, f"Launch failed: {error}")
+
+        self._launch_thread = threading.Thread(target=run, daemon=True)
+        self._set_game_state(game_key(game), "launching")
+        self._sync_status(f"{game.name}: preparing launch…")
+        self._launch_thread.start()
+        self._launch_thread.join(timeout=_SCAN_JOIN_S)
+        self._collect_launch(game)
+
+    def _collect_launch(self, game: LibraryGame) -> None:
+        if self._launch_thread is not None and self._launch_thread.is_alive():
+            self.QtCore.QTimer.singleShot(100, lambda: self._collect_launch(game))
+            return
+        started, message = self._launch_result or (False, "Launch returned no result.")
+        self._launch_thread = None
+        self._launch_result = None
+        if not started:
+            self._set_game_state(game_key(game), "stopped")
+        self._sync_play_button(self._selected_game())
         self._sync_status(f"{game.name}: {message}")
 
     def _stop_game(self, game: LibraryGame) -> None:
@@ -2153,10 +2201,17 @@ class GameLibraryPanel:
             and hasattr(source, "running_game_ids")
         ]
         self._poll_result = {}
+        self._poll_external = {}
 
         def run() -> None:
             for source in sources:
-                self._poll_result[source.launcher_id] = source.running_game_ids()
+                try:
+                    self._poll_result[source.launcher_id] = source.running_game_ids()
+                    external: Any = getattr(source, "external_game_ids", None)
+                    if callable(external):
+                        self._poll_external[source.launcher_id] = cast(frozenset[str], external())
+                except Exception:  # noqa: BLE001 - isolate failed launcher probes
+                    self._poll_result[source.launcher_id] = None
 
         self._poll_thread = threading.Thread(target=run, daemon=True)
         self._poll_thread.start()
@@ -2167,9 +2222,11 @@ class GameLibraryPanel:
         if thread is not None and thread.is_alive():
             self.QtCore.QTimer.singleShot(100, self._collect_poll)
             return
-        self._apply_game_states(dict(self._poll_result))
+        self._apply_game_states(dict(self._poll_result), dict(self._poll_external))
 
-    def _apply_game_states(self, running_by_launcher: dict) -> None:
+    def _apply_game_states(
+        self, running_by_launcher: dict, external_by_launcher: dict | None = None,
+    ) -> None:
         """Advance each tracked game from what its launcher reports.
 
         A launcher answering None means the check failed this tick: hold every
@@ -2186,8 +2243,28 @@ class GameLibraryPanel:
                 continue
             if game_id in running:
                 track.misses = 0
-                if track.state == "launching":
+                if game_id in (external_by_launcher or {}).get(launcher, ()):
+                    # Heroic's runner can briefly outlive the wrapped session
+                    # during shutdown; that does not mean it launched unwrapped.
+                    if track.state in ("running", "stopping"):
+                        continue
+                    was_external = track.state == "external"
+                    track.state = "external"
+                    source = self._by_launcher[launcher]
+                    game = self._game_for_key(key)
+                    if game is not None and game.wrapped:
+                        track.warning = (
+                            "This game started without PenguinBurner. Its overlay and "
+                            "per-game GPU settings were not applied. "
+                            "Close the game, then relaunch with Play in Game Library."
+                        )
+                    else:
+                        track.warning = f"Close this game in {source.display_name} or in the game itself."
+                    if not was_external:
+                        self._state_message(key, f"running in {source.display_name}")
+                elif track.state in ("launching", "external"):
                     track.state = "running"
+                    track.warning = ""
                 elif track.state == "stopping" and now > track.deadline:
                     # The launcher declined to stop it (a save dialog, a hung
                     # shutdown): say so and re-arm Stop.

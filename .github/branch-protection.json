@@ -1,0 +1,62 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      {
+        "context": "Python quality and tests",
+        "app_id": 15368
+      },
+      {
+        "context": "Rust quality and tests",
+        "app_id": 15368
+      },
+      {
+        "context": "Arch package (vanilla)",
+        "app_id": 15368
+      },
+      {
+        "context": "Arch package (cachyos-shelly)",
+        "app_id": 15368
+      },
+      {
+        "context": "Fedora package (fedora-43)",
+        "app_id": 15368
+      },
+      {
+        "context": "Fedora package (fedora-44)",
+        "app_id": 15368
+      },
+      {
+        "context": "Ubuntu package (resolute)",
+        "app_id": 15368
+      },
+      {
+        "context": "Flatpak package (fedora)",
+        "app_id": 15368
+      },
+      {
+        "context": "Host Python (debian-12)",
+        "app_id": 15368
+      },
+      {
+        "context": "Host Python (ubuntu-lts)",
+        "app_id": 15368
+      },
+      {
+        "context": "Host Python (fedora)",
+        "app_id": 15368
+      },
+      {
+        "context": "Host Python (arch)",
+        "app_id": 15368
+      },
+      {
+        "context": "Daemon lifecycle",
+        "app_id": 15368
+      }
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}

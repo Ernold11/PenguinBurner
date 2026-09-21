@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os
 import platform
 import pwd
@@ -53,7 +51,7 @@ class _TeeStream:
         written = self._original.write(text)
         try:
             self._capture_file.write(str(text))
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         return written
 
@@ -61,7 +59,7 @@ class _TeeStream:
         self._original.flush()
         try:
             self._capture_file.flush()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     def isatty(self):
@@ -80,16 +78,13 @@ class _TeeStream:
 
 
 def close_stdio_capture():
-    global \
-        STDIO_CAPTURE_FILE, \
-        STDIO_CAPTURE_ORIGINAL_STDOUT, \
-        STDIO_CAPTURE_ORIGINAL_STDERR
+    global STDIO_CAPTURE_FILE
     if STDIO_CAPTURE_FILE is None:
         return
     try:
         sys.stdout.flush()
         sys.stderr.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     if STDIO_CAPTURE_ORIGINAL_STDOUT is not None:
         sys.stdout = STDIO_CAPTURE_ORIGINAL_STDOUT
@@ -129,7 +124,7 @@ def enable_stdio_capture(config_path, *, argv=None, label="stdout"):
             errors="replace",
             buffering=1,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         STDIO_CAPTURE_FILE = None
         print(
             f"warning: failed to open stdout/stderr capture under {debug_dir}: {exc}",
@@ -184,7 +179,7 @@ def _write_stdio_capture_line(text):
     try:
         STDIO_CAPTURE_FILE.write(str(text) + "\n")
         STDIO_CAPTURE_FILE.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -206,7 +201,7 @@ def enable_debug_logging(config_path, *, argv=None):
     DEBUG_LOG_PATH = debug_dir / f"penguin_burner-debug-{timestamp}.log"
     try:
         DEBUG_LOG_FILE = DEBUG_LOG_PATH.open("a", encoding="utf-8", buffering=1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         DEBUG_LOG_FILE = None
         print(
             f"warning: failed to open debug log file under {debug_dir}: {exc}",
@@ -262,7 +257,7 @@ def _debug_log_runtime_environment():
                 f"driver={identity.driver_version} "
                 f"pci_bus_id={identity.pci_bus_id}"
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         debug_exception("failed to query NVML GPU metadata", exc)
 
 

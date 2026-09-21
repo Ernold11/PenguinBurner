@@ -7,6 +7,7 @@ or duplicates profile-selection policy.
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,9 @@ from typing import Any
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 from cli.runtime_config_file import default_runtime_config, load_runtime_config
 from common.penguin_burner_errors import NvmlError
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from overlay.config import load_overlay_config
+from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
@@ -23,8 +26,6 @@ from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
 )
-from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime.daemon_client import gpu_capabilities, require_daemon_capabilities
 from runtime.gpu_control.adaptive_profile_policy import AdaptiveProfilePolicyConfig
@@ -37,7 +38,6 @@ from ui.features.curves.fan_profiles import (
     fan_curve_points_from_payload,
     read_json_file,
 )
-
 
 RUNTIME_SPEC_FORMAT_VERSION = 1
 RUNTIME_SPEC_CAPABILITY = "runtime-spec-v1"
@@ -113,7 +113,7 @@ def build_runtime_spec_from_intent(
     socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(intent, dict):
-        raise RuntimeError("runtime intent JSON must be an object")
+        raise TypeError("runtime intent JSON must be an object")
     unknown = sorted(
         set(intent)
         - {
@@ -184,7 +184,7 @@ def build_runtime_spec(
             if discovered_identities is None:
                 discovered_identities = DaemonGpuClient.discover_identities()
             include_legacy_profiles = len(discovered_identities) == 1
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Peer enumeration is advisory: an explicitly selected profile
             # still provides one valid tier; failure to enumerate peers must
             # not make that apply fail.
@@ -481,7 +481,7 @@ def _validate_fan_curve(points: list[tuple[float, float]]) -> str:
 def _fan_speed_for_temp(temp_c: float, points: list[tuple[float, float]]) -> float:
     if temp_c <= points[0][0]:
         return points[0][1]
-    for (left_temp, left_speed), (right_temp, right_speed) in zip(points, points[1:]):
+    for (left_temp, left_speed), (right_temp, right_speed) in itertools.pairwise(points):
         if temp_c <= right_temp:
             position = (temp_c - left_temp) / (right_temp - left_temp)
             return left_speed + ((right_speed - left_speed) * position)
@@ -521,7 +521,7 @@ def _normalized_curve(value: Any, fallback: Any) -> list[list[float]]:
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    return int(round(float(value)))
+    return round(float(value))
 
 
 def _optional_float(value: Any) -> float | None:
@@ -543,7 +543,7 @@ def _nonnegative_int(value: Any, *, default: int) -> int:
 
 def _int_or_default(value: Any, default: Any) -> int:
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return int(default)
 

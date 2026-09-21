@@ -181,7 +181,7 @@ class ScanControls:
         text: str | None = None,
     ) -> None:
         try:
-            value = int(round(float(percent)))
+            value = round(float(percent))
         except (TypeError, ValueError):
             value = 0
         value = max(0, min(100, value))
@@ -203,7 +203,7 @@ class ScanControls:
 
 def _format_duration_compact(seconds) -> str:
     try:
-        total_s = max(0, int(round(float(seconds))))
+        total_s = max(0, round(float(seconds)))
     except (TypeError, ValueError):
         total_s = 0
     if total_s < 60:

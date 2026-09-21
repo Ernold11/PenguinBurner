@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import ctypes
@@ -10,7 +8,6 @@ from .daemon_gpu import DaemonGpuClient
 from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
 )
-
 
 NvAPI_Status = ctypes.c_int32
 NvU32 = ctypes.c_uint32
@@ -101,7 +98,7 @@ class ClockClientClkVfPointsControlV1(ctypes.Structure):
 def _daemon_pci_bus_id(gpu_index: int) -> str:
     try:
         return DaemonGpuClient(gpu_index).capabilities().identity.pci_bus_id
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ""
 
 
@@ -351,5 +348,5 @@ class HiddenNvapiVfCurveReader:
 def create_hidden_vf_curve_reader(gpu_index=0):
     try:
         return HiddenNvapiVfCurveReader(gpu_index=gpu_index)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None

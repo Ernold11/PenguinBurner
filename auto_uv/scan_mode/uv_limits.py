@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 AUTO_UV_PERFORMANCE_OC_PROFILE_ID = "performance"
 
 # Per-tier power-cap defaults. Undervolting alone still lets the card chase

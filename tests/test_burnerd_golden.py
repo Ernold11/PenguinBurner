@@ -399,12 +399,13 @@ def _short_game(seconds: float = 0.35) -> "subprocess.Popen[bytes]":
     )
 
 
-def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon):
+@pytest.mark.parametrize("reapply", [False, True])
+def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon, reapply):
     daemon = make_daemon()
     standing = _runtime_spec(gpu_uuid="GPU-standing")
     game_spec = _runtime_spec(gpu_uuid="GPU-game")
     apply_runtime_spec(standing, socket_path=daemon.socket_path)
-    game = _short_game()
+    game = _short_game(1.0)
     try:
         result = start_game_runtime_spec(
             game_spec,
@@ -422,6 +423,15 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
             "standing_profile_id": "",
             "standing_runtime_mode": "stock",
         }
+        if reapply:
+            reapplied = start_game_runtime_spec(
+                game_spec,
+                watch_pid=game.pid,
+                app_id="1089130",
+                socket_path=daemon.socket_path,
+            )
+            assert reapplied["started"] is True
+            assert daemon_status(socket_path=daemon.socket_path)["game_runtime"] == status["game_runtime"]
         game.wait(timeout=5)
         assert _wait_until(
             lambda: "game_runtime"
@@ -431,6 +441,63 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
         restored = daemon_status(socket_path=daemon.socket_path)
         assert restored["active_job"]["gpu_uuid"] == "GPU-standing"
         assert json.loads(daemon.state_file.read_text(encoding="utf-8")) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+@pytest.mark.parametrize("app_id", ["1089130", "heroic:fan-test", "lutris:42"])
+def test_game_launch_and_live_update_preserve_silent_fan_over_socket(make_daemon, app_id):
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    standing["fan"]["enabled"] = True
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    game_spec = _runtime_spec()
+    game_spec["mode"] = "static"
+    game_spec["static_profile"] = {
+        "profile_id": "game-profile",
+        "plan": [{"index": 12, "voltage_mv": 900, "base_mhz": 2500,
+                  "target_mhz": 2600, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2600,
+        "candidate_voltage_mv": 900,
+        "memory_offset_mhz": None,
+        "power_limit_w": None,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2600,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 1100,
+                           "tail_point_count": 6, "ceiling_clock_mhz": None,
+                           "tail_rise_bins": 0},
+    }
+    game = _short_game(30)
+    try:
+        for profile_id in ("game-profile", "live-update"):
+            game_spec["static_profile"]["profile_id"] = profile_id
+            result = start_game_runtime_spec(
+                game_spec, watch_pid=game.pid, app_id=app_id,
+                socket_path=daemon.socket_path,
+            )
+            assert result["started"] is True
+            active = daemon_status(socket_path=daemon.socket_path)["active_job"]
+            assert active["profile_id"] == profile_id
+            assert active["silent_fan_curve"] is True
+        start_game_runtime_spec(
+            _runtime_spec(), watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is False
+        start_game_runtime_spec(
+            game_spec, watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        assert json.loads(daemon.state_file.read_text()) == standing
     finally:
         if game.poll() is None:
             game.kill()
@@ -893,3 +960,58 @@ def test_all_tier_targets_survive_gui_socket_and_worker_cli(make_daemon, tmp_pat
     launched = json.loads(argv_file.read_text())
     effective = build_effective_auto_uv_runtime_options(parse_arguments(launched))
     assert {key: effective[key] for key in targets} == targets
+
+
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+def test_live_launcher_mode_roundtrip_preserves_session_and_standing_profile(make_daemon, monkeypatch, launcher):
+    from integrations.launchers import runtime_profile
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from runtime import daemon_client, runtime_spec
+
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    curve = {
+        "profile_id": "perf-test", "profile_tier_key": "performance",
+        "plan": [{"index": 0, "voltage_mv": 900, "base_mhz": 2700,
+                  "target_mhz": 2800, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2800, "candidate_voltage_mv": 900,
+        "memory_offset_mhz": 0, "power_limit_w": 300,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2800,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 900, "tail_point_count": 1},
+    }
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", list)
+    specs = {"stock": standing, "performance": {
+        **standing, "mode": "static", "static_profile": runtime_spec._profile_spec(curve),
+    }, "adaptive": {
+        **standing, "mode": "adaptive", "adaptive": runtime_spec._adaptive_spec(curve),
+    }}
+    key = f"{launcher}:27"
+    game = _short_game(30)
+    try:
+        start_game_runtime_spec(specs["adaptive"], watch_pid=game.pid, app_id=key,
+                                socket_path=daemon.socket_path)
+        before = daemon_status(socket_path=daemon.socket_path)["game_runtime"]
+        monkeypatch.setattr(daemon_client, "daemon_status",
+                            lambda **kw: daemon_status(socket_path=daemon.socket_path))
+        monkeypatch.setattr(runtime_profile, "profile_argv", lambda setting: [
+            "--auto-uv-profile", "perf-test", setting.mode,
+        ])
+        monkeypatch.setattr(daemon_client, "start_game_runtime_profile", lambda argv, **kw:
+            start_game_runtime_spec(specs[argv[-1]], socket_path=daemon.socket_path, **kw))
+        for mode in ("performance", "adaptive", "stock"):
+            result = runtime_profile.hot_reapply_game_profile(
+                key, LauncherGameSetting(enabled=True, mode=mode), mode_change=True,
+            )
+            assert result.ok, result.message
+            status = daemon_status(socket_path=daemon.socket_path)
+            assert status["active_job"]["runtime_mode"] == ("static" if mode == "performance" else mode)
+            assert status["game_runtime"] == before
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path), timeout=5)
+        assert json.loads(daemon.state_file.read_text()) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)

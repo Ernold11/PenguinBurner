@@ -22,15 +22,15 @@ def make_spinner(*, QtCore, QtGui, QtWidgets, size: int = 28, parent=None):
             self._angle = (self._angle + 18) % 360
             self.update()
 
-        def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        def showEvent(self, event) -> None:
             super().showEvent(event)
             self._timer.start()
 
-        def hideEvent(self, event) -> None:  # noqa: N802 - Qt override
+        def hideEvent(self, event) -> None:
             self._timer.stop()
             super().hideEvent(event)
 
-        def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
+        def paintEvent(self, _event) -> None:
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
             rect = QtCore.QRectF(2, 2, self.width() - 4, self.height() - 4)

@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-
 GPU_IDENTITY_KEY = "gpu_identity"
 GPU_COMPATIBILITY_MATCH = "match"
 GPU_COMPATIBILITY_LEGACY = "legacy"

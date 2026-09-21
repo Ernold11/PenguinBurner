@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Human-readable descriptions of Afterburner VF-curve data.
 
 Pure presentation helpers: each formats a plain dict produced elsewhere in
@@ -45,7 +44,7 @@ def describe_afterburner_flatten_validation(validation):
             f"@{int(validation['selected_voltage_mv'])}mV"
         ),
         f"default-same-clock={int(validation['baseline_required_voltage_mv'])}mV",
-        f"uv-margin=+{int(round(float(validation['undervolt_margin_mv'])))}mV",
+        f"uv-margin=+{round(float(validation['undervolt_margin_mv']))}mV",
     ]
     baseline_same_voltage_clock_mhz = validation.get("baseline_same_voltage_clock_mhz")
     same_voltage_delta_mhz = validation.get("same_voltage_delta_mhz")
@@ -55,6 +54,6 @@ def describe_afterburner_flatten_validation(validation):
     ):
         parts.append(f"default@same-voltage={int(baseline_same_voltage_clock_mhz)}MHz")
         parts.append(
-            f"same-voltage-delta={int(round(float(same_voltage_delta_mhz))):+d}MHz"
+            f"same-voltage-delta={round(float(same_voltage_delta_mhz)):+d}MHz"
         )
     return ", ".join(parts)

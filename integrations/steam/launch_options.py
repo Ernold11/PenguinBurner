@@ -16,9 +16,12 @@ from dataclasses import dataclass
 from overlay.wrapper_tokens import (
     ingame_latency_present,
     overlay_present,
-    strip_penguin_burner_tokens as strip_wrapper_tokens,
+    replace_wrapper_executable,
     wrapper_present,
     wrapper_tokens,
+)
+from overlay.wrapper_tokens import (
+    strip_penguin_burner_tokens as strip_wrapper_tokens,
 )
 
 COMMAND_TOKEN = "%command%"
@@ -26,7 +29,7 @@ COMMAND_TOKEN = "%command%"
 # Recognize only the wrapper fragment immediately attached to that placeholder;
 # arbitrary quoted text remains opaque to the shared shell-word stripper.
 _COMMAND_WRAPPER_RE = re.compile(
-    r"(?<![\w/])PENGUIN_BURNER(?:\s+--pb-[a-z0-9-]+=[^\s\"']*)*\s+(?=%command%)"
+    r"(?<![\w/])(?:/[^\s\"']*/)?PENGUIN_BURNER(?:\s+--pb-[a-z0-9-]+=[^\s\"']*)*\s+(?=%command%)"
 )
 
 
@@ -59,6 +62,7 @@ def inject_launch_options(
     *,
     overlay: bool = False,
     ingame_latency: bool = False,
+    executable: str = "PENGUIN_BURNER",
 ) -> str:
     """Splice the wrapper innermost; idempotent and normalizes legacy placement.
 
@@ -74,15 +78,35 @@ def inject_launch_options(
     base = strip_penguin_burner_tokens(launch_options or "")
     prefix = wrapper_tokens(
         overlay=overlay,
+        executable=executable,
         # With the overlay on the wrapper already runs the markers, so the
         # flag would only restate the default.
         ingame_latency=bool(ingame_latency) and not overlay,
         latency_as_flag=True,
     )
+    _validate_wrapper_context(base, executable)
     if COMMAND_TOKEN in base:
         return base.replace(COMMAND_TOKEN, f"{prefix} {COMMAND_TOKEN}", 1)
     injected = f"{prefix} {COMMAND_TOKEN}"
     return f"{injected} {base}" if base else injected
+
+
+def _validate_wrapper_context(value: str, executable: str) -> None:
+    # A path quoted for one shell is not safe inside a user's shell script.
+    if COMMAND_TOKEN in value and shlex.quote(executable) != executable:
+        try:
+            shlex.split(value.split(COMMAND_TOKEN, 1)[0])
+        except ValueError:
+            raise ValueError("A quoted %command% needs a wrapper path without spaces or shell metacharacters.") from None
+
+
+def retarget_wrapper(value: str, executable: str) -> str:
+    """Retain manual wrapper flags, including inside a Steam command script."""
+    _validate_wrapper_context(value, executable)
+    value = replace_wrapper_executable(value, executable)
+    return _COMMAND_WRAPPER_RE.sub(
+        lambda match: shlex.quote(executable) + match.group()[len(match.group().split()[0]):], value,
+    )
 
 
 def remove_injection(

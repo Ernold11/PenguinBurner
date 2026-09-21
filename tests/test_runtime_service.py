@@ -1799,6 +1799,11 @@ def _capture_reexec_command(monkeypatch, returncode: int = 0) -> list:
 def test_reexec_daemon_lifecycle_builds_pkexec_command(monkeypatch) -> None:
     monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
     monkeypatch.setattr(
+        runtime_service,
+        "env_command_prefix",
+        lambda: ["/usr/bin/env"],
+    )
+    monkeypatch.setattr(
         runtime_service.shutil,
         "which",
         lambda name: "/usr/bin/pkexec" if name == "pkexec" else None,
@@ -1835,8 +1840,36 @@ def test_reexec_daemon_lifecycle_builds_pkexec_command(monkeypatch) -> None:
     ]
 
 
+def test_reexec_daemon_lifecycle_dispatches_uutils_env(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "env_command_prefix",
+        lambda: ["/usr/bin/uu-coreutils", "env"],
+    )
+    monkeypatch.setattr(
+        runtime_service.shutil,
+        "which",
+        lambda name: "/usr/bin/pkexec" if name == "pkexec" else None,
+    )
+    monkeypatch.setattr(runtime_service.sys, "argv", ["/opt/pb/penguin-burner-cli"])
+    commands = _capture_reexec_command(monkeypatch)
+
+    runtime_service.reexec_daemon_lifecycle_with_root(
+        ["--install-systemd-service"]
+    )
+
+    command, _check = commands[0]
+    assert command[:3] == ["/usr/bin/pkexec", "/usr/bin/uu-coreutils", "env"]
+
+
 def test_reexec_daemon_lifecycle_falls_back_to_sudo(monkeypatch) -> None:
     monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "env_command_prefix",
+        lambda: ["/usr/bin/env"],
+    )
     monkeypatch.setattr(
         runtime_service.shutil,
         "which",

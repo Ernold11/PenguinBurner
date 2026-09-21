@@ -28,10 +28,8 @@ def min_search_voltage_mv(
 def percent_floor_voltage_mv(*, start_voltage_mv: int, configured_max_drop_pct: float) -> int:
     return max(
         0,
-        int(
-            round(
+        round(
                 float(start_voltage_mv)
                 * (1.0 - (float(configured_max_drop_pct) / 100.0))
-            )
-        ),
+            ),
     )

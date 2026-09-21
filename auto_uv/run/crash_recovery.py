@@ -1,28 +1,30 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Any, cast
 
-from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
-
-from auto_uv.domain.types import AutoUvProbeSummary
-from auto_uv.domain.console_log import log_phase
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.domain.console_log import log_phase
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.persistence.auto_uv_persisted_json_files import final_choice_request_path
 from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
 from auto_uv.persistence.unsafe_voltage_cache import adaptive_scan_payload
+from auto_uv.probes.event_payload import probe_summary_event_payload
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_ADAPTIVE,
     AUTO_UV_MODE_PERFORMANCE,
 )
 from auto_uv.shared.positive_int import positive_int
+from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
 from ui.features.auto_uv.candidate_choice import candidate_plan_from_record
-from auto_uv.probes.event_payload import probe_summary_event_payload
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 
 
 class CrashCacheEntries(list):
@@ -297,7 +299,7 @@ def explicit_profile_tier(payload: dict) -> str:
 
 def _int_or_none(value: object) -> int | None:
     try:
-        return int(value)
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return None
 
@@ -583,7 +585,7 @@ def replay_recovered_resume_probe_rows(
 
 def _float_or_negative_infinity(value: object) -> float:
     try:
-        return float(value)
+        return float(cast(Any, value))
     except (TypeError, ValueError):
         return float("-inf")
 
@@ -593,7 +595,7 @@ def _float_or_none(*values: object) -> float | None:
         if value in (None, ""):
             continue
         try:
-            return float(value)
+            return float(cast(Any, value))
         except (TypeError, ValueError):
             continue
     return None

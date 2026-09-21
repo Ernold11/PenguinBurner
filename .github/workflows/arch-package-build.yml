@@ -7,33 +7,18 @@ name: Arch package build
 
 on:
   pull_request:
-    paths:
-      - packaging/arch/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-arch-package-build.sh
-      - .github/workflows/arch-package-build.yml
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - packaging/arch/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-arch-package-build.sh
-      - .github/workflows/arch-package-build.yml
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
 
 jobs:
   build:
+    name: Arch package (${{ matrix.scenario }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

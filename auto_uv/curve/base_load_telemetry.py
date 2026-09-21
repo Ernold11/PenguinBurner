@@ -226,6 +226,6 @@ def percentile(values: list[float], percentile_value: float) -> float:
     sorted_values = sorted(float(value) for value in values)
     if len(sorted_values) == 1:
         return float(sorted_values[0])
-    position = int(round((len(sorted_values) - 1) * float(percentile_value)))
+    position = round((len(sorted_values) - 1) * float(percentile_value))
     position = max(0, min(len(sorted_values) - 1, position))
     return float(sorted_values[position])

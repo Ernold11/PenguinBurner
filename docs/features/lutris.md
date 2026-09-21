@@ -1,8 +1,21 @@
 # Lutris in Game Library
 
+Native and Flatpak installations share the same integration. When both have a
+configured library, PenguinBurner prefers native while its executable is
+available; otherwise it selects Flatpak. Library discovery, settings, Play and
+compatibility tools follow that choice. **Rescan** refreshes it after a launcher
+installation changes. Flatpak games receive a sandbox-local PenguinBurner runtime;
+restart the launcher after first enabling wrapping so it receives filesystem access.
+
+Flatpak Lutris uses `~/.var/app/net.lutris.Lutris/data/lutris/pga.db`, with
+configuration under that app's `config/lutris` directory when present, otherwise
+its data directory. Its compatibility picker queries Lutris inside that sandbox.
+
 [Game Library](game-library.md) lists installed Lutris games beside Steam.
 Enable **Wrap this game**, select a mode, and use **Play** or launch from Lutris.
-Changes take effect on the next launch.
+Wrapping and compatibility-tool changes take effect on the next launch.
+Profile modes, Adaptive targets and overlay visibility also apply live to an
+already wrapped game, with failures reported alongside the saved preference.
 
 ![Game Library with a Lutris game's settings](../assets/game-library.png)
 
@@ -16,11 +29,13 @@ your existing command. For example:
 
 ```yaml
 system:
-  prefix_command: PENGUIN_BURNER --pb-overlay=1 --pb-lutris-id=27 game-performance
+  prefix_command: PENGUIN_BURNER --pb-overlay=1 --pb-game-id=lutris:27 game-performance
 ```
 
-The ID identifies the game to PenguinBurner. Other configuration keys remain
-unchanged. Disabling wrapping restores an explicit per-game prefix, or resumes
+The ID identifies the game to PenguinBurner, qualified by the launcher that
+owns it. Prefixes written by earlier versions carry `--pb-lutris-id=27`
+instead and keep working; they are rewritten the next time you change a
+setting. Other configuration keys remain unchanged. Disabling wrapping restores an explicit per-game prefix, or resumes
 runner/global inheritance when the game originally inherited its prefix.
 
 The **Command** field is editable. Press Enter or leave the field to save.
@@ -49,3 +64,7 @@ wrapper commands.
 PenguinBurner stores per-game preferences in
 `~/.config/PenguinBurner/lutris-game-settings.json`. Lutris game configuration
 uses `~/.config/lutris` when present, otherwise `~/.local/share/lutris`.
+
+If the preferences file is ever damaged and cannot be read, PenguinBurner keeps
+it as `lutris-game-settings.json.corrupt-<timestamp>` beside it and starts a
+new one, naming the copy in the status line; the old presets stay recoverable.

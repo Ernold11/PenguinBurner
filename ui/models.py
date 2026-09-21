@@ -44,7 +44,7 @@ def candidate_id_from_payload(payload: dict) -> str:
     clock = _number(payload.get("lock_clock_mhz") or payload.get("clock_mhz"))
     if voltage is None or clock is None:
         return ""
-    return f"{int(round(voltage))}mv-{int(round(clock))}mhz"
+    return f"{round(voltage)}mv-{round(clock)}mhz"
 
 
 def stage_title(value) -> str:
@@ -64,7 +64,7 @@ def status_value(value, *, precision: int = 2) -> str:
     if number is None:
         return ""
     if math.isclose(number, round(number), abs_tol=0.005):
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{max(0, int(precision))}f}"
 
 

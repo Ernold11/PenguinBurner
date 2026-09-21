@@ -49,8 +49,8 @@ from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
 
-from .sockets import latency_socket_path, latency_socket_paths
 from .. import shim_deploy as _shim_deploy
+from .sockets import latency_socket_path, latency_socket_paths
 
 # NV_LATENCY_MARKER_TYPE values named on the shim's marker lines.
 NV_MARKER_SIMULATION_START = 0
@@ -154,7 +154,7 @@ def _socket_targets(env: dict[str, str] | None = None) -> list[Path]:
     env = dict(os.environ) if env is None else env
     try:
         targets = list(latency_socket_paths(env))
-    except Exception:
+    except Exception:  # noqa: BLE001
         targets = []
     primary = latency_socket_path(env)
     if primary not in targets:
@@ -582,7 +582,7 @@ def spawn_detached_drainer(
     log_path: Path,
     *,
     session_pid: int | None = None,
-) -> "subprocess.Popen | None":
+) -> subprocess.Popen | None:
     """Launch this module as a detached per-game FIFO drainer.
 
     The wrapper spawns this right before it execs into Proton, so the FIFO

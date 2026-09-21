@@ -11,14 +11,14 @@ from pathlib import Path
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING
+
 from ..curve.base_load_telemetry import (
-    derive_active_power_floor_w,
     decision_samples,
+    derive_active_power_floor_w,
     sample_is_loaded,
     saturated_tail_samples,
 )
 from ..shared.probe_data_fields import read_field
-
 
 POWER_CAP_BUSY_SAMPLE_FRACTION = 0.5
 POWER_CAP_MIN_REASON_SAMPLES = 3

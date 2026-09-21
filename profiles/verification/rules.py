@@ -3,13 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.penguin_burner_errors import NvmlError
+from profiles.uv.profile_store import resolve_auto_uv_profile
 from runtime.gpu_control.vf_curve_reset_guard import (
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,
     select_expected_vf_samples,
 )
-from profiles.uv.profile_store import resolve_auto_uv_profile
-
 
 PROFILE_VERIFY_VOLTAGE_TOLERANCE_MV = 50
 PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK = 5
@@ -53,7 +52,7 @@ def base_vf_plan_from_profile_plan(plan: list[dict]) -> list[dict]:
     for raw in list(plan or []):
         item = dict(raw)
         try:
-            base_mhz = int(round(float(item["base_mhz"])))
+            base_mhz = round(float(item["base_mhz"]))
             item["target_mhz"] = base_mhz
             item["new_offset_mhz"] = 0
         except (KeyError, TypeError, ValueError) as exc:
@@ -144,7 +143,7 @@ def profile_needs_verify_baseline(selector: str) -> bool:
     # Only user-edited drafts missing base metrics need this probe.
     try:
         resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     if resolved is None:
         return False
@@ -179,7 +178,7 @@ def _coerce_positive_int(value) -> int | None:
     number = _float_or_none(value)
     if number is None:
         return None
-    integer = int(round(number))
+    integer = round(number)
     return integer if integer > 0 else None
 
 

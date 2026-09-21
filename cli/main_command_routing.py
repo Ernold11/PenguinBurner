@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
 from common.penguin_burner_errors import NvmlError
 from overlay.config import steam_launch_option
 from overlay.telemetry.steam_launch_check import rewrite_launch_options
-from runtime.support.runtime_debug import (
-    debug_effective_runtime_options,
-    enable_stdio_capture,
-    log as runtime_log,
-)
-from runtime.support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
-from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
 from profiles.gpu_identity import profile_gpu_uuid
 from profiles.uv.profile_store import (
     delete_auto_uv_profiles,
@@ -30,6 +23,18 @@ from profiles.uv.profile_tiers import (
 )
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime.daemon_client import set_boot_main_gpu
+from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
+from runtime.support.runtime_debug import (
+    debug_effective_runtime_options,
+    enable_stdio_capture,
+)
+from runtime.support.runtime_debug import (
+    log as runtime_log,
+)
+from runtime.support.runtime_service import (
+    running_under_systemd_service,
+    stop_existing_penguin_burner_runtime,
+)
 
 
 @dataclass(slots=True)
@@ -332,7 +337,7 @@ def _auto_uv_final_curve_available(
 ) -> bool:
     try:
         return deps.load_auto_uv_final_curve(auto_uv_profile_selector) is not None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

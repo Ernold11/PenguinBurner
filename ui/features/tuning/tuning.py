@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_ADAPTIVE
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_ADAPTIVE,
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_PERFORMANCE,
+)
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
     uv_limit_power_limit_pct_for_gpu,
@@ -14,9 +16,7 @@ from auto_uv.scan_mode.uv_limits import (
 )
 from common.penguin_burner_paths import default_runtime_config_path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-
 from ui.features.tuning.gpu_selection import runtime_gpu_index
-
 
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.tail_rise_bins
 DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
@@ -171,18 +171,18 @@ def auto_uv_power_limit_default(
     )
     if pct is None:
         return AutoUvPowerLimitDefault(
-            watts=int(round(base_watts)),
+            watts=round(base_watts),
             pct=100.0,
             gpu_name=detected_name or None,
             gpu_family=None,
             preset_matched=False,
         )
-    watts = int(round(base_watts * (float(pct) / 100.0)))
+    watts = round(base_watts * (float(pct) / 100.0))
     floor_watts = _positive_float(min_w)
     if floor_watts is not None:
-        watts = max(int(round(floor_watts)), watts)
+        watts = max(round(floor_watts), watts)
     if max_watts is not None:
-        watts = min(int(round(max_watts)), watts)
+        watts = min(round(max_watts), watts)
     return AutoUvPowerLimitDefault(
         watts=watts,
         pct=float(pct),
@@ -256,7 +256,7 @@ def read_auto_uv_nvml_info(
     try:
         client = client or DaemonGpuClient(int(gpu_index))
         snapshot = client.snapshot(refresh=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         snapshot = None
 
     capabilities = snapshot.capabilities if snapshot is not None else None
@@ -302,7 +302,7 @@ def _power_limit_set_probe_applicable(power: object | None) -> bool:
 def _power_limit_set_supported(gpu_client: DaemonGpuClient) -> bool:
     try:
         return gpu_client.power_limit_set_supported()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -343,7 +343,7 @@ def memory_offset_mhz_range(
         )
         client = gpu_client or DaemonGpuClient(gpu_index=index)
         driver_range = client.capabilities().memory_clock_offset_range_mhz
-    except Exception:
+    except Exception:  # noqa: BLE001
         return fallback
     if not driver_range:
         return fallback
@@ -382,7 +382,7 @@ def auto_uv_voltage_floor_range_mv(
             (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
             for p in client.editable_core_points()
         ]
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     points = [(v, c) for v, c in points if v > 0 and c > 0]
     if not points:
@@ -405,7 +405,7 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
             else runtime_gpu_index(default_runtime_config_path())
         )
         name = DaemonGpuClient(gpu_index=index).capabilities().identity.name
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return str(name).strip() if name else None
 

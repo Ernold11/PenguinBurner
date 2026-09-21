@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING
 from auto_uv.persistence.verified_candidate_result_file import artifact_points
 from profiles.uv.profile_store import user_edited_display_name
-
 
 MANUAL_SMOOTH_TRIGGER_CLOCK_BINS = 5
 MANUAL_SMOOTH_LEFT_VOLTAGE_BINS = 5
@@ -26,8 +26,8 @@ class ManualCurveEdit:
 
 def editable_anchor_from_profile(profile: dict) -> tuple[int, int] | None:
     try:
-        voltage_mv = int(round(float(profile.get("candidate_voltage_mv"))))
-        clock_mhz = int(round(float(profile.get("lock_clock_mhz"))))
+        voltage_mv = round(float(cast(Any, profile.get("candidate_voltage_mv"))))
+        clock_mhz = round(float(cast(Any, profile.get("lock_clock_mhz"))))
     except (TypeError, ValueError):
         return None
     if voltage_mv <= 0 or clock_mhz <= 0:
@@ -51,7 +51,7 @@ def manual_drag_anchor_edit(
 ) -> ManualCurveEdit:
     points = _sorted_plan(plan)
     anchor_index = _nearest_voltage_index(points, int(anchor_voltage_mv))
-    requested_index = _nearest_voltage_index(points, int(round(float(requested_voltage_mv))))
+    requested_index = _nearest_voltage_index(points, round(float(requested_voltage_mv)))
     max_index = (
         len(points) - 1
         if max_voltage_bins is None
@@ -122,7 +122,7 @@ def manual_flatten_from_existing_point(
     anchor_index = _nearest_voltage_index(points, int(anchor_voltage_mv))
     clicked_index = _nearest_voltage_index(
         points,
-        int(round(float(clicked_voltage_mv))),
+        round(float(clicked_voltage_mv)),
     )
     flatten_index = min(int(anchor_index), int(clicked_index))
     flatten_clock_mhz = int(points[flatten_index]["target_mhz"])
@@ -156,7 +156,7 @@ def manual_add_curve_point_edit(
     )
     target_index = _nearest_voltage_index(
         points,
-        int(round(float(requested_voltage_mv))),
+        round(float(requested_voltage_mv)),
     )
     if target_index == anchor_index:
         return ManualCurveEdit(
@@ -229,7 +229,7 @@ def manual_tune_single_point_edit(
     anchor_index = _nearest_voltage_index(points, int(anchor_voltage_mv))
     source_index = _nearest_voltage_index(
         points,
-        int(round(float(point_voltage_mv))),
+        round(float(point_voltage_mv)),
     )
     if source_index < anchor_index:
         region_first_index = 0
@@ -260,7 +260,7 @@ def manual_tune_single_point_edit(
     target_index = _clamp(
         _nearest_voltage_index(
             points,
-            int(round(float(requested_point_voltage_mv))),
+            round(float(requested_point_voltage_mv)),
         ),
         region_first_index,
         region_last_index,
@@ -437,7 +437,7 @@ def manual_select_curve_point(
     anchor_index = _nearest_voltage_index(points, int(edit.anchor_voltage_mv))
     selected_index = _nearest_voltage_index(
         points,
-        int(round(float(voltage_mv))),
+        round(float(voltage_mv)),
     )
     selected_voltage_mv = int(points[selected_index]["voltage_mv"])
     selected_clock_mhz = (
@@ -545,7 +545,7 @@ def manual_offset_selected_range(
         _nearest_voltage_index(points, int(range_start_voltage_mv)),
     )
     reference_index = _clamp(
-        _nearest_voltage_index(points, int(round(float(reference_voltage_mv)))),
+        _nearest_voltage_index(points, round(float(reference_voltage_mv))),
         int(start_index),
         int(anchor_index),
     )
@@ -676,9 +676,7 @@ def _flatten_plan_from_index(
     for index, raw in enumerate(points):
         item = dict(raw)
         target_mhz = int(item["target_mhz"])
-        if index >= flatten_index:
-            target_mhz = flatten_clock_mhz
-        elif target_mhz > flatten_clock_mhz:
+        if index >= flatten_index or target_mhz > flatten_clock_mhz:
             target_mhz = flatten_clock_mhz
         item["target_mhz"] = int(target_mhz)
         item["new_offset_mhz"] = int(item["target_mhz"]) - int(item["base_mhz"])
@@ -894,7 +892,7 @@ def _normalized_control_voltage_mvs(
     seen: set[int] = set()
     for raw_voltage_mv in control_voltage_mvs:
         try:
-            voltage_mv = int(round(float(raw_voltage_mv)))
+            voltage_mv = round(float(raw_voltage_mv))
         except (TypeError, ValueError):
             continue
         index = _nearest_voltage_index(points, voltage_mv)
@@ -976,6 +974,5 @@ def _target_clock_for_voltage(
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
-    if maximum < minimum:
-        maximum = minimum
+    maximum = max(maximum, minimum)
     return max(int(minimum), min(int(maximum), int(value)))

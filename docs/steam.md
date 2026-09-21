@@ -1,5 +1,16 @@
 # Steam in Game Library
 
+Native and Flatpak installations share the same integration. When both have a
+configured library, PenguinBurner prefers native while its executable is
+available; otherwise it selects Flatpak. Library discovery, settings, Play and
+compatibility tools follow that choice. **Rescan** refreshes it after a launcher
+installation changes. Flatpak games receive a sandbox-local PenguinBurner runtime;
+restart the launcher after first enabling wrapping so it receives filesystem access.
+
+Flatpak Steam uses `~/.var/app/com.valvesoftware.Steam/.local/share/Steam`.
+Live settings and Proton selection refuse to connect to a different running
+Steam installation. Close the other client before using these controls.
+
 Use [Game Library](features/game-library.md) to set a GPU profile, Adaptive FPS
 target, and overlay for each Steam game alongside your Lutris library.
 
@@ -12,7 +23,10 @@ target, and overlay for each Steam game alongside your Lutris library.
 
 Scanning does not change launch options. Enabling a game adds the wrapper to
 that game's options and preserves the existing command. Settings are stored
-per Steam account in `~/.config/PenguinBurner/steam-game-settings.json`.
+per Steam account in `~/.config/PenguinBurner/steam-game-settings.json`. If
+that file is ever damaged and cannot be read, PenguinBurner keeps it as
+`steam-game-settings.json.corrupt-<timestamp>` beside it and starts a new one,
+so the old presets stay recoverable.
 
 ## When edits are available
 

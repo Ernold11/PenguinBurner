@@ -5,31 +5,30 @@ It converts the raw workload result into the strict Auto-UV stability decision.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from stability.q2rtx.models import Q2RTXStabilityConfig
-
+from auto_uv.domain.events import AutoUvEventCallback
 from auto_uv.domain.types import (
     AutoUvCriticalProbeError,
     AutoUvProbeSummary,
     FailureSeverity,
     VfCurveCandidate,
 )
-from .stability_decision import evaluate_stable_run
-from .voltage_probe import probe_voltage_candidate
-from .voltage_probe import companion_duration_s_from_command
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from stability.q2rtx.models import Q2RTXStabilityConfig
+
 from .config import (
     q2rtx_cuda_probe_config_for_voltage_band,
     q2rtx_only_probe_config_for_voltage_band,
     reference_discovery_q2rtx_probe_config,
 )
-from auto_uv.domain.events import AutoUvEventCallback
 from .events import (
     emit_voltage_probe_finished,
     emit_voltage_probe_started,
 )
-from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from .stability_decision import evaluate_stable_run
+from .voltage_probe import companion_duration_s_from_command, probe_voltage_candidate
 
 
 @dataclass(frozen=True, slots=True)

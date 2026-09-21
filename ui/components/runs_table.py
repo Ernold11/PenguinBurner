@@ -3,14 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .. import theme
-from ..models import probe_decision_label
-from ..models import probe_failure_label
-from ..models import probe_reason_tooltip
+from ..models import probe_decision_label, probe_failure_label, probe_reason_tooltip
 from .table_sizing import set_header_fit_column_widths
 
 
 class RunsTable:
-    COLUMNS = [
+    COLUMNS = (
         "Run",
         "mV",
         "Tgt MHz",
@@ -24,7 +22,7 @@ class RunsTable:
         "FPS/W",
         "Result",
         "Status",
-    ]
+    )
     TARGET_MHZ_COLUMN = 2
     OC_MHZ_COLUMN = 3
     MEASURED_MHZ_COLUMN = 4
@@ -339,7 +337,7 @@ class RunsTable:
         if current is None or baseline is None or baseline == 0.0:
             return ""
         if current == baseline:
-            return "ref" if baseline_key == "fps" else "ref"
+            return "ref"
         raw_delta_pct = ((current - baseline) / baseline) * 100.0
         return f"{raw_delta_pct:+.2f}%"
 
@@ -454,7 +452,7 @@ class RunsTable:
                 ratio = 1.0
                 shown_elapsed = float(target)
             bar.setRange(0, 1000)
-            bar.setValue(int(round(ratio * 1000.0)))
+            bar.setValue(round(ratio * 1000.0))
             time_text = _progress_time_text(shown_elapsed, target)
             bar.setFormat(f"{label} {time_text}" if label else time_text)
             bar.setToolTip(
@@ -519,7 +517,11 @@ class RunsTable:
             voltage = self._cell_text(row, 1)
             clock = self._cell_text(row, self.TARGET_MHZ_COLUMN)
             probe_key = (voltage, clock)
-        progress = dict(self._progress_by_probe.get(probe_key, {}))
+        progress = (
+            dict(self._progress_by_probe.get(probe_key, {}))
+            if probe_key is not None
+            else {}
+        )
         progress["label"] = str(label)
         return progress
 
@@ -679,9 +681,10 @@ def _row_state(payload: dict, *, running: bool) -> str:
     severity = str(payload.get("failure_severity", "")).lower()
     reason = str(payload.get("reason", "")).lower()
     text = f"{decision} {reason}"
-    if "base" in stage or "stock" in stage or stage == "baseline":
-        if "fail" not in text and "error" not in text:
-            return "baseline"
+    if (
+        "base" in stage or "stock" in stage or stage == "baseline"
+    ) and "fail" not in text and "error" not in text:
+        return "baseline"
     if severity == "recoverable":
         return "warning"
     if severity in {"critical", "unsafe"}:
@@ -842,7 +845,7 @@ def _payload_oc_from_measured_baseline(
     )
     if target_clock_mhz is None or baseline_clock_mhz is None:
         return None
-    delta_mhz = int(round(float(target_clock_mhz) - float(baseline_clock_mhz)))
+    delta_mhz = round(float(target_clock_mhz) - float(baseline_clock_mhz))
     return (delta_mhz, delta_mhz)
 
 
@@ -889,7 +892,7 @@ def _format_duration_compact(seconds) -> str:
     if seconds in (None, ""):
         return "n/a"
     try:
-        total_seconds = max(0, int(round(float(seconds))))
+        total_seconds = max(0, round(float(seconds)))
     except (TypeError, ValueError):
         return "n/a"
     if total_seconds < 60:
@@ -900,7 +903,7 @@ def _format_duration_compact(seconds) -> str:
             return f"{minutes}min {remainder_seconds}s"
         return f"{minutes}min"
     hours, remainder_seconds = divmod(total_seconds, 3600)
-    minutes = int(round(remainder_seconds / 60.0))
+    minutes = round(remainder_seconds / 60.0)
     if minutes >= 60:
         hours += 1
         minutes = 0
@@ -964,7 +967,7 @@ def _format_int(value) -> str:
     number = _to_float(value)
     if number is None:
         return ""
-    return str(int(round(number)))
+    return str(round(number))
 
 
 def _format_oc_progress(value: tuple[int, int] | None) -> str:
@@ -974,7 +977,7 @@ def _format_oc_progress(value: tuple[int, int] | None) -> str:
     if value is None:
         return ""
     oc_mhz, _limit_mhz = value
-    return _format_signed_mhz(int(round(float(oc_mhz))))
+    return _format_signed_mhz(round(float(oc_mhz)))
 
 
 def _format_oc_progress_for_payload(

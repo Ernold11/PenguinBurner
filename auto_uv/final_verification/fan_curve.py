@@ -5,13 +5,14 @@ The curve is written only when final load temperature leaves enough cooling head
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
-import math
 from pathlib import Path
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
+
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_user_config_dir,
     safe_json_write,
@@ -418,7 +419,7 @@ def monotonic_curve(points: list[tuple[float, float]]) -> list[list[float]]:
     return normalized
 
 
-def finite(value: float | int | None) -> float | None:
+def finite(value: float | None) -> float | None:
     if value is None:
         return None
     try:

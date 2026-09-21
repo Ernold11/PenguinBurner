@@ -5,8 +5,12 @@ from types import SimpleNamespace
 import pytest
 
 from cli.runtime_config_file import default_runtime_config
-from runtime import daemon_client
-from runtime import runtime_spec
+from runtime import daemon_client, runtime_spec
+
+
+def test_build_runtime_spec_rejects_non_mapping_intent_as_type_error() -> None:
+    with pytest.raises(TypeError, match="runtime intent JSON must be an object"):
+        runtime_spec.build_runtime_spec_from_intent([])  # type: ignore[arg-type]
 
 
 def _curve(profile_id: str, tier: str = "balanced") -> dict:

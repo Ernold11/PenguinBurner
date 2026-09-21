@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
+from common.penguin_burner_paths import (
+    claim_desktop_user_ownership,
+    default_user_config_dir,
+)
 from profiles.uv.profile_store import resolve_auto_uv_profile
-from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 
 class LactExportError(RuntimeError):
@@ -54,7 +58,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
         if not isinstance(point, (list, tuple)) or len(point) != 2:
             raise LactExportError(f"invalid fan curve point: {point!r}")
         try:
-            temp_c = int(round(float(point[0])))
+            temp_c = round(float(point[0]))
             speed_fraction = _clamp(float(point[1]) / 100.0, 0.0, 1.0)
         except (TypeError, ValueError) as exc:
             raise LactExportError(f"invalid fan curve point: {point!r}") from exc
@@ -62,7 +66,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
 
     auto_threshold = fan.get("auto_restore_temp_c")
     try:
-        auto_threshold_c = int(round(float(auto_threshold or 0)))
+        auto_threshold_c = round(float(auto_threshold or 0))
     except (TypeError, ValueError):
         auto_threshold_c = 0
 
@@ -80,7 +84,7 @@ def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
     lines.extend(
         [
             "      spindown_delay_ms: 0",
-            f"      change_threshold: {int(round(float(fan.get('hysteresis_c', 0.0))))}",
+            f"      change_threshold: {round(float(fan.get('hysteresis_c', 0.0)))}",
             f"      auto_threshold: {auto_threshold_c}",
         ]
     )
@@ -106,7 +110,7 @@ def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        return int(round(float(value)))
+        return round(float(cast(Any, value)))
     except (TypeError, ValueError):
         return None
 
@@ -161,6 +165,7 @@ def _vf_curve_yaml_from_points(
             ]
         )
     if clamped_offsets:
+        assert max_offset is not None
         warnings.append(
             "LACT V/F offsets were clamped to "
             f"+{int(max_offset)}MHz over each point's base clock: "
@@ -245,7 +250,11 @@ def build_lact_nvidia_config(
         if resolved_profile is None and selector not in {"active", "latest"}:
             raise LactExportError(f"Auto-UV profile not found: {selector}")
     fan_curve_path = fan_curve_path or config_dir / "auto-uv-fan-curve.json"
-    final_curve_payload = _read_json(Path(final_curve_path)) if include_vf_curve else {}
+    if include_vf_curve:
+        assert final_curve_path is not None
+        final_curve_payload = _read_json(final_curve_path)
+    else:
+        final_curve_payload = {}
     fan_curve_payload = None
     if include_fan_curve and Path(fan_curve_path).is_file():
         fan_curve_payload = _read_json(Path(fan_curve_path))

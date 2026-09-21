@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from .dialogs.error_details import process_failure_details
-from .dialogs.error_details import qt_enum_name
-from .dialogs.error_details import show_error_dialog
+from .dialogs.error_details import (
+    process_failure_details,
+    qt_enum_name,
+    show_error_dialog,
+)
 
 
 class ErrorReporter:

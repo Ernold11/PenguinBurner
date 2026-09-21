@@ -13,39 +13,42 @@ decision flow.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, Callable, cast
+from typing import Any, cast
 
+from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
+from auto_uv.curve.flattened_voltage_probe_curve import (
+    build_flattened_voltage_probe_curve,
+)
+from auto_uv.domain.scan_settings import AutoUvScanSettings
 from auto_uv.domain.types import (
     AutoUvCriticalProbeError,
     FailureSeverity,
     VfCurveCandidate,
 )
-from auto_uv.domain.scan_settings import AutoUvScanSettings
-from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
-from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
-    compare_temperature_normalized_fps_per_w,
-    decide_efficiency_stop,
-    power_increased_while_efficiency_flat,
+from auto_uv.persistence.unsafe_voltage_cache import (
+    unsafe_min_search_voltage,
+    unsafe_voltage_block_reason,
 )
-from auto_uv.scan_mode.auto_uv_mode import (
-    AUTO_UV_MODE_BALANCED,
-)
-from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
 from auto_uv.run.lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,
 )
 from auto_uv.run.lower_voltage_search import select_next_lower_voltage
-from auto_uv.persistence.unsafe_voltage_cache import (
-    unsafe_min_search_voltage,
-    unsafe_voltage_block_reason,
-)
 from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepEvent,
     LowerVoltageSweepResult,
     VoltageProbeOutcome,
     VoltageSweepState,
+)
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_BALANCED,
+)
+from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
+    compare_temperature_normalized_fps_per_w,
+    decide_efficiency_stop,
+    power_increased_while_efficiency_flat,
 )
 
 

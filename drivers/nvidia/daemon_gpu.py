@@ -217,7 +217,10 @@ class DaemonGpuClient:
     def refresh_points(self) -> list[VfPoint]:
         raw = gpu_vf_snapshot(self.gpu_index).get("points")
         if not isinstance(raw, list):
-            raise RuntimeError("PenguinBurner daemon returned an invalid V/F snapshot")
+            # A malformed daemon reply is a runtime protocol failure.
+            raise RuntimeError(  # noqa: TRY004
+                "PenguinBurner daemon returned an invalid V/F snapshot"
+            )
         self._vf_points_cache = [
             _parse_vf_point(point) for point in raw if isinstance(point, dict)
         ]

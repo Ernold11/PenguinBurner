@@ -73,29 +73,23 @@ git -C "$ROOT" archive --format=tar.gz --prefix="PenguinBurner-${pkgver}/" \
     -o "$work_dir/penguin-burner-${pkgver}.tar.gz" HEAD
 sed "s|^source=.*|source=(\"penguin-burner-${pkgver}.tar.gz\")|" \
     "$ROOT/packaging/arch/PKGBUILD" > "$work_dir/PKGBUILD"
+cp "$ROOT/scripts/ci/refresh-cachyos.sh" "$work_dir/refresh-cachyos.sh"
 
 for scenario in "${scenarios[@]}"; do
     image="$(scenario_image "$scenario")"
     echo "==> scenario $scenario ($image)"
+    # The single-quoted script is expanded by the container's shell.
+    # shellcheck disable=SC2016
     "$ENGINE" run --rm --network "$NETWORK" \
         -v "$work_dir:/work:ro,Z" \
         -e SCENARIO="$scenario" \
         "$image" bash -euo pipefail -c '
         upgrade=-Syu
         if [[ "$SCENARIO" == cachyos-shelly ]]; then
-            # A mirror can briefly serve a database and signature from different
-            # updates. Fetch both afresh on retry; never relax signature checks.
-            for attempt in 1 2 3; do
-                if pacman -Syy --noconfirm; then
-                    break
-                fi
-                if [[ "$attempt" == 3 ]]; then
-                    echo "CachyOS database sync failed after $attempt attempts" >&2
-                    exit 1
-                fi
-                echo "Retrying signed CachyOS database sync ($attempt/3)" >&2
-                sleep 5
-            done
+            # CachyOS publishes signed databases. Missing signatures must fail
+            # too, rather than falling through DatabaseOptional in the image.
+            sed -i "/^\\[cachyos[^]]*\\]$/a SigLevel = Required DatabaseRequired" /etc/pacman.conf
+            bash /work/refresh-cachyos.sh
             # Use the databases just verified instead of fetching them again.
             upgrade=-Su
         fi

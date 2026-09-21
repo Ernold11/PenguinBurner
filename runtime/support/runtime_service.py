@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
-
-import dataclasses
-import os
-from pathlib import Path
-import pwd
 import configparser
+import dataclasses
 import json
+import os
+import pwd
 import shlex
 import shutil
 import stat
@@ -13,16 +10,23 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+from typing import Self
 
-from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
-from runtime.daemon_client import apply_runtime_spec
-from runtime.daemon_client import daemon_status
-from runtime.daemon_client import set_boot_runtime_spec
-from runtime.daemon_client import stop_runtime_profile
-from runtime.runtime_spec import build_runtime_spec_from_intent, runtime_intent_from_argv
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+from common.privileged_env import env_command_prefix
 from common.subprocess_locale import stable_subprocess_env
-
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+from runtime.daemon_client import (
+    DEFAULT_DAEMON_SOCKET,
+    apply_runtime_spec,
+    daemon_status,
+    set_boot_runtime_spec,
+    stop_runtime_profile,
+)
+from runtime.runtime_spec import (
+    build_runtime_spec_from_intent,
+    runtime_intent_from_argv,
+)
 
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
 ROOT_UID = 0
@@ -740,7 +744,7 @@ def clear_all_runtime_state() -> None:
 def _stop_active_runtime_before_daemon_restart() -> None:
     try:
         stop_runtime_profile(socket_path=DEFAULT_DAEMON_SOCKET, timeout_s=3)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -996,7 +1000,7 @@ class _DaemonServiceInstallTransaction:
                 snapshot.discard()
             raise
 
-    def __enter__(self) -> "_DaemonServiceInstallTransaction":
+    def __enter__(self) -> Self:
         return self
 
     def capture_service_state(self) -> None:
@@ -1031,7 +1035,7 @@ class _DaemonServiceInstallTransaction:
         def attempt(description: str, operation) -> None:
             try:
                 operation()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 rollback_errors.append(f"{description}: {exc}")
 
         if states:
@@ -1088,7 +1092,7 @@ class _DaemonServiceInstallTransaction:
             return False
         try:
             self._rollback()
-        except Exception as rollback_error:
+        except Exception as rollback_error:  # noqa: BLE001
             raise RuntimeError(
                 f"{exc}\nRollback of the previous hardware service also failed: "
                 f"{rollback_error}"
@@ -1130,7 +1134,7 @@ def reexec_daemon_lifecycle_with_root(argv: list[str]) -> int:
             pythonpath_entries.append(entry)
     command = [
         escalator,
-        "/usr/bin/env",
+        *env_command_prefix(),
         f"SUDO_USER={_invoking_user_name()}",
         "PYTHONPATH=" + os.pathsep.join(pythonpath_entries),
         sys.executable,
@@ -1346,7 +1350,7 @@ def _wait_for_daemon_status(socket_path) -> None:
         try:
             daemon_status(socket_path=socket_path, timeout_s=1)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
             time.sleep(0.1)
     raise RuntimeError(f"PenguinBurner daemon did not become reachable: {last_error}")

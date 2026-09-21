@@ -1,27 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
-import tempfile
 
 from common.penguin_burner_errors import NvmlError
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.gpu_identity import normalized_gpu_identity
-from runtime.support.vf_curve_plan import (
-    apply_plan,
-    backup_current_offsets,
-    restore_offsets,
-)
-from runtime.support.runtime_debug import log as runtime_log
-from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
-from runtime.support.runtime_service import stop_existing_penguin_burner_runtime
-from stability.q2rtx.config import (
-    build_stability_config,
-    stability_workload_label,
-    stability_workload_split_label,
-)
 from profiles.uv.profile_store import (
     mark_auto_uv_profile_verification_failed,
     mark_auto_uv_profile_verified,
@@ -30,16 +17,33 @@ from profiles.uv.runtime_auto_uv_profile import (
     apply_auto_uv_profile_memory_offset,
     load_auto_uv_final_curve,
 )
+from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
+from runtime.support.runtime_debug import log as runtime_log
+from runtime.support.runtime_service import stop_existing_penguin_burner_runtime
+from runtime.support.vf_curve_plan import (
+    apply_plan,
+    backup_current_offsets,
+    restore_offsets,
+)
+from stability.q2rtx.config import (
+    build_stability_config,
+    stability_workload_label,
+    stability_workload_split_label,
+)
 from stability.q2rtx.long_stability_config import build_long_stability_test_config
 from stability.q2rtx.models import StabilityTestError
-from stability.q2rtx.output import attach_stdout_progress
-from stability.q2rtx.output import attach_stdout_telemetry_events
+from stability.q2rtx.output import (
+    attach_stdout_progress,
+    attach_stdout_telemetry_events,
+)
 from stability.q2rtx.reporting import print_q2rtx_stability_result
 from stability.q2rtx.runtime import run_q2rtx_stability_test
 
 from .metrics import profile_verification_metrics_from_result
 from .rules import (
     apply_and_verify_profile_vf_plan as verify_profile_vf_plan,
+)
+from .rules import (
     base_vf_plan_from_profile_plan,
     profile_needs_verify_baseline,
     profile_verification_baseline_duration_s,
@@ -106,16 +110,15 @@ def run_profile_verification(
             return
         try:
             clock_ceiling_controller.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             deps.log(f"Warning: failed to reset verification clock lock: {exc}")
         clock_ceiling_controller = None
 
     with contextlib.ExitStack() as stack:
-        backup_file = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             prefix="penguin-burner-verify-", suffix=".json", delete=False
-        )
-        backup_file.close()
-        backup_path = Path(backup_file.name)
+        ) as backup_file:
+            backup_path = Path(backup_file.name)
         deps.backup_current_offsets(
             vf_curve_reader,
             backup_path,
@@ -145,7 +148,7 @@ def run_profile_verification(
                     exact_lock=True,
                 )
                 clock_ceiling_controller.apply()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 clock_ceiling_controller = None
                 deps.log(f"Skipping verification clock lock: {exc}")
             else:
@@ -226,7 +229,7 @@ def run_profile_verification(
                             "Marked profile verification failed: "
                             f"path={failed_path} reason={result.reason}"
                         )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     deps.log(
                         f"Warning: failed to mark profile verification failed: {exc}"
                     )
@@ -238,7 +241,7 @@ def run_profile_verification(
             close_clock_ceiling()
             try:
                 base_plan = base_vf_plan_from_profile_plan(verify_plan)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 deps.log(f"Profile verification baseline probe skipped: {exc}")
             else:
                 base_metrics = run_profile_verification_baseline_probe(
@@ -289,7 +292,7 @@ def _restore_and_unlink_backup(
             policy_controller=gpu_policy_controller,
         )
         deps.log("Restored V/F offsets after profile verification.")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Warning: failed to restore V/F offsets after verification: {exc}")
     try:
         backup_path.unlink(missing_ok=True)
@@ -385,7 +388,7 @@ def run_profile_verification_baseline_probe(
         if gpu_policy_controller is not None:
             try:
                 gpu_policy_controller.apply_clock_offsets(mem_clk_vf_offset_mhz=0)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 deps.log(
                     f"Warning: failed to reset memory offset for baseline probe: {exc}"
                 )
@@ -418,6 +421,6 @@ def run_profile_verification_baseline_probe(
         metrics = profile_verification_metrics_from_result(result)
         deps.log("Profile verification baseline probe complete.")
         return metrics
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Profile verification baseline probe skipped: {exc}")
         return None

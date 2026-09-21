@@ -65,10 +65,10 @@ class LogView:
             self.QtGui.QFontDatabase,
         )
         font = self.QtGui.QFontDatabase.systemFont(
-            getattr(font_database_enum, "FixedFont")
+            font_database_enum.FixedFont
         )
         style_hint_enum = getattr(self.QtGui.QFont, "StyleHint", self.QtGui.QFont)
-        font.setStyleHint(getattr(style_hint_enum, "Monospace"))
+        font.setStyleHint(style_hint_enum.Monospace)
         font.setFixedPitch(True)
         point_size = font.pointSize()
         if point_size > 0:
@@ -81,7 +81,7 @@ class LogView:
 
 
 def _log_timestamp() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _timestamp_log_text(
@@ -116,7 +116,7 @@ def _plain_text_no_wrap_mode(QtWidgets):
         "LineWrapMode",
         QtWidgets.QPlainTextEdit,
     )
-    return getattr(line_wrap_enum, "NoWrap")
+    return line_wrap_enum.NoWrap
 
 
 def _copy_icon(QtCore, QtGui):

@@ -68,7 +68,7 @@ def open_memory_offset_editor_dialog(
     def save_edit() -> None:
         try:
             message = save_callback(int(memory_spin.value()) * 2)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 dialog,
                 "Edit Memory Offset",

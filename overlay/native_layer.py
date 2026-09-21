@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 LATENCY_LAYER_NAME = "VK_LAYER_PENGUINBURNER_latency"

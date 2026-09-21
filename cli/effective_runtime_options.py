@@ -66,7 +66,7 @@ def build_effective_auto_uv_runtime_options(args) -> dict:
         runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(args.auto_uv_mode)
         if (
             requested_auto_uv_mode == AUTO_UV_MODE_BALANCED
-            and getattr(args, "auto_uv_tail_rise_bins") is None
+            and args.auto_uv_tail_rise_bins is None
         ):
             runtime_options["auto_uv_tail_rise_bins"] = (
                 AUTO_UV_DEFAULTS.balanced_tail_rise_bins

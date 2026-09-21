@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from curve_editors.fan.fan_curve_manual_editor import (
     ManualFanCurveEdit,
@@ -14,8 +15,11 @@ from curve_editors.fan.fan_curve_manual_editor import (
 )
 
 from .. import theme
-from .curve_editor import CurveEditHistory, install_curve_editor_shortcut_legend
-from .curve_editor import nearest_curve_point
+from .curve_editor import (
+    CurveEditHistory,
+    install_curve_editor_shortcut_legend,
+    nearest_curve_point,
+)
 from .curve_plot import CurvePlot
 
 
@@ -56,7 +60,7 @@ def open_fan_curve_editor_dialog(
 
     current_edit = {"value": initial_fan_edit()}
     syncing_points = {"active": False}
-    point_items: dict[int, object] = {}
+    point_items: dict[int, Any] = {}
 
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Edit Fan Curve")
@@ -178,7 +182,7 @@ def open_fan_curve_editor_dialog(
             "Drag or use arrow keys to tune the curve."
         )
 
-    def point_item(entry):
+    def point_item(entry: Any) -> Any:
         if isinstance(entry, dict):
             return entry.get("item")
         return entry
@@ -432,7 +436,7 @@ def open_fan_curve_editor_dialog(
     def save_edit() -> None:
         try:
             message = save_callback(current_edit["value"])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 dialog,
                 "Edit Fan Curve",
@@ -484,4 +488,3 @@ def open_fan_curve_editor_dialog(
     finally:
         if app_instance is not None:
             app_instance.removeEventFilter(key_filter)
-

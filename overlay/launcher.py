@@ -2,30 +2,34 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
 import re
 import stat
 import sys
+from pathlib import Path
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
-from .native_layer import LATENCY_LAYER_NAME
-from .native_layer import native_layer_dirs
+from .native_layer import LATENCY_LAYER_NAME, native_layer_dirs
 from .shim_deploy import (
     deploy_nvapi_shim,
     nvapi_shim_artifact,
     prefix_system32,
     spawn_refront_watcher,
 )
-from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .state import (
-    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
+    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_STATE_ENV,
     clear_overlay_override,
     overlay_state_path,
 )
+from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
-from .wrapper_tokens import LUTRIS_GAME_ID_ENV, LUTRIS_ID_FLAG_PREFIX
+from .wrapper_tokens import (
+    GAME_KEY_ENV,
+    GAME_KEY_FLAG_PREFIX,
+    LEGACY_LUTRIS_ID_FLAG_PREFIX,
+    game_key_from_flag,
+)
 
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
@@ -82,7 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     # Wine reports a Windows PID while the Vulkan layer reports the host PID.
     # Both producers inherit this wrapper/session identity so the daemon can
     # merge their complementary samples without mistaking them for two games.
-    env[TELEMETRY_SESSION_ENV] = str(os.getpid())
+    if env.get("FLATPAK_ID"):
+        from runtime.daemon_client import client_host_pid
+
+        env[TELEMETRY_SESSION_ENV] = str(client_host_pid())
+    else:
+        env[TELEMETRY_SESSION_ENV] = str(os.getpid())
     args = _consume_wrapper_flags(args, env)
     # Every launch starts from its own launch-time overlay setting: a live
     # override left behind by a previous session must not leak into this one.
@@ -155,15 +164,18 @@ def _consume_wrapper_flags(args: list[str], env: dict[str, str]) -> list[str]:
     (gamescope after its "--") cannot start an env assignment as a program.
     The flag carries the same meaning, so it lands in the same env vars.
 
-    The Lutris tab also injects the game identity here. Steam publishes
+    The library tab also injects the game identity here. Steam publishes
     SteamAppId in the environment, but Lutris regenerates LUTRIS_GAME_UUID on
-    every launch, so the id it stores its settings under has to travel as a
-    flag we wrote ourselves.
+    every launch and Heroic publishes nothing, so the key those launchers
+    store their settings under has to travel as a flag we wrote ourselves.
     """
-    while args and (
-        args[0].startswith("--pb-overlay=")
-        or args[0].startswith("--pb-ingame-latency=")
-        or args[0].startswith(LUTRIS_ID_FLAG_PREFIX)
+    while args and args[0].startswith(
+        (
+            "--pb-overlay=",
+            "--pb-ingame-latency=",
+            GAME_KEY_FLAG_PREFIX,
+            LEGACY_LUTRIS_ID_FLAG_PREFIX,
+        )
     ):
         flag = args.pop(0)
         name, _, value = flag.partition("=")
@@ -178,8 +190,12 @@ def _consume_wrapper_flags(args: list[str], env: dict[str, str]) -> list[str]:
             if value in _TRUTHY | _FALSEY:
                 env[INGAME_LATENCY_ENV_ALIAS] = value
                 env[INGAME_LATENCY_ENV] = value
-        elif value:
-            env[LUTRIS_GAME_ID_ENV] = value
+        else:
+            # Either spelling of the identity flag, including the Lutris-only
+            # one sitting in prefix_commands configured by earlier versions.
+            key = game_key_from_flag(flag)
+            if key:
+                env[GAME_KEY_ENV] = key
     return args
 
 
@@ -190,21 +206,23 @@ def _apply_game_profile(env: dict[str, str]) -> None:
     # pressure-vessel, so the daemon socket is reachable. Any failure is only
     # reported: it must never block a game launch.
     #
-    # A launch belongs to exactly one launcher: the Lutris id only exists when
-    # the Lutris tab wrote it onto argv, and Steam's app id only when Steam set
-    # it in the environment.
+    # A launch belongs to exactly one launcher: the game key only exists when
+    # the library tab wrote it onto argv, and Steam's app id only when Steam
+    # set it in the environment.
     try:
-        if env.get(LUTRIS_GAME_ID_ENV):
-            from integrations.lutris.game_runtime import (
-                apply_lutris_game_runtime_profile,
-            )
+        game_key = str(env.get(GAME_KEY_ENV) or "").strip()
+        if game_key:
+            from integrations.launchers.runtime_profile import apply_game_key_profile
 
-            apply_lutris_game_runtime_profile(env)
+            if env.get("FLATPAK_ID"):
+                apply_game_key_profile(game_key, watch_pid=int(env[TELEMETRY_SESSION_ENV]))
+            else:
+                apply_game_key_profile(game_key)
             return
         from integrations.steam.game_runtime import apply_game_runtime_profile
 
         apply_game_runtime_profile(env)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
             file=sys.stderr,
@@ -391,7 +409,7 @@ def _apply_overlay_enable_alias(env: dict[str, str]) -> None:
 def _remove_mangohud_environment(env: dict[str, str]) -> None:
     for key in tuple(env):
         upper = key.upper()
-        if upper.startswith("MANGOHUD") or upper.startswith("MANGOAPP"):
+        if upper.startswith(("MANGOHUD", "MANGOAPP")):
             env.pop(key, None)
 
     preload = str(env.get("LD_PRELOAD") or "").strip()

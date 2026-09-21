@@ -23,13 +23,10 @@ marker wire format the bridge already parses.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 import ctypes
-from contextlib import contextmanager
 import fcntl
 import json
 import os
-from pathlib import Path
 import select
 import shutil
 import struct
@@ -37,7 +34,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 # Recognises our own DLL; the banner string is compiled into the shim (see
 # native/nvapi_shim/src/nvapi_shim.cpp).
@@ -542,7 +541,7 @@ class _Nvapi64Notifier:
             pass
 
 
-def _open_notifier(system32: Path | None) -> "_Nvapi64Notifier | None":
+def _open_notifier(system32: Path | None) -> _Nvapi64Notifier | None:
     if system32 is None:
         return None
     try:
@@ -739,7 +738,7 @@ def watch_and_refront(
                 pass
 
 
-def spawn_refront_watcher(env: dict[str, str]) -> "subprocess.Popen | None":
+def spawn_refront_watcher(env: dict[str, str]) -> subprocess.Popen | None:
     """Launch ``watch_and_refront`` as a detached process that outlives exec().
 
     The wrapper ``os.execvpe``s into Proton right after configuring the env, so

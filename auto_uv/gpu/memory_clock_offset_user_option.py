@@ -6,12 +6,11 @@ Afterburner-style cap only applies when the driver does not expose a range.
 
 from __future__ import annotations
 
-from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
-
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     adaptive_tier_option_key,
 )
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
@@ -19,7 +18,7 @@ def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
     if policy_controller is not None:
         try:
             driver_range = policy_controller.get_memory_clock_offset_range_mhz()
-        except Exception:
+        except Exception:  # noqa: BLE001
             driver_range = None
         if driver_range:
             try:

@@ -8,8 +8,8 @@ import pytest
 
 from integrations.launchers.library import (
     SORT_ALPHABETICAL,
-    SORT_LAUNCHER,
     SORT_INSTALLED,
+    SORT_LAUNCHER,
     SORT_PLAYTIME,
     SORT_RECENT,
     LauncherSource,
@@ -119,8 +119,8 @@ def test_most_played_orders_by_hours_and_parks_the_unplayed() -> None:
 def test_recently_installed_parks_launchers_that_do_not_report_it() -> None:
     """A zero stamp means "this launcher does not say", not 1970.
 
-    Heroic and Lutris record the install itself; Steam refreshes its stamp on
-    every update. A launcher that reports nothing must not jump to the top.
+    Lutris records the install itself; Steam refreshes its stamp on every
+    update. A launcher that reports nothing must not jump to the top.
     """
     games = [
         _game("Unknown", installed_at=0),
@@ -190,12 +190,31 @@ def test_the_launcher_order_is_the_declared_one() -> None:
     assert available_sources((first, second)) == (first, second)
 
 
-def test_both_real_sources_satisfy_the_contract() -> None:
-    from integrations.lutris.library_source import LutrisLibrarySource
-    from integrations.steam.library_source import SteamLibrarySource
+def test_all_registered_sources_satisfy_live_overlay_contract(tmp_path, monkeypatch) -> None:
+    from integrations.launchers import live_overlay
+    from integrations.launchers.registry import build_sources
+    from integrations.launchers.wrapper_manager import ApplyResult
 
-    for source in (SteamLibrarySource(), LutrisLibrarySource()):
+    override = tmp_path / "overlay-override"
+    monkeypatch.setenv("PENGUIN_BURNER_OVERLAY_OVERRIDE", str(override))
+    for source in build_sources(home=tmp_path):
         assert isinstance(source, LauncherSource)
+        assert isinstance(source, live_overlay.LiveOverlaySource)
+        assert type(source).after_bulk_write is live_overlay.LiveOverlaySource.after_bulk_write
+        monkeypatch.setattr(source, "running_game_ids", lambda: frozenset({"game"}))
+        monkeypatch.setattr(live_overlay, "wrapped_game_keys",
+                            lambda source=source: frozenset({f"{source.launcher_id}:game"}))
+        for enabled in (True, False):
+            monkeypatch.setattr(source, "saved_overlay", lambda _id, enabled=enabled: enabled)
+            result = source.after_setting_write("game", "set_game_overlay")
+            assert result.ok and override.read_text() == str(int(enabled))
+            override.unlink()
+            result = source.after_bulk_write("set_all_games_overlay",
+                                            ApplyResult(True, "saved", applied_game_ids=("game",)))
+            assert result.ok and override.read_text() == str(int(enabled))
+            override.unlink()
+        assert source.after_bulk_write("set_all_games_overlay", ApplyResult(False, "failed")) is None
+        assert not override.exists()
 
 
 def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
@@ -217,11 +236,11 @@ def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
     source = lutris_source.LutrisLibrarySource(home=tmp_path)
     assert source.can_launch is False  # not probed while the window builds
 
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: True)
     source.refresh()
     assert source.can_launch is True
 
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: False)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: False)
     source.refresh()
     assert source.can_launch is False
 
@@ -230,6 +249,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     tmp_path, monkeypatch
 ) -> None:
     from types import SimpleNamespace
+
     from integrations.lutris import library_source as lutris_source
 
     binary = tmp_path / "Game.x86_64"
@@ -239,14 +259,16 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     game = SimpleNamespace(
         game_id="3", display_name="Game", runner_label="linux",
         directory=str(tmp_path), config_path=config, last_played=0,
-        installed_at=0, playtime_hours=0, cover_path=None, ready=True,
+        installed_at=0, playtime_hours=0, art_path=None, ready=True,
     )
     row = SimpleNamespace(
         game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)
     )
-    manager = SimpleNamespace(refresh=lambda: None, rows=lambda: [row])
+    manager = SimpleNamespace(
+        refresh=lambda: None, rows=lambda: [row], compatibility=None,
+    )
     source = lutris_source.LutrisLibrarySource(manager=manager)
-    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda home=None: True)
     source.refresh()
     assert source.games()[0].overlay_supported is False
 
@@ -384,14 +406,14 @@ def test_the_steam_adapter_carries_the_wrapper_state_off_the_launch_options(
 
 def test_the_lutris_adapter_reports_hours_straight_from_the_library() -> None:
     """Lutris already records hours, so nothing converts them twice."""
-    from integrations.lutris.config_store import (
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from integrations.launchers.wrapper_manager import (
         SOURCE_GAME,
-        EffectivePrefixCommand,
+        EffectiveCommand,
+        LauncherGameRow,
     )
     from integrations.lutris.library import InstalledLutrisGame
     from integrations.lutris.library_source import LutrisLibrarySource
-    from integrations.lutris.manager import LutrisGameRow
-    from integrations.lutris.settings import LutrisGameSetting
 
     game = InstalledLutrisGame(
         game_id="27",
@@ -410,10 +432,10 @@ def test_the_lutris_adapter_reports_hours_straight_from_the_library() -> None:
     )
     source = LutrisLibrarySource(manager=object())
     source._rows = (
-        LutrisGameRow(
+        LauncherGameRow(
             game=game,
-            setting=LutrisGameSetting(enabled=False),
-            effective=EffectivePrefixCommand(value="", source=SOURCE_GAME),
+            setting=LauncherGameSetting(enabled=False),
+            effective=EffectiveCommand(value="", source=SOURCE_GAME),
         ),
     )
 
@@ -422,6 +444,7 @@ def test_the_lutris_adapter_reports_hours_straight_from_the_library() -> None:
     assert mapped.launcher == "lutris"
     assert mapped.game_id == "27"
     assert mapped.playtime_hours == 38.8
+    assert mapped.installed_at == 1783870852
     assert mapped.subtitle == "wine"
     assert mapped.wrapped is False
     assert mapped.enabled is False
@@ -568,7 +591,7 @@ def test_the_library_tab_never_names_a_launcher_in_its_code() -> None:
 
 def test_the_steam_adapter_carries_the_install_stamp_into_the_library_row() -> None:
     """Steam's LastUpdated is what the Recently installed sort orders on."""
-    from typing import cast
+    from typing import Any, cast
 
     from integrations.steam.library_source import SteamLibrarySource
 
@@ -614,7 +637,6 @@ class _SteamStub:
     def __init__(self, *, marker=True, running=True, cdp=True, user="Ernold"):
         self._marker, self._running, self._cdp, self._user = marker, running, cdp, user
         self.reapplied: list[str] = []
-        self.overlays_reapplied: list[str] = []
 
     def marker_present(self):
         return self._marker
@@ -638,11 +660,9 @@ class _SteamStub:
 
     def hot_reapply(self, app_id):
         self.reapplied.append(app_id)
-        return None
 
-    def hot_reapply_overlay(self, app_id):
-        self.overlays_reapplied.append(app_id)
-        return None
+    def running_game_ids(self):
+        return frozenset()
 
 
 def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
@@ -664,7 +684,6 @@ def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
         source.after_setting_write("620", setter)
 
     assert manager.reapplied == ["620", "620", "620"]
-    assert manager.overlays_reapplied == ["620"]
 
 
 def _row(
@@ -736,7 +755,7 @@ def test_a_proton_build_steam_will_not_list_is_still_shown() -> None:
 
     field = _field(source, _row(compat_tool="GE-Proton9-20"), "compat_tool")
 
-    assert ("GE-Proton9-20", "GE-Proton9-20") in field.choices
+    assert ("GE-Proton9-20", "GE-Proton9-20 (not listed)") in field.choices
     assert field.value == "GE-Proton9-20"
 
 
@@ -777,14 +796,17 @@ def test_lutris_needs_no_setup_because_it_owns_its_own_files() -> None:
 
 def test_launchers_sharing_a_bulk_key_mean_the_same_thing_by_it() -> None:
     """The tab merges by key, so two libraries are still one "disable all"."""
+    from integrations.heroic.library_source import HeroicLibrarySource
     from integrations.lutris.library_source import LutrisLibrarySource
     from integrations.steam.library_source import SteamLibrarySource
 
     steam = {a.key: a for a in SteamLibrarySource(manager=_SteamStub()).bulk_actions()}
     lutris = {a.key: a for a in LutrisLibrarySource().bulk_actions()}
 
+    heroic = {a.key: a for a in HeroicLibrarySource().bulk_actions()}
+    assert heroic == steam == lutris
     shared = set(steam) & set(lutris)
-    assert shared == {"enable_all", "disable_all"}
+    assert shared == {"enable_all", "disable_all", "overlay_all", "overlay_none"}
     for key in shared:
         assert steam[key].label == lutris[key].label
         assert steam[key].value == lutris[key].value

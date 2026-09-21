@@ -19,17 +19,6 @@ def _wrap_command_for_live_output(command: list[str]) -> list[str]:
     return [stdbuf, "-oL", "-eL", *command]
 
 
-def _child_process_group_preexec(
-    child_preexec_fn,
-):
-    def _preexec() -> None:
-        os.setsid()
-        if child_preexec_fn is not None:
-            child_preexec_fn()
-
-    return _preexec
-
-
 def _terminate_process_group(
     process: subprocess.Popen | None,
     *,
@@ -54,17 +43,17 @@ def _terminate_process_group(
         except ProcessLookupError:
             return
         process.wait(timeout=timeout_s)
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             process.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
 
 def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
     try:
         executable_path, _workdir = resolve_q2rtx_executable()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return set()
     executable_text = str(executable_path)
     result = subprocess.run(
@@ -113,7 +102,7 @@ def cleanup_managed_q2rtx_processes(
             stopped += 1
         except ProcessLookupError:
             continue
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if log is not None:
                 log(f"Q2RTX cleanup: failed to terminate process group {pgid}: {exc}")
     deadline = time.monotonic() + 2.0
@@ -124,7 +113,7 @@ def cleanup_managed_q2rtx_processes(
                 os.killpg(int(pgid), 0)
             except ProcessLookupError:
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
             live_groups.append(pgid)
         if not live_groups:
@@ -135,13 +124,13 @@ def cleanup_managed_q2rtx_processes(
             os.killpg(int(pgid), 0)
         except ProcessLookupError:
             continue
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             continue
         try:
             os.killpg(int(pgid), signal.SIGKILL)
         except ProcessLookupError:
             pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if log is not None:
                 log(f"Q2RTX cleanup: failed to kill process group {pgid}: {exc}")
     if log is not None and stopped:

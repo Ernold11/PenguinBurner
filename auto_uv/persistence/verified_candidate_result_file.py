@@ -5,15 +5,20 @@ The latest file feeds resume handoff and the candidate list feeds the final-choi
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
-from .auto_uv_persisted_json_files import safe_json_write, verified_candidates_path
-from .auto_uv_persisted_json_files import auto_uv_user_config_dir
 from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
+
 from ..curve.base_vf_curve import read_base_vf_points
 from ..curve.vf_curve_flattening import build_flatten_target_for_plan
+from .auto_uv_persisted_json_files import (
+    auto_uv_user_config_dir,
+    safe_json_write,
+    verified_candidates_path,
+)
 
 
 def write_latest_verified_candidate(
@@ -241,7 +246,7 @@ def core_oc_mhz(
 ) -> int | None:
     if base_probe is None or base_probe.avg_core_clock_mhz is None:
         return None
-    return int(round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz)))
+    return round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz))
 
 
 def artifact_points(plan: list[dict]) -> list[dict]:
@@ -258,11 +263,11 @@ def artifact_points(plan: list[dict]) -> list[dict]:
 
 
 def float_or_none(value: object) -> float | None:
-    return None if value is None else float(value)
+    return None if value is None else float(cast(Any, value))
 
 
 def int_or_zero(value: object) -> int:
-    return 0 if value is None else int(value)
+    return 0 if value is None else int(cast(Any, value))
 
 
 def str_or_none(value: object) -> str | None:

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_host_integration
+from integrations.launchers.compatibility import (
+    CompatibilitySelection,
+    CompatibilityTool,
+    compatibility_field,
+)
 from integrations.launchers.desktop_icons import desktop_icon
 from integrations.launchers.library import (
-    FIELD_CHOICE,
     FIELD_MULTILINE,
     GROUP_COMMAND,
     WRITE_NEEDS_SETUP,
@@ -21,17 +24,20 @@ from integrations.launchers.library import (
     LauncherField,
     LauncherWriteState,
     LibraryGame,
+    library_bulk_actions,
 )
+from integrations.launchers.live_overlay import LiveOverlaySource
 
+from .identity import STEAM_LAUNCHER_ID
 from .launch_options import injection_state
 from .library import steam_playtime_hours
 from .manager import SteamGameRow, SteamIntegrationManager
 from .process import launch_steam_game, restart_steam
-from .users import default_steam_root
+from .users import default_steam_root, steam_installation
 
 
-class SteamLibrarySource:
-    launcher_id = "steam"
+class SteamLibrarySource(LiveOverlaySource):
+    launcher_id = STEAM_LAUNCHER_ID
     display_name = "Steam"
     #: Shipped fallback, used when the machine has no Steam icon of its own.
     icon_asset = "tab-steam.png"
@@ -122,7 +128,7 @@ class SteamLibrarySource:
             detail=row,
         )
 
-    # -- what only Steam has -------------------------------------------------
+    # -- launcher fields -----------------------------------------------------
 
     def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
         row = game.detail
@@ -134,52 +140,30 @@ class SteamLibrarySource:
         )
 
     def _compat_tool_field(self, row: SteamGameRow) -> LauncherField:
-        """Proton, chosen through Steam itself.
-
-        Only reachable while Steam is up and answering on CDP: the selection
-        lives in Steam's own state, not in a file we could edit, so with the
-        client down there is nothing to change and nothing to list.
-        """
+        """Steam's live compatibility settings, rendered by the shared picker."""
         live = bool(self._probe.get("cdp_ready"))
         # A game Steam calls native has nothing to pick a Proton for -- unless
         # the user already forced one, in which case they keep the way back.
         native = bool(getattr(row.game, "is_native_linux", False)) and not row.game.compat_tool
-        choices: list[tuple[str, str]] = [("", self._compat_default_label(row))]
-        if live:
-            choices.extend(self.manager.available_compat_tools(row.game.app_id))
-        selected = str(row.game.compat_tool or "")
-        if selected and selected not in {name for name, _label in choices}:
-            # Steam is using something we could not list -- a hand-installed
-            # Proton build. Show it rather than silently reading as "default".
-            choices.append((selected, selected))
-        return LauncherField(
-            key="compat_tool",
-            kind=FIELD_CHOICE,
-            title="Compatibility tool",
-            subtitle=(
+        choices = self.manager.available_compat_tools(row.game.app_id) if live else ()
+        return compatibility_field(
+            CompatibilitySelection(
+                value=str(row.game.compat_tool or ""),
+                default_label=self._compat_default_label(row),
+                supported=not native,
+            ),
+            tuple(CompatibilityTool(value, label) for value, label in choices),
+            guidance=(
                 "Keeps Steam's current choice by default. Selecting another "
                 "entry uses Steam's own compatibility-tool setting for this game."
-                if live and not native
-                else "Steam reports this game as native Linux; it runs without "
-                "a compatibility tool."
-                if native
-                else "Needs live apply: Proton is Steam's own setting, so the "
-                "client has to be running and connected to change it."
             ),
-            setter="set_game_compat_tool",
-            value=selected,
-            choices=tuple(choices),
-            enabled=live and not native,
-            group=GROUP_COMMAND,
+            error=("" if live else "Needs live apply: Proton is Steam's own setting, so the "
+                   "client has to be running and connected to change it."),
         )
 
     @staticmethod
     def _compat_default_label(row: SteamGameRow) -> str:
-        """What the empty choice means for this game, spelled out.
-
-        "Steam default" alone tells the user nothing about what will actually
-        run, so name the tool Steam would pick -- or say the game needs none.
-        """
+        """Describe Steam's effective default without changing its override."""
         if row.game.compat_tool:
             return "Steam default"
         effective = str(getattr(row.game, "effective_compat_tool_label", "") or "")
@@ -243,60 +227,13 @@ class SteamLibrarySource:
 
     def restart(self):
         """Restart the Steam client. Named here because write_state points at it."""
-        return restart_steam()
+        return restart_steam(home=self._home)
 
     def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
-        # ``affects`` and ``enabled_only`` are what let the tab grey out a
-        # direction that would change nothing -- "enable all" when everything
-        # already is -- without knowing what any of these actions mean.
-        return (
-            LauncherBulkAction(
-                key="enable_all",
-                label="Enable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=True,
-                affects="enabled",
-                confirm=(
-                    "Add the PenguinBurner wrapper to the launch command of "
-                    "{count} {games}?\n\nThe In-Game overlay stays off, and "
-                    "MangoHud is disabled in wrapped games. \"Disable "
-                    "PenguinBurner for all games\" restores each game's own "
-                    "launch command."
-                ),
-            ),
-            LauncherBulkAction(
-                key="disable_all",
-                label="Disable PenguinBurner for all games",
-                setter="set_all_games_enabled",
-                value=False,
-                affects="enabled",
-                confirm=(
-                    "Remove the PenguinBurner wrapper from {count} {games} and "
-                    "restore their own launch command?"
-                ),
-            ),
-            LauncherBulkAction(
-                key="overlay_all",
-                label="Show In-Game overlay for enabled games",
-                setter="set_all_games_overlay",
-                value=True,
-                affects="overlay",
-                enabled_only=True,
-                confirm=(
-                    "Show the In-Game overlay in {count} PenguinBurner-enabled "
-                    "{games}?"
-                ),
-            ),
-            LauncherBulkAction(
-                key="overlay_none",
-                label="Hide In-Game overlay for all games",
-                setter="set_all_games_overlay",
-                value=False,
-                affects="overlay",
-                enabled_only=True,
-                confirm="Hide the In-Game overlay in {count} {games}?",
-            ),
-        )
+        return library_bulk_actions()
+
+    def saved_overlay(self, game_id: str) -> bool:
+        return self.manager.game_setting(game_id).overlay
 
     def after_setting_write(self, game_id: str, setter: str):
         """Push profile changes into a Steam game that is already running.
@@ -305,24 +242,19 @@ class SteamLibrarySource:
         visibility is separate from the daemon profile. The remaining common
         profile controls can be re-issued to the daemon in place.
         """
-        if setter == "set_game_overlay":
-            return self.manager.hot_reapply_overlay(game_id)
         if setter not in self._LIVE_PROFILE_SETTERS:
-            return None
+            return super().after_setting_write(game_id, setter)
         return self.manager.hot_reapply(game_id)
 
     # -- launching -----------------------------------------------------------
-    #
-    # Steam is the only launcher here that can start a game on our behalf, so
-    # everything about it lives in this adapter rather than in the library tab.
 
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Steam to start a game. Returns (started, what to tell the user)."""
         try:
-            ensure_host_integration()
+            steam_installation(self._home).ensure_integration()
         except (OSError, RuntimeError) as error:
             return False, f"FAILED to repair the PenguinBurner Steam integration ({error})"
-        if launch_steam_game(game_id):
+        if launch_steam_game(game_id, home=self._home):
             return True, "launching via Steam…"
         return False, "FAILED to launch (steam not available)"
 

@@ -3,30 +3,34 @@ from __future__ import annotations
 from auto_uv.scan_mode.auto_uv_mode import adaptive_tier_option_key
 from auto_uv.scan_mode.uv_limits import uv_limit_clock_target_range_for_gpu
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from ..assets import asset_image_path
 from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
-from ui.features.tuning.tuning import AUTO_UV_PRESET_ADAPTIVE
-from ui.features.tuning.tuning import AUTO_UV_PRESET_BALANCED
-from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
-from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
-from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from ui.features.tuning.tuning import auto_uv_voltage_floor_range_mv
-from ui.features.tuning.tuning import auto_uv_nvml_info_text
-from ui.features.tuning.tuning import auto_uv_performance_preset_label
-from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
-from ui.features.tuning.tuning import auto_uv_target_default
-from ui.features.tuning.tuning import auto_uv_power_limit_default
-from ui.features.tuning.tuning import auto_uv_preset
-from ui.features.tuning.tuning import auto_uv_scan_estimate_minutes
-from ui.features.tuning.tuning import auto_uv_scan_estimate_text
-from ui.features.tuning.tuning import memory_offset_mhz_range
-from ui.features.tuning.tuning import read_auto_uv_nvml_info
-from .error_details import qt_flags
-from .form_rows import add_form_row
-from .form_rows import dialog_form_layout
-from .form_rows import install_spinbox_enter_commit_filter
-from .form_rows import wrapped_tooltip
+from ui.features.tuning.tuning import (
+    AUTO_UV_PRESET_ADAPTIVE,
+    AUTO_UV_PRESET_BALANCED,
+    AUTO_UV_PRESET_EFFICIENCY,
+    AUTO_UV_PRESET_PERFORMANCE,
+    GPU_UNDERVOLTING_PURPOSE_TEXT,
+    auto_uv_nvml_info_text,
+    auto_uv_performance_preset_label,
+    auto_uv_performance_preset_tooltip,
+    auto_uv_power_limit_default,
+    auto_uv_preset,
+    auto_uv_scan_estimate_minutes,
+    auto_uv_scan_estimate_text,
+    auto_uv_target_default,
+    auto_uv_voltage_floor_range_mv,
+    memory_offset_mhz_range,
+    read_auto_uv_nvml_info,
+)
 
+from ..assets import asset_image_path
+from .error_details import qt_flags
+from .form_rows import (
+    add_form_row,
+    dialog_form_layout,
+    install_spinbox_enter_commit_filter,
+    wrapped_tooltip,
+)
 
 SCAN_SCOPE_FULL = "full"
 SCAN_SCOPE_SELECTED_PROFILE = "selected-profile"
@@ -72,17 +76,14 @@ def select_scan_tuning(
     def gpu_name_for(index: int) -> str | None:
         try:
             name = gpu_client_for(index).capabilities().identity.name.strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return name or None
 
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
     gpu_combo.setMinimumWidth(360)
-    size_adjust_policy = getattr(
-        getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox),
-        "AdjustToContents",
-    )
+    size_adjust_policy = getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox).AdjustToContents
     gpu_combo.setSizeAdjustPolicy(size_adjust_policy)
     for choice in gpu_choices:
         gpu_combo.addItem(choice.label, int(choice.index))
@@ -304,17 +305,17 @@ def select_scan_tuning(
                 "Voltage target",
                 "mV",
                 5,
-                "Voltage target for this tier after the normal voltage sweep. The rising "
-                "tail can operate above this anchor; it is not a strict voltage limit.",
+                ("Voltage target for this tier after the normal voltage sweep. The rising "
+                "tail can operate above this anchor; it is not a strict voltage limit."),
             ),
             (
                 "clock",
                 "Core clock target",
                 "MHz",
                 15,
-                "Clock target for this tier. A lower custom target is tested after the "
+                ("Clock target for this tier. A lower custom target is tested after the "
                 "voltage sweep; the two-bin tail adds nominal boost headroom. "
-                "The scan may choose a lower tested clock if the target is unsafe.",
+                "The scan may choose a lower tested clock if the target is unsafe."),
             ),
         ):
             spin = QtWidgets.QSpinBox()
@@ -659,9 +660,9 @@ def select_scan_tuning(
     )
     start_button = buttons.addButton(
         "Start Auto Undervolt",
-        getattr(role_enum, "AcceptRole"),
+        role_enum.AcceptRole,
     )
-    buttons.addButton(getattr(standard_enum, "Cancel"))
+    buttons.addButton(standard_enum.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     start_button.setDefault(True)
@@ -787,12 +788,12 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
     dependable while leaving the buttons' normal hover and click events alone.
     """
     event_types = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
-    enter_type = getattr(event_types, "Enter")
-    leave_type = getattr(event_types, "Leave")
+    enter_type = event_types.Enter
+    leave_type = event_types.Leave
     targets = tuple(widgets)
 
     class _HoverTooltipFilter(QtCore.QObject):
-        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+        def eventFilter(self, watched, event):
             if watched not in targets:
                 return False
             if event.type() == enter_type:
@@ -819,24 +820,15 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
 
 
 def _aspect_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt),
-        "KeepAspectRatio",
-    )
+    return getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt).KeepAspectRatio
 
 
 def _transform_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "TransformationMode", QtCore.Qt),
-        "SmoothTransformation",
-    )
+    return getattr(QtCore.Qt, "TransformationMode", QtCore.Qt).SmoothTransformation
 
 
 def _horizontal_orientation(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "Orientation", QtCore.Qt),
-        "Horizontal",
-    )
+    return getattr(QtCore.Qt, "Orientation", QtCore.Qt).Horizontal
 
 
 def _sync_power_limit_controls(controls: dict, info) -> None:
@@ -860,7 +852,7 @@ def _sync_power_limit_controls(controls: dict, info) -> None:
         return
 
     min_w, max_w, default_w = values
-    page_step = max(1, int(round((max_w - min_w) / 6.0)))
+    page_step = max(1, round((max_w - min_w) / 6.0))
     slider.blockSignals(True)
     spin.blockSignals(True)
     slider.setRange(min_w, max_w)
@@ -890,7 +882,7 @@ def _power_limit_control_values(info) -> tuple[int, int, int] | None:
     if default_w is None:
         default_w = _positive_rounded_int(getattr(info, "power_limit_w", None))
     if default_w is None:
-        default_w = int(round((min_w + max_w) / 2.0))
+        default_w = round((min_w + max_w) / 2.0)
     default_w = max(min_w, min(max_w, default_w))
     return min_w, max_w, default_w
 
@@ -899,7 +891,7 @@ def _positive_rounded_int(value) -> int | None:
     if value is None:
         return None
     try:
-        rounded = int(round(float(value)))
+        rounded = round(float(value))
     except (TypeError, ValueError):
         return None
     return rounded if rounded > 0 else None

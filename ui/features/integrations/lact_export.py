@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from integrations.afterburner.import_fan_curve import load_config
-from integrations.lact.export import LactExportError
-from integrations.lact.export import write_lact_nvidia_config
 from common.penguin_burner_paths import default_runtime_config_path
+from integrations.afterburner.import_fan_curve import load_config
+from integrations.lact.export import LactExportError, write_lact_nvidia_config
 
 LACT_CONFIG_FILENAME = "config.yaml"
 
@@ -73,7 +72,7 @@ def write_lact_profile_config(
 def current_fan_config() -> dict:
     try:
         config = load_config(default_runtime_config_path())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     fan = config.get("fan", {}) if isinstance(config, dict) else {}
     return dict(fan) if isinstance(fan, dict) else {}

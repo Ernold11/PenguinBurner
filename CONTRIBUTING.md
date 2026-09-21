@@ -29,6 +29,25 @@ python -m pip install --user -e '.[test]'
 QT_QPA_PLATFORM=offscreen python -m pytest tests/
 ```
 
+Build the daemon before the Python suite so the socket integration tests run
+instead of being skipped:
+
+```bash
+scripts/build-daemon.sh
+```
+
+Install the same quality tools used by CI, then run the blocking static checks:
+
+```bash
+python -m pip install --user -r requirements-quality.txt
+scripts/check-feature-static-analysis.sh
+```
+
+The routine also requires `ripgrep`, `scc`, `cloc`, and `tokei` on `PATH`.
+Ruff 0.16.8, Pyright 1.1.414, and Vulture 2.16 are pinned in
+`requirements-quality.txt`; update the pins and Ruff's `required-version` in
+`pyproject.toml` together. Repository-wide Pyright errors fail the check.
+
 For changes under `burnerd/`, also run the Rust gates:
 
 ```bash
@@ -48,10 +67,45 @@ python -m pytest tests/test_docs_cli_flags.py
 - Lint with `ruff` before opening a PR.
 - Keep user docs in `docs/features/` concise; internal notes stay outside the tracked repo.
 
+## Adding a launcher
+
+Implement `LauncherSource` and register it in `integrations/launchers/registry.py`.
+Config-file launchers extend `WrapperLibrarySource`; other adapters inherit
+`LiveOverlaySource`. Supply `saved_overlay(game_id)` and `running_game_ids()`;
+extend setting follow-ups through `super()` and inherit the bulk follow-up.
+Use the standard wrapper with its namespaced game identity.
+Return successfully saved IDs in bulk results, including partial failures.
+The shared handler owns live visibility writes and wrapper checks for all
+launchers. Do not duplicate it or silently fall back to next-launch-only updates.
+Unknown or unwrapped sessions must report that live application is unconfirmed.
+Keep the registered-launcher contract test and real Qt workflow tests passing.
+
 ## Pull requests
 
 - Branch from `main`, keep PRs focused, and describe what you changed and why.
 - If you touch tuning or hardware paths, say how you tested on real hardware.
+
+Every pull request runs Python quality/tests, Rust formatting/Clippy/tests and
+dependency checks, Arch/CachyOS, supported Fedora and Ubuntu package builds,
+Flatpak packaging, host-Python compatibility, and the daemon lifecycle test.
+These checks are required on `main`, including for administrators, with the
+branch required to be current. There are no path filters or allowed failures
+on these gates. Rawhide/devel and published-channel installation checks remain
+scheduled drift checks rather than PR gates.
+
+The required status names and protection policy are recorded in
+`.github/branch-protection.json`. Keep that file aligned with workflow job
+names when changing CI; changing the file alone does not update GitHub's
+repository settings.
+
+CachyOS CI refreshes signed databases from one configured mirror at a time.
+If a database and signature disagree, it clears that failed CachyOS sync cache
+and tries another mirror (up to six). It requires database signatures and
+stops before the package build if no mirror verifies. A repository outage is
+reported as an infrastructure failure, never converted into a passing check.
+Once a database verifies, the chosen mirror stays first and other configured
+mirrors remain available for signed package downloads, covering mirrors that
+have synced a database before all its referenced packages.
 
 ## Hardware safety
 

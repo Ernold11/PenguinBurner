@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Any, cast
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
 from auto_uv.scan_mode.auto_uv_mode import (
@@ -17,7 +18,6 @@ from ui.features.auto_uv.final_choice_ranking import (
     final_choice_shows_oc_column,
     sort_candidates_for_final_choice,
 )
-
 
 InputFn = Callable[[str], str]
 LogFn = Callable[[str], None]
@@ -392,7 +392,10 @@ def _recovery_decision_text(recovery_decision: object) -> str:
 
 def _duration_s(payload: dict) -> int:
     try:
-        return max(1, int(round(float(payload.get("final_verification_duration_s")))))
+        return max(
+            1,
+            round(float(cast(Any, payload.get("final_verification_duration_s")))),
+        )
     except (TypeError, ValueError):
         return 1
 
@@ -416,7 +419,7 @@ def _number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     precision = max(0, min(int(precision), 4))
-    return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
+    return str(round(number)) if precision <= 0 else f"{number:.{precision}f}"
 
 
 def _float_or_none(value) -> float | None:

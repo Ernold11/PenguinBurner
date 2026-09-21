@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from ui.features.tuning.verify import DEFAULT_VERIFY_DURATION_S
-from ui.features.tuning.verify import MAX_VERIFY_DURATION_S
+from ui.features.tuning.verify import DEFAULT_VERIFY_DURATION_S, MAX_VERIFY_DURATION_S
 
 
 def select_verify_options(*, QtWidgets, parent, profile_label: str) -> dict | None:
@@ -28,8 +27,8 @@ def select_verify_options(*, QtWidgets, parent, profile_label: str) -> dict | No
         "StandardButton",
         QtWidgets.QDialogButtonBox,
     )
-    start_button = buttons.addButton("Start Verification", getattr(role_enum, "AcceptRole"))
-    buttons.addButton(getattr(standard_enum, "Cancel"))
+    start_button = buttons.addButton("Start Verification", role_enum.AcceptRole)
+    buttons.addButton(standard_enum.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     start_button.setDefault(True)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import os
 import signal
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 
 class ScanController:

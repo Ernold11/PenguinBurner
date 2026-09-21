@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
+from auto_uv.initial_check.auto_uv_hardware_initial_check import (
+    require_auto_uv_initial_check,
+)
 from auto_uv.main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
 from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
-from auto_uv.initial_check.auto_uv_hardware_initial_check import (
-    require_auto_uv_initial_check,
-)
 from cli.final_choice_text import handle_cli_final_choice_request
 from common.penguin_burner_errors import NvmlError
 from overlay.config import STEAM_LAUNCH_OPTION
@@ -61,7 +61,7 @@ def run_auto_uv_foreground_command(
     auto_uv_runtime_options: dict,
     interactive: bool,
     program_file: str | Path | None = None,
-    journal_hours: int | float = DEFAULT_JOURNAL_HOURS,
+    journal_hours: float = DEFAULT_JOURNAL_HOURS,
     prompt_yes_no: Callable[..., bool] | None = None,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
@@ -167,7 +167,7 @@ def maybe_prompt_post_scan_runtime_actions(
     args,
     interactive: bool,
     program_file: str | Path | None,
-    journal_hours: int | float,
+    journal_hours: float,
     prompt_yes_no: Callable[..., bool] | None,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
@@ -230,8 +230,8 @@ def maybe_prompt_post_scan_runtime_actions(
 
 def auto_uv_result_profile_selector(result) -> str:
     try:
-        voltage_mv = int(getattr(result, "final_voltage_mv"))
-        clock_mhz = int(getattr(result, "lock_clock_mhz"))
+        voltage_mv = int(result.final_voltage_mv)
+        clock_mhz = int(result.lock_clock_mhz)
     except (TypeError, ValueError):
         return ""
     if voltage_mv <= 0 or clock_mhz <= 0:
@@ -244,7 +244,7 @@ def _available_adaptive_tier_labels(deps: AutoUvForegroundDependencies) -> list[
         profiles = deps.read_auto_uv_profiles()
         resolved = deps.resolve_profile_tier_profiles(profiles)
         tiers = deps.available_adaptive_tiers(resolved)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Adaptive Auto-UV availability check failed: {exc}")
         return []
     labels = []
@@ -267,7 +267,7 @@ def _run_optional_runtime_action(
             intent,
             persist_on_startup=bool(persist_on_startup),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Could not apply optional runtime action through burnerd: {exc}")
 
 

@@ -5,7 +5,7 @@ The helpers stay tiny so command flow can ask for confirmation without owning in
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 
 def prompt_yes_no(

@@ -9,32 +9,16 @@ name: Flatpak package build
 
 on:
   pull_request:
-    paths:
-      - packaging/flatpak/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-flatpak-install-smoke.sh
-      - .github/workflows/flatpak-package-build.yml
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - packaging/flatpak/**
-      - setup.py
-      - pyproject.toml
-      - MANIFEST.in
-      - burnerd/**
-      - overlay/native/**
-      - scripts/check-flatpak-install-smoke.sh
-      - .github/workflows/flatpak-package-build.yml
   schedule:
     - cron: "47 6 * * 1"
   workflow_dispatch:
 
 jobs:
   build:
+    name: Flatpak package (${{ matrix.scenario }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:

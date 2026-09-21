@@ -11,8 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .vdf import parse_vdf, vdf_lookup
+from integrations.launchers.installation import (
+    LauncherInstallation,
+    select_installation,
+)
 
+from .vdf import parse_vdf, vdf_lookup
 
 STEAMID64_BASE = 76561197960265728
 
@@ -36,16 +40,19 @@ class SteamUser:
         return self.userdata_dir / "config" / "localconfig.vdf"
 
 
+def steam_installation(home: Path | None = None) -> LauncherInstallation:
+    base = home or Path.home()
+    return select_installation(
+        "steam", "com.valvesoftware.Steam", home=home,
+        native_roots=(base / ".local/share/Steam", base / ".steam/steam", base / ".steam/root"),
+        flatpak_roots=(base / ".var/app/com.valvesoftware.Steam/.local/share/Steam",),
+        markers=("steamapps", "userdata"),
+    )
+
+
 def default_steam_root(home: Path | None = None) -> Path | None:
-    home = Path.home() if home is None else home
-    for candidate in (
-        home / ".local" / "share" / "Steam",
-        home / ".steam" / "steam",
-        home / ".steam" / "root",
-    ):
-        if (candidate / "steamapps").is_dir() or (candidate / "userdata").is_dir():
-            return candidate
-    return None
+    root = steam_installation(home).root
+    return root if (root / "steamapps").is_dir() or (root / "userdata").is_dir() else None
 
 
 def list_steam_users(home: Path | None = None) -> tuple[SteamUser, ...]:

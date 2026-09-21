@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import math
+from pathlib import Path
+from typing import Any, cast
 
+from common.atomic_write import atomic_write_json
+from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.fan.fan_curve_manual_editor import (
     user_edited_fan_curve_profile_payload,
 )
 from profiles.uv.profile_store import archive_auto_uv_profile
-from common.atomic_write import atomic_write_json
-from common.penguin_burner_paths import default_user_config_dir
 
 
 def profile_fan_curve_points(profile: dict) -> list[tuple[float, float]]:
@@ -134,7 +135,7 @@ def auto_uv_fan_curve_payload_path() -> Path:
 
 def write_auto_uv_fan_curve_payload(payload: dict) -> Path:
     if not isinstance(payload, dict):
-        raise ValueError("fan curve payload must be an object")
+        raise TypeError("fan curve payload must be an object")
     return atomic_write_json(auto_uv_fan_curve_payload_path(), payload)
 
 
@@ -159,8 +160,10 @@ def matching_current_auto_uv_fan_payload(profile: dict) -> dict | None:
 
 def fan_payload_matches_profile(payload: dict, profile: dict) -> bool:
     try:
-        profile_voltage_mv = int(round(float(profile.get("candidate_voltage_mv"))))
-        profile_clock_mhz = int(round(float(profile.get("lock_clock_mhz"))))
+        profile_voltage_mv = round(
+            float(cast(Any, profile.get("candidate_voltage_mv")))
+        )
+        profile_clock_mhz = round(float(cast(Any, profile.get("lock_clock_mhz"))))
     except (TypeError, ValueError):
         return False
     telemetry = payload.get("telemetry")
@@ -175,8 +178,8 @@ def fan_payload_matches_profile(payload: dict, profile: dict) -> bool:
         if not isinstance(point, dict):
             continue
         try:
-            voltage_mv = int(round(float(point.get("voltage_mv"))))
-            clock_mhz = int(round(float(point.get("clock_mhz"))))
+            voltage_mv = round(float(cast(Any, point.get("voltage_mv"))))
+            clock_mhz = round(float(cast(Any, point.get("clock_mhz"))))
         except (TypeError, ValueError):
             continue
         if voltage_mv == profile_voltage_mv and clock_mhz == profile_clock_mhz:

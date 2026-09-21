@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
-from auto_uv.shared.positive_int import positive_int
-
+from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
+from auto_uv.curve.flattened_voltage_probe_curve import (
+    build_flattened_voltage_probe_curve,
+)
+from auto_uv.curve.measured_probe_lock_clock import probe_indicates_power_saturation
+from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
 from auto_uv.domain.console_log import log_phase
 from auto_uv.domain.types import (
     AutoUvCriticalProbeError,
@@ -17,14 +22,14 @@ from auto_uv.domain.types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
-from auto_uv.curve.measured_probe_lock_clock import probe_indicates_power_saturation
-from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
-from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
-from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
-from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
 from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
+from auto_uv.shared.positive_int import positive_int
+
 from .ladder import AutoOcStep, build_auto_oc_ladder
 from .scoring import auto_oc_probe_key, effective_q2rtx_clock_mhz
 from .settings import (
@@ -80,7 +85,7 @@ def run_auto_oc_candidate_search(
     max_interpolation_steps: int = AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS,
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
-    measured_baseline_clock_mhz: float | int | None = None,
+    measured_baseline_clock_mhz: float | None = None,
     target_profile_id: str = AUTO_OC_TARGET_PROFILE_ID,
     probe_stable_history: list[AutoUvProbeSummary] | None = None,
 ) -> AutoOcSearchResult:
@@ -461,7 +466,7 @@ def auto_oc_candidate(
     tail_rise_bins: int,
     start_clock_mhz: int | None = None,
     endpoint_clock_mhz: int | None = None,
-    measured_baseline_clock_mhz: float | int | None = None,
+    measured_baseline_clock_mhz: float | None = None,
 ) -> VfCurveCandidate:
     metadata = {
         "auto_oc": True,
@@ -475,8 +480,8 @@ def auto_oc_candidate(
             if endpoint_clock_mhz is not None
             else int(step.target_mhz)
         )
-        limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
-        applied_mhz = int(round(float(step.target_mhz) - baseline_clock))
+        limit_mhz = round(float(endpoint_clock) - baseline_clock)
+        applied_mhz = round(float(step.target_mhz) - baseline_clock)
         metadata.update(
             {
                 "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),
