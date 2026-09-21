@@ -8,7 +8,7 @@ static-analysis cleanup and daemon setup fixes.
 with real-time Adaptive FPS target changes and Proton compatibility tool
 selection.
 
-**Faugus Launcher is coming in 0.8.2.** Which launcher should we support after
+**Faugus Launcher is coming next.** Which launcher should we support after
 that? Tell us what you use in
 [Discussions](https://github.com/jpietek/PenguinBurner/discussions).
 
