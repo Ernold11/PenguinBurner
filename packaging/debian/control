@@ -2,11 +2,16 @@ Source: penguin-burner
 Section: utils
 Priority: optional
 Maintainer: PenguinBurner contributors <jan.pietek@gmail.com>
+# g++-multilib builds the 32-bit companion Vulkan layer: a 32-bit game renders
+# through wine's i386 winevulkan, so only an i386 layer can be loaded into it,
+# and setup.py builds it best effort -- without multilib the package would
+# ship 64-bit only and the overlay would never appear in those games.
 Build-Depends:
  debhelper-compat (= 13),
  cargo,
  cmake,
  g++,
+ g++-multilib,
  g++-mingw-w64-x86-64,
  libvulkan-dev,
  python3,
