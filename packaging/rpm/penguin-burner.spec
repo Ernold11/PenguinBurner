@@ -1,6 +1,6 @@
 Name:           penguin-burner
-Version:        0.8.3
-Release:        1%{?dist}
+Version:        0.8.2
+Release:        2%{?dist}
 Summary:        Automatic NVIDIA GPU undervolting, overclocking, and per-game tuning
 
 %global debug_package %{nil}
@@ -140,9 +140,6 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
-* Tue Sep 22 2026 PenguinBurner contributors <noreply@github.com> - 0.8.3-1
-- Ship the 32-bit overlay Vulkan layer from every packaging channel.
-
 * Tue Sep 22 2026 PenguinBurner contributors <noreply@github.com> - 0.8.2-2
 - Ship the 32-bit overlay Vulkan layer so the overlay reaches 32-bit games.
 
