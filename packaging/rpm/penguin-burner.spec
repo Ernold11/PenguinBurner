@@ -1,6 +1,6 @@
 Name:           penguin-burner
 Version:        0.8.2
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Automatic NVIDIA GPU undervolting, overclocking, and per-game tuning
 
 %global debug_package %{nil}
@@ -29,6 +29,24 @@ BuildRequires:  gcc-c++
 BuildRequires:  mingw64-gcc-c++
 BuildRequires:  mingw64-winpthreads-static
 BuildRequires:  vulkan-headers
+# The 32-bit companion Vulkan layer: only an i386 layer can be loaded into a
+# 32-bit game's Vulkan instance, and setup.py builds it best effort, so without
+# these the RPM silently ships 64-bit only. libatomic(x86-32) is needed on
+# gcc 16 (Fedora 44+), where the link otherwise fails on libatomic.so.1 -- for
+# both arches, since each is a separate package and the loader needs its own.
+#
+# Both arches are named explicitly. Asking only for the (x86-32) provides lets
+# dnf satisfy gcc-c++'s own libstdc++-devel dependency with the i686 package
+# alone, which takes /usr/include/c++/*/x86_64-redhat-linux with it and breaks
+# the *64-bit* layer on bits/c++config.h -- the failure that made this
+# best-effort in the first place.
+BuildRequires:  glibc-devel(x86-64)
+BuildRequires:  libstdc++-devel(x86-64)
+BuildRequires:  libatomic(x86-64)
+BuildRequires:  glibc-devel(x86-32)
+BuildRequires:  libstdc++-devel(x86-32)
+BuildRequires:  libgcc(x86-32)
+BuildRequires:  libatomic(x86-32)
 BuildRequires:  desktop-file-utils
 # Root daemon (penguin-burnerd) is compiled from the bundled Rust crate.
 BuildRequires:  cargo
@@ -75,6 +93,7 @@ Fusion.
 
 %build
 export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
+export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER32=1
 export PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1
 %pyproject_wheel
 
@@ -121,6 +140,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Tue Sep 22 2026 PenguinBurner contributors <noreply@github.com> - 0.8.2-2
+- Ship the 32-bit overlay Vulkan layer so the overlay reaches 32-bit games.
+
 * Mon Sep 21 2026 PenguinBurner contributors <noreply@github.com> - 0.8.2-1
 - Ship the 32-bit overlay layer in the published wheel so 32-bit games get
   the overlay.
