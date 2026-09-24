@@ -165,3 +165,14 @@ def test_the_write_goes_to_the_tree_that_exists(tmp_path):
     assert write_launch_arguments("e33", WRAPPER, tmp_path).ok
     assert games_path(tmp_path) == base / "games.json"
     assert json.loads((base / "games.json").read_text())[0]["launch_arguments"] == WRAPPER
+
+
+def test_readback_failure_is_returned_by_the_writer(tmp_path, monkeypatch):
+    _faugus(tmp_path, [_game()])
+    monkeypatch.setattr(
+        "integrations.faugus.config_store.atomic_write_text",
+        lambda path, text, **kwargs: path.write_text("{incomplete rewrite"),
+    )
+    result = write_launch_arguments("e33", WRAPPER, tmp_path)
+    assert not result.ok
+    assert "not valid JSON" in result.message

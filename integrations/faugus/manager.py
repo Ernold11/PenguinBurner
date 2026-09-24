@@ -1,7 +1,7 @@
 """Adapt Faugus's library and launch_arguments to the shared wrapper manager.
 
 Faugus has one level -- the game's own entry -- so nothing is ever inherited
-and a disable simply clears the field back to empty. Changes apply at the next
+and disabling restores the original launch arguments. Changes apply at the next
 launch; Faugus reads games.json when it starts a game."""
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from pathlib import Path
 from integrations.launchers.wrapper_manager import (
     CommandWrite,
     EffectiveCommand,
-    LauncherGameRow,
     WrapperManager,
 )
 
@@ -29,6 +28,7 @@ from .settings import FAUGUS_GAME_SETTINGS_STORE
 
 class FaugusIntegrationManager(WrapperManager):
     launcher_id = "faugus"
+    shell_assignments = True
     display_name = "Faugus"
     source_labels = SOURCE_LABELS
 
@@ -42,17 +42,6 @@ class FaugusIntegrationManager(WrapperManager):
         self._home = home
         self._document: list[dict] | None = None
 
-    def refresh(self) -> tuple[LauncherGameRow, ...]:
-        # The whole library is one file, so a scan parses it once here instead
-        # of once per game while resolving commands below.
-        try:
-            self._document = read_games_document(self._home)
-        except FaugusConfigError:
-            # A malformed library must not take the tab down; the write path
-            # reports the real error when the user tries to change something.
-            self._document = []
-        return super().refresh()
-
     @property
     def installation(self):
         return faugus_installation(self._home)
@@ -62,7 +51,11 @@ class FaugusIntegrationManager(WrapperManager):
         return faugus_installed(self._home)
 
     def read_games(self) -> tuple[InstalledFaugusGame, ...]:
-        return read_faugus_games(self._home)
+        try:
+            self._document = read_games_document(self._home)
+        except FaugusConfigError:
+            self._document = []
+        return read_faugus_games(self._home, document=self._document)
 
     def read_effective(self, game: InstalledFaugusGame) -> EffectiveCommand:
         try:
@@ -72,11 +65,6 @@ class FaugusIntegrationManager(WrapperManager):
         except FaugusConfigError:
             return EffectiveCommand("", "")
 
-    def read_inherited(self, game: InstalledFaugusGame) -> str:
-        """Nothing to inherit: Faugus has no global launch arguments."""
-        del game
-        return ""
-
     def write_block(self, game: InstalledFaugusGame) -> str:
         if not game.ready:
             return f"{game.display_name} has no executable for Faugus to launch."
@@ -85,10 +73,7 @@ class FaugusIntegrationManager(WrapperManager):
     def write_command(
         self, game: InstalledFaugusGame, command: str | None
     ) -> CommandWrite:
-        try:
-            result = write_launch_arguments(game.game_id, command, self._home)
-        except FaugusConfigError as error:
-            return CommandWrite(False, "", str(error))
+        result = write_launch_arguments(game.game_id, command, self._home)
         if result.ok:
             # The cached parse is now stale, and the row this write refreshes
             # is resolved from it.

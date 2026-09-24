@@ -18,10 +18,12 @@ Faugus are not listed; unhide them there to configure them here.
 ## Launch arguments
 
 PenguinBurner adds its wrapper to the game's **Launch arguments**, in
-`games.json`, in front of whatever you already had there:
+`games.json`, before your existing command. Leading environment assignments
+stay before the wrapper so settings such as `PROTON_ENABLE_WAYLAND=0` still
+reach the game:
 
 ```json
-"launch_arguments": "PENGUIN_BURNER --pb-overlay=1 --pb-game-id=faugus:expedition-33 game-performance"
+"launch_arguments": "PROTON_ENABLE_WAYLAND=0 PENGUIN_BURNER --pb-overlay=1 --pb-game-id=faugus:expedition-33 game-performance"
 ```
 
 The ID identifies the game to PenguinBurner, qualified by the launcher that
@@ -29,7 +31,8 @@ owns it. Faugus runs the whole field as one command prefix, ahead of gamemode,
 MangoHud and umu-run, so our wrapper goes first and yours stays between it and
 the game. Every other field of the entry, and the order of your library, is
 left exactly as it was. Disabling removes our part and restores your own
-arguments.
+arguments. For a game configured by an older integration, changing a wrapper
+setting rewrites the command with environment assignments in the correct place.
 
 The **Command** field is editable and shows that field as Faugus stores it.
 Press Enter or leave the field to save. Clearing it leaves the game with no

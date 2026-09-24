@@ -3,9 +3,8 @@
 Faugus builds its launch line by pushing pieces onto a list in a fixed order:
 the Proton environment, then ``launch_arguments``, then gamemoderun, mangohud
 and finally umu-run with the game. So ``launch_arguments`` is a command prefix
-that runs in front of everything -- the same slot Lutris calls prefix_command
-and Heroic fills with wrapper rows, which is why the shared injection works
-here unchanged.
+that runs in front of everything. Unlike an argv-only prefix, leading shell
+environment assignments must stay before the injected wrapper executable.
 
 Faugus rewrites the whole games.json when its window saves, so every write is
 read back and the caller is told what actually landed.
@@ -113,10 +112,12 @@ def write_launch_arguments(
             json.dumps(document, indent=_JSON_INDENT, ensure_ascii=False),
             durable=True,
         )
+        landed = effective_launch_arguments(game_id, home).value
+    except FaugusConfigError as error:
+        return CommandWrite(False, "", str(error))
     except OSError as error:
         return CommandWrite(False, "", f"cannot write {path.name}: {error}")
 
-    landed = effective_launch_arguments(game_id, home).value
     wanted = str(command or "").strip()
     if landed != wanted:
         return CommandWrite(

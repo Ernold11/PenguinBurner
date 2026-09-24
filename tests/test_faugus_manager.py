@@ -166,3 +166,43 @@ def test_a_malformed_library_leaves_the_tab_standing(tmp_path):
     manager = _manager(tmp_path)
 
     assert manager.refresh() == ()
+
+
+def test_assignment_prefix_launches_and_restores_exactly(tmp_path, monkeypatch):
+    import os
+    import shlex
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    original = 'PROTON_ENABLE_WAYLAND=0 LABEL="two words" env EXTRA=kept'
+    path = _faugus(tmp_path, [_game(launch_arguments=original)])
+    before = path.read_bytes()
+    manager = _manager(tmp_path)
+    manager.refresh()
+    # Execute the real flag consumer and exec boundary, without GPU operations.
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from overlay.launcher import _consume_wrapper_flags\n"
+        "env = dict(os.environ)\n"
+        "args = _consume_wrapper_flags(sys.argv[1:], env)\n"
+        "os.execvpe(args[0], args, env)\n"
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    for overlay in (False, True, False):
+        assert manager.set_game_enabled("e33", True).ok
+        assert manager.set_game_overlay("e33", overlay).ok
+        command = json.loads(path.read_text())[0]["launch_arguments"]
+        assert command.count("--pb-game-id") == 1
+        probe = "import os,json; print(json.dumps([os.environ[k] for k in ('PROTON_ENABLE_WAYLAND','LABEL','EXTRA','PENGUIN_BURNER_GAME_KEY','PB_OVERLAY')]))"
+        result = subprocess.run(
+            ["/bin/sh", "-c", command + " " + shlex.join([sys.executable, "-c", probe])],
+            capture_output=True, text=True, check=True,
+        )
+        assert json.loads(result.stdout) == ["0", "two words", "kept", "faugus:e33", str(int(overlay))]
+    assert manager.set_game_enabled("e33", False).ok
+    assert path.read_bytes() == before

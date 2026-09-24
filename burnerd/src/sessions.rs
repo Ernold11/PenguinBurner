@@ -147,7 +147,7 @@ fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
 
 fn valid_app_id(app_id: &str) -> bool {
     app_id.split_once(':').is_some_and(|(launcher, id)| {
-        matches!(launcher, "steam" | "lutris" | "heroic") && !id.is_empty()
+        matches!(launcher, "steam" | "lutris" | "heroic" | "faugus") && !id.is_empty()
     })
 }
 
@@ -332,6 +332,7 @@ pub fn observe(uid: u32, value: &Value) -> Result<MethodResult, String> {
     let (launcher, game) = app_id.split_once(':').ok_or("invalid app_id")?;
     let agrees = match launcher {
         "heroic" => env.get("HEROIC_APP_NAME") == Some(&game),
+        "faugus" => !game.is_empty() && env.get("FAUGUSID") == Some(&game),
         "steam" => args.iter().any(|arg| *arg == format!("AppId={game}")),
         "lutris" => {
             let title = text(value, "title")?;

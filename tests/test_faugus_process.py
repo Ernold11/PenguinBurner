@@ -183,3 +183,20 @@ def test_an_external_session_cannot_be_stopped_but_a_wrapped_one_can(monkeypatch
     # Still reported as running, so the button stops saying "Starting…".
     assert source.running_game_ids() == frozenset({"expedition-33"})
     assert source.external_game_ids() == frozenset({"expedition-33"})
+
+
+def test_source_exposes_only_external_processes_for_daemon_observation(monkeypatch):
+    from integrations.faugus.library_source import FaugusLibrarySource
+
+    source = object.__new__(FaugusLibrarySource)
+    sessions = LauncherSessions(wrapped={"wrapped": (42,)}, external={"external": (43, 44)})
+    monkeypatch.setattr(
+        "integrations.faugus.library_source.probe_faugus_sessions", lambda **kwargs: sessions,
+    )
+    assert source.observed_processes() == {"external": (43, 44)}
+    assert source.external_game_ids() == frozenset({"external"})
+    monkeypatch.setattr(
+        "integrations.faugus.library_source.probe_faugus_sessions", lambda **kwargs: None,
+    )
+    assert source.observed_processes() is None
+    assert source.external_game_ids() == frozenset({"external"})

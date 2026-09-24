@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from overlay.wrapper_tokens import (
     game_key,
+    split_shell_assignments,
     strip_penguin_burner_tokens,
     wrapper_tokens,
 )
@@ -24,8 +25,9 @@ def inject_wrapper(
     game_id: str,
     ingame_latency: bool = False,
     executable: str = "PENGUIN_BURNER",
+    shell_assignments: bool = False,
 ) -> str:
-    """Put our tokens in front of whatever the user already had there."""
+    """Prepend our tokens, after assignments for shell-interpreted fields."""
     base = strip_penguin_burner_tokens(command or "")
     tokens = wrapper_tokens(
         overlay=overlay,
@@ -35,7 +37,8 @@ def inject_wrapper(
         # writing the opt-in as well would only be noise in the command.
         ingame_latency=ingame_latency and not overlay,
     )
-    return f"{tokens} {base}".strip() if base else tokens
+    assignments, base = split_shell_assignments(base) if shell_assignments else ("", base)
+    return " ".join(part for part in (assignments, tokens, base) if part)
 
 
 def remove_wrapper(

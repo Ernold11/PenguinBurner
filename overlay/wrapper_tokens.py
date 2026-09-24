@@ -130,6 +130,21 @@ def replace_wrapper_executable(value: str, executable: str) -> str:
     return value
 
 
+def split_shell_assignments(value: str) -> tuple[str, str]:
+    """Separate leading shell assignments without rewriting quoted values.
+
+    Shell launchers need these before the wrapper executable, otherwise exec
+    would treat the first assignment as a program name. Check the raw name:
+    quoting a whole ``NAME=value`` word makes it a command, not an assignment.
+    """
+    end = 0
+    for start, stop, _word in _command_words(value):
+        if not re.match(r"[A-Za-z_][A-Za-z_0-9]*=", value[start:stop]):
+            break
+        end = stop
+    return value[:end].strip(), value[end:].lstrip()
+
+
 def wrapper_present(value: str | None) -> bool:
     return any(_wrapper_word(word) for _, _, word in _command_words(value or ""))
 

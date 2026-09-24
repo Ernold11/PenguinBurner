@@ -15,10 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from integrations.launchers.host_process import (
-    host_terminate,
-    start_on_host,
-)
+from integrations.launchers.host_process import start_on_host
 from integrations.launchers.wrapped_sessions import (
     LauncherSessions,
     running_wrapped_sessions,
@@ -64,8 +61,3 @@ def probe_faugus_sessions(
     return running_wrapped_sessions(
         LAUNCHER_ID, external_env=GAME_ID_ENV, known_pids=known_pids
     )
-
-
-def stop_faugus_game(pid: int) -> bool:
-    """One SIGTERM to the wrapper, which is the game session after its exec."""
-    return host_terminate(pid)

@@ -109,3 +109,29 @@ def test_removal_still_understands_the_flag_earlier_versions_wrote() -> None:
     legacy = "PENGUIN_BURNER --pb-overlay=1 --pb-lutris-id=27 gamemoderun"
 
     assert remove_wrapper(legacy) == "gamemoderun"
+
+
+def test_shell_assignments_stay_before_wrapper_and_keep_quoting():
+    original = 'A="two words" B=\'a=b\' C=escaped\\ space'
+    injected = inject_wrapper(
+        original, overlay=False, launcher_id="faugus", game_id="27", shell_assignments=True,
+    )
+    assert injected == original + " PENGUIN_BURNER --pb-overlay=0 --pb-game-id=faugus:27"
+    assert remove_wrapper(injected) == original
+    assert inject_wrapper(
+        injected, overlay=False, launcher_id="faugus", game_id="27", shell_assignments=True,
+    ) == injected
+    # Repair commands written by the old adapter on the next settings change.
+    broken = "PENGUIN_BURNER --pb-overlay=1 --pb-game-id=faugus:27 " + original
+    assert inject_wrapper(
+        broken, overlay=False, launcher_id="faugus", game_id="27", shell_assignments=True,
+    ) == injected
+
+
+def test_quoted_assignment_word_is_not_moved_out_of_command_position():
+    original = "'NAME=value' argument"
+    injected = inject_wrapper(
+        original, overlay=False, launcher_id="faugus", game_id="27", shell_assignments=True,
+    )
+    assert injected.endswith(original)
+    assert injected.startswith("PENGUIN_BURNER ")

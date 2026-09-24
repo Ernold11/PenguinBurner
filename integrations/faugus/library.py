@@ -13,11 +13,10 @@ library's time-based sorts place these games last instead of somewhere wrong.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import games_path
+from .config_store import FaugusConfigError, read_games_document
 
 #: Faugus stores playtime as whole seconds accumulated across sessions.
 _SECONDS_PER_HOUR = 3600.0
@@ -35,7 +34,6 @@ class InstalledFaugusGame:
     name: str
     runner: str
     executable: str
-    prefix: str
     playtime_seconds: int
     art_path: Path | None
     hidden: bool
@@ -77,6 +75,7 @@ def read_faugus_games(
     home: Path | None = None,
     *,
     include_hidden: bool = False,
+    document: list[dict] | None = None,
 ) -> tuple[InstalledFaugusGame, ...]:
     """Every game Faugus knows, in the order Faugus stores them.
 
@@ -84,21 +83,16 @@ def read_faugus_games(
     do not want to see it, and the library tab is not the place to overrule
     that. Ordering is left to the caller, which merges several launchers.
     """
+    if document is None:
+        try:
+            document = read_games_document(home)
+        except FaugusConfigError:
+            return ()
     return tuple(
         game
-        for game in (_game(entry) for entry in _entries(games_path(home)))
+        for game in (_game(entry) for entry in document)
         if game is not None and (include_hidden or not game.hidden)
     )
-
-
-def _entries(path: Path) -> list[dict]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        # A library that cannot be read is an empty one here; the write path
-        # is what owes the user a real error about this file.
-        return []
-    return [entry for entry in payload if isinstance(entry, dict)] if isinstance(payload, list) else []
 
 
 def _game(entry: dict) -> InstalledFaugusGame | None:
@@ -110,7 +104,6 @@ def _game(entry: dict) -> InstalledFaugusGame | None:
         name=str(entry.get("title") or "").strip(),
         runner=str(entry.get("runner") or "").strip(),
         executable=str(entry.get("path") or "").strip(),
-        prefix=str(entry.get("prefix") or "").strip(),
         playtime_seconds=_playtime_seconds(entry),
         art_path=_art_path(entry),
         hidden=bool(entry.get("hidden")),

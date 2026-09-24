@@ -105,6 +105,7 @@ class WrapperManager:
             return ApplyResult(False, str(error))
 
     launcher_id: str = ""
+    shell_assignments: bool = False
     display_name: str = ""
     #: Level name -> how to say it in the detail pane.
     source_labels: Mapping[str, str] = {}
@@ -356,6 +357,7 @@ class WrapperManager:
                 launcher_id=self.launcher_id,
                 game_id=row.game.game_id,
                 ingame_latency=setting.ingame_latency,
+                shell_assignments=self.shell_assignments,
             )
             if wrapper_present(current):
                 # Already wrapped. Either we wrote it -- trust the recorded

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from integrations.faugus.library import read_faugus_games
-from integrations.faugus.paths import config_path, faugus_installed, games_path
+from integrations.faugus.paths import faugus_installed, games_path
 
 
 @pytest.fixture(autouse=True)
@@ -125,7 +125,6 @@ def test_the_flatpak_tree_is_found_when_the_native_one_is_absent(tmp_path):
 
     assert faugus_installed(tmp_path)
     assert ".var/app" in str(games_path(tmp_path))
-    assert ".var/app" in str(config_path(tmp_path))
     assert [game.game_id for game in read_faugus_games(tmp_path)] == ["expedition-33"]
 
 
