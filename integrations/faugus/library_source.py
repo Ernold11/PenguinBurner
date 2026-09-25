@@ -46,6 +46,9 @@ class FaugusLibrarySource(WrapperLibrarySource):
     def _launch_game(self, row: LauncherGameRow) -> bool:
         return launch_faugus_game(row.game.game_id, home=self._home)
 
+    def wine_prefix(self, game) -> str:
+        return "" if game.is_native else game.prefix
+
     def probe_sessions(self, *, known_pids=()):
         return probe_faugus_sessions(
             known_pids=known_pids,

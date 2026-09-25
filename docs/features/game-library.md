@@ -97,14 +97,26 @@ periodic recovery scans; a missed scan never proves that a game failed or that
 PenguinBurner was absent.
 
 The game has one button: **Play**, **Starting…** while the launch is pending,
-and **Stop** once the game session is confirmed. **Starting…** means the launch
-was requested but a game session has not yet been confirmed. If nothing confirms
-it for two minutes, or its status becomes unknown, the button returns to
-**Play** and asks before attempting a possible second instance. A detected
-external session shows **Running — PBurn unconfirmed** and disables Play. Missing
+and **Stop** once the game session is confirmed. **Starting…** stays until the
+outcome holds for a few seconds, so a launcher client handing the launch
+between processes does not flip the button. If nothing confirms the launch for
+two minutes, or its status becomes unknown, the button returns to **Play** and
+asks before attempting a possible second instance. A game running outside the
+wrapper shows **Running**, greyed out: it is observed, but Stop cannot reach
+it. Missing
 wrapper or GPU-profile evidence is a neutral status shown in the button's
 tooltip, not a failure warning. Wrapper registration confirms the launch
 wrapper, not that the HUD has rendered.
+
+Games that run through a store client — the EA App, Battle.net, Ubisoft
+Connect, Epic Games Launcher, GOG Galaxy and similar — get the overlay and GPU
+profile only when **Play** starts the client too, so the client runs inside the
+wrapper and passes it on. If a Faugus, Lutris or Heroic game is wrapped and a
+program is already running in its Wine prefix without PenguinBurner, **Play**
+refuses and names it, for example *"EA App is already running without
+PenguinBurner"*. Close it, then press **Play**. Wine's own background processes
+do not count, and a check that cannot read the running processes never blocks
+a launch.
 
 If launch preparation fails before a request is sent, **Play** becomes available
 again and other games remain launchable. A refused retry does not clear an earlier

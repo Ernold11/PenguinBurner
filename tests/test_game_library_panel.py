@@ -166,6 +166,15 @@ def _game(launcher, game_id, name, **kwargs):
     )
 
 
+@pytest.fixture(autouse=True)
+def _launch_settles_at_once(monkeypatch):
+    """State-machine tests read the raw outcome; settling has its own tests."""
+    import ui.components.game_library_panel as panel_module
+
+    monkeypatch.setattr(panel_module, "_LAUNCH_SETTLE_S", 0.0)
+    monkeypatch.setattr(panel_module, "_LAUNCH_EXIT_SETTLE_S", 0.0)
+
+
 def _panel(qapp, sources):
     QtCore, QtGui, QtWidgets, _pg = import_qt()
     if QtWidgets is None:
@@ -1600,7 +1609,7 @@ def test_runner_before_wrapper_never_claims_missing_integration(qapp):
     panel._select_key('steam:620')
     panel._play_stop_clicked()
     _session_snapshot(panel, [{"app_id": "steam:620", "wrapped": False}])
-    assert panel.play_button.text() == 'Running — PBurn unconfirmed'
+    assert panel.play_button.text() == 'Running'
     assert not panel.play_button.isEnabled()
     assert panel.launch_warning_label.isHidden()
     panel._play_stop_clicked()
@@ -1660,7 +1669,7 @@ def test_failed_launcher_probe_does_not_hide_another_external_game(qapp, qtbot, 
     panel._play_stop_clicked()
     panel._poll_game_states()
     qtbot.waitUntil(lambda: panel._tracked_state('lutris:27') == 'external')
-    assert panel.play_button.text() == 'Running — PBurn unconfirmed'
+    assert panel.play_button.text() == 'Running'
     panel.widget.close()
 
 
@@ -1731,6 +1740,88 @@ def test_late_session_and_daemon_restart_never_infer_failure(qapp):
     assert panel.launch_warning_label.isHidden()
     _session_snapshot(panel, [{"app_id": "steam:620", "wrapped": True, "phase": "running"}], epoch="restarted", sequence=2)
     assert panel.play_button.text() == "Stop"
+
+
+def _clock(monkeypatch):
+    import ui.components.game_library_panel as panel_module
+
+    now = [1000.0]
+    monkeypatch.setattr(panel_module, "_LAUNCH_SETTLE_S", 5.0)
+    monkeypatch.setattr(panel_module, "_LAUNCH_EXIT_SETTLE_S", 15.0)
+    monkeypatch.setattr(panel_module.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_a_store_client_handoff_holds_starting_then_shows_running(qapp, monkeypatch):
+    """The recorded EA App handoff: wrapper runs ~1 s, exits, the client starts
+    the game. Every hop used to flip the button; now it says Starting… once."""
+    now = _clock(monkeypatch)
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    shown = [panel.play_button.text()]
+    _session_snapshot(panel, [{"app_id": "steam:620", "wrapped": False}], sequence=1)
+    shown.append(panel.play_button.text())
+    _session_snapshot(panel, [{"app_id": "steam:620", "session_id": "w", "wrapped": True,
+                               "phase": "running"}], sequence=2)
+    shown.append(panel.play_button.text())
+    now[0] += 1
+    _session_snapshot(panel, [], sequence=3, ended=[{"sequence": 3, "session": {
+        "app_id": "steam:620", "session_id": "w", "wrapped": True, "phase": "exited"}}])
+    shown.append(panel.play_button.text())
+    now[0] += 3
+    panel._apply_game_states({"steam": frozenset({"620"})}, {"steam": frozenset({"620"})})
+    shown.append(panel.play_button.text())
+    assert set(shown) == {"Starting…"}
+    now[0] += 6
+    panel._sync_play_button(panel._selected_game())
+    assert panel.play_button.text() == "Running"
+    assert not panel.play_button.isEnabled()
+    panel.widget.close()
+
+
+def test_an_exit_right_after_play_returns_to_play_after_settling(qapp, monkeypatch):
+    now = _clock(monkeypatch)
+    steam, lutris = _launchable_pair()
+    steam._inner._games += (_game("steam", "440", "Team Fortress 2"),)
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    _session_snapshot(panel, [{"app_id": "steam:620", "session_id": "w", "wrapped": True,
+                               "phase": "running"}], sequence=1)
+    _session_snapshot(panel, [], sequence=2, ended=[{"sequence": 2, "session": {
+        "app_id": "steam:620", "session_id": "w", "wrapped": True, "phase": "exited"}}])
+    assert panel.play_button.text() == "Starting…"
+    panel._select_key("steam:440")
+    assert not panel.play_button.isEnabled()  # the handoff gap still counts
+    now[0] += 16
+    panel._sync_play_button(panel._selected_game())
+    assert panel.play_button.isEnabled()
+    panel._select_key("steam:620")
+    assert panel.play_button.text() == "Play"
+    panel.widget.close()
+
+
+def test_a_wrapped_game_that_keeps_running_shows_stop_once_settled(qapp, monkeypatch):
+    now = _clock(monkeypatch)
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+    _session_snapshot(panel, [], sequence=0)
+    panel._play_stop_clicked()
+    _session_snapshot(panel, [{"app_id": "steam:620", "wrapped": True, "phase": "running"}])
+    assert panel.play_button.text() == "Starting…"
+    now[0] += 6
+    panel._sync_play_button(panel._selected_game())
+    assert panel.play_button.text() == "Stop"
+    assert panel.play_button.isEnabled()
+    panel.widget.close()
 
 
 def test_launch_is_one_button_without_flickering_extras(qapp, monkeypatch):
@@ -2057,4 +2148,16 @@ def test_late_store_classification_unblocks_existing_session(qapp):
     lutris.non_game_ids = frozenset({'client'})
     panel._sync_play_button(panel._selected_game())
     assert panel.play_button.isEnabled()
+    panel.widget.close()
+
+
+def test_row_art_is_painted_at_the_screen_pixel_density(qapp, monkeypatch):
+    """A 36x48 bitmap stretched 2.5x by the compositor is what looked smeared."""
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    monkeypatch.setattr(panel, "_pixel_ratio", lambda: 2.5)
+    game = steam.games()[0]
+    pixmap = panel._row_icon(game).pixmap(panel.QtCore.QSize(36, 48), 2.5)
+    assert (pixmap.width(), pixmap.height()) == (90, 120)
+    assert pixmap.devicePixelRatio() == 2.5
     panel.widget.close()

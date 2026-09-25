@@ -49,6 +49,8 @@ class InstalledFaugusGame:
     hidden: bool
     installed_at: int = 0
     last_played: int = 0
+    #: The Wine prefix Faugus runs it in; empty for Linux-native entries.
+    prefix: str = ""
 
     @property
     def ready(self) -> bool:
@@ -124,6 +126,7 @@ def _game(entry: dict) -> InstalledFaugusGame | None:
         hidden=bool(entry.get("hidden")),
         installed_at=_created_at(executable),
         last_played=_last_played(entry.get("last_played")),
+        prefix=str(entry.get("prefix") or "").strip(),
     )
 
 

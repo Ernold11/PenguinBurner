@@ -95,7 +95,7 @@ child processes, **Stop** reaches the surviving wrapped processes.
 PenguinBurner's detached telemetry helpers and unwrapped games are excluded.
 
 If a Heroic game process appears before its wrapper is confirmed, Game Library
-shows **Running — PBurn unconfirmed**. This is a neutral observation: it does not
+shows **Running**, greyed out. This is a neutral observation: it does not
 claim that the overlay or GPU profile failed. Close external sessions in Heroic
 or in the game itself. Wrapper registration and kernel process-exit notifications
 update the state; a slow start or missed recovery scan never becomes a failure
@@ -108,7 +108,7 @@ the installed Heroic Flatpak application.
 
 ## Troubleshooting
 
-- **Running — PBurn unconfirmed:** the game process is visible, but wrapper
+- **Running**, greyed out: the game process is visible, but wrapper
   evidence is still missing. Wait for confirmation, or close the game and use
   **Play** in Game Library to launch with the saved settings.
 - **Heroic is busy:** finish its game, download or other operation, then press

@@ -6,6 +6,7 @@ Steam keeps its own adapter for accounts, live apply and client write locking.""
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .desktop_icons import desktop_icon
 from .library import (
@@ -14,10 +15,12 @@ from .library import (
     LauncherBulkAction,
     LauncherField,
     LauncherWriteState,
+    LaunchNotStartedError,
     LibraryGame,
     library_bulk_actions,
 )
 from .live_overlay import LiveOverlaySource
+from .prefix_guard import prefix_refusal
 from .wrapped_sessions import LauncherSessions, stop_wrapped_session
 from .wrapper_manager import LauncherGameRow, WrapperManager
 
@@ -198,12 +201,29 @@ class WrapperLibrarySource(LiveOverlaySource):
         row = self.manager.row(game_id)
         if row is None:
             return False, f"FAILED to launch (no such game in the {self.display_name} library)"
+        self.refuse_unwrapped_prefix(row)
         if self._launch_game(row):
             return True, f"launching via {self.display_name}…"
         return False, f"FAILED to launch ({self.display_name} would not start the game)"
 
     def _launch_game(self, row: LauncherGameRow) -> bool:
         raise NotImplementedError
+
+    def refuse_unwrapped_prefix(self, row: LauncherGameRow) -> None:
+        """Raise before dispatch if a wrapped game would start outside the wrapper."""
+        if not row.setting.enabled:
+            return  # an unwrapped game never promised the overlay
+        refusal = prefix_refusal(self.wine_prefix(row.game), row.game.display_name)
+        if refusal:
+            raise LaunchNotStartedError(refusal)
+
+    def wine_prefix(self, game: Any) -> str:
+        """The Wine prefix this game runs in; empty when none or unknown.
+
+        Given one, Play refuses while a store client already runs there
+        outside our wrapper (see prefix_guard).
+        """
+        return ""
 
     def probe_sessions(self, *, known_pids: tuple[int, ...] = ()) -> LauncherSessions | None:
         raise NotImplementedError

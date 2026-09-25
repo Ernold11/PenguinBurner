@@ -55,8 +55,8 @@ from its own entry with the runner you chose there. Wrapped sessions are found
 through the game identity and session PID carried in the process environment,
 and only those sessions can be stopped from PenguinBurner.
 
-If a game starts without the wrapper, Game Library shows **Running — PBurn unconfirmed**
-rather than reporting nothing. Close that game in Faugus or in the game
+If a game starts without the wrapper, Game Library shows **Running**, greyed
+out, rather than reporting nothing. Close that game in Faugus or in the game
 itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
 in front of every game it starts — the same one its own "kill this game" uses —
 so they are observed even though they carry none of our identity.
@@ -65,6 +65,13 @@ An already-running store client can start a game with the client's inherited
 ID. PenguinBurner also checks the game's full executable path in its Wine
 prefix to follow that handoff. Detection alone does not prove that the overlay
 or Adaptive reached the game, and does not grant Stop control over the client.
+
+A game run through a store client, such as the EA App, gets the overlay and
+GPU profile only when **Play** starts that client too: the client then runs
+inside the wrapper and passes it on to the game. If the client is already
+running on its own in the game's Wine prefix — opened from its Faugus entry,
+for example — **Play** refuses and names it. Close the client, then press
+**Play** again.
 
 ## Sorting
 
@@ -81,9 +88,13 @@ game there to configure it in PBurn.
 
 ## Troubleshooting
 
-- **Running in Faugus:** the game started without the wrapper, so its overlay
-  and GPU profile were not activated, and **Stop** cannot reach it. Close the
-  game, then use **Play** in Game Library to launch it with the saved settings.
+- **Running**, greyed out: the game started without the wrapper, so its
+  overlay and GPU profile were not activated, and **Stop** cannot reach it.
+  Close the game, then use **Play** in Game Library to launch it with the
+  saved settings.
+- **"EA App is already running without PenguinBurner":** the store client was
+  opened on its own and would start the game outside the wrapper. Close it,
+  then press **Play**.
 - **Changes revert:** close the game's settings window in Faugus Launcher, then
   retry. Saving that window rewrites the whole library file over an external
   edit.

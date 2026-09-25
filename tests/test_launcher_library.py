@@ -376,7 +376,7 @@ def test_the_steam_adapter_carries_the_wrapper_state_off_the_launch_options(
         steamapps_dir=tmp_path,
         state_flags=4,
         last_played=900,
-        icon_path=None,
+        art_path=None,
         compat_tool="",
     )
     source = SteamLibrarySource(manager=object())
@@ -706,7 +706,7 @@ def _row(
             steamapps_dir=tmp_path or Path("/tmp"),
             state_flags=4,
             last_played=900,
-            icon_path=None,
+            art_path=None,
             compat_tool=compat_tool,
             effective_compat_tool=effective_compat_tool,
             last_updated=last_updated,
@@ -1075,7 +1075,9 @@ def test_shared_launch_validates_then_dispatches_to_the_selected_launcher(
     source = next(source for source in build_sources(home=tmp_path) if source.launcher_id == launcher)
     assert isinstance(source, WrapperLibrarySource)
     source.can_launch = case != "unavailable"
-    row = SimpleNamespace(game=SimpleNamespace(game_id="demo", runner="legendary"))
+    # Unwrapped, so the store-client prefix guard has nothing to protect.
+    row = SimpleNamespace(game=SimpleNamespace(game_id="demo", runner="legendary"),
+                          setting=SimpleNamespace(enabled=False))
     monkeypatch.setattr(source.manager, "row", lambda _id: None if case == "missing" else row)
     calls = []
     def launch(*args, **kwargs):

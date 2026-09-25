@@ -64,6 +64,17 @@ class LutrisLibrarySource(WrapperLibrarySource):
             directory=game.directory or None,
         )
 
+    def wine_prefix(self, game) -> str:
+        """The wine runner's ``game.prefix`` from the game's Lutris config."""
+        if game.runner != "wine" or game.config_path is None:
+            return ""
+        try:
+            section = read_game_config(game.config_path).get("game")
+        except LutrisConfigError:
+            return ""
+        prefix = section.get("prefix") if isinstance(section, dict) else None
+        return str(Path(str(prefix)).expanduser()) if prefix else ""
+
     # -- launching -------------------------------------------------------------
     #
     # Through Lutris's own CLI, which starts the game from its stored config --
@@ -74,6 +85,9 @@ class LutrisLibrarySource(WrapperLibrarySource):
         """Ask Lutris to start a game. Returns (started, what to tell the user)."""
         if not self.can_launch:
             return False, "FAILED to launch (selected Lutris installation is unavailable)"
+        row = self.manager.row(game_id)
+        if row is not None:
+            self.refuse_unwrapped_prefix(row)
         if launch_lutris_game(game_id, home=self._home):
             return True, "launching via Lutris…"
         return False, "FAILED to launch (lutris would not start the game)"

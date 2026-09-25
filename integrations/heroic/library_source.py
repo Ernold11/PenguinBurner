@@ -10,6 +10,7 @@ from integrations.launchers.library_source import WrapperLibrarySource
 from integrations.launchers.wrapper_manager import LauncherGameRow
 from overlay.render_api import overlay_support
 
+from .config_store import HeroicConfigError, read_game_config
 from .manager import HeroicIntegrationManager
 from .process import (
     heroic_available,
@@ -85,6 +86,17 @@ class HeroicLibrarySource(WrapperLibrarySource):
 
     def _launch_game(self, row: LauncherGameRow) -> bool:
         return launch_heroic_game(row.game.runner, row.game.game_id, home=self._home)
+
+    def wine_prefix(self, game) -> str:
+        """``winePrefix`` from the game's own Heroic config."""
+        if game.is_native:
+            return ""
+        try:
+            settings = read_game_config(game.game_id, self._home).get(str(game.game_id))
+        except HeroicConfigError:
+            return ""
+        prefix = settings.get("winePrefix") if isinstance(settings, dict) else None
+        return str(Path(str(prefix)).expanduser()) if prefix else ""
 
     def probe_sessions(self, *, known_pids=()):
         return probe_heroic_sessions(known_pids=known_pids)
