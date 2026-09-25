@@ -15,6 +15,17 @@ See [per-game settings](game-library.md#per-game-settings) for profiles,
 Adaptive targets, GPU selection, and overlay controls. Games you have hidden in
 Faugus are not listed; unhide them there to configure them here.
 
+## Proton version
+
+Choose **Compatibility tool** to set the game's Proton runner. The list includes
+Faugus's Latest channels and locally installed builds visible to the selected
+native or Flatpak installation. **UMU-Proton Latest** is Faugus's empty runner
+setting; it does not inherit the default used when adding new games.
+Changes apply on the next launch. Close the game's settings window in Faugus
+before editing here to avoid overwriting the change. Linux-native and Steam
+entries do not use this selector. Use Faugus to install additional builds, then
+press **Rescan**.
+
 ## Launch arguments
 
 PenguinBurner adds its wrapper to the end of the game's **Launch arguments**,

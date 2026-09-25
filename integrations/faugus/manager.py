@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from integrations.launchers.compatibility import CompatibilityTools
 from integrations.launchers.wrapper_manager import (
     CommandWrite,
     EffectiveCommand,
     WrapperManager,
 )
 
+from .compatibility import FaugusCompatibility
 from .config_store import (
     SOURCE_LABELS,
     FaugusConfigError,
@@ -39,6 +41,10 @@ class FaugusIntegrationManager(WrapperManager):
     ):
         super().__init__(FAUGUS_GAME_SETTINGS_STORE, settings_path=settings_path)
         self._home = home
+        self.compatibility = CompatibilityTools(
+            FaugusCompatibility(home),
+            guidance="Applies on the next launch. Close Faugus's game settings before editing here.",
+        )
         self._document: list[dict] | None = None
         self.non_game_ids: frozenset[str] = frozenset()
 

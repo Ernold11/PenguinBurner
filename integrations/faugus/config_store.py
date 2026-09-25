@@ -42,7 +42,7 @@ class FaugusConfigError(RuntimeError):
     """A games.json that cannot be read or written as Faugus would."""
 
 
-def read_games_document(home: Path | None = None) -> list[dict]:
+def read_games_document(home: Path | None = None, *, strict: bool = False) -> list[dict]:
     """The whole library file, entries only."""
     path = games_path(home)
     try:
@@ -55,6 +55,8 @@ def read_games_document(home: Path | None = None) -> list[dict]:
         raise FaugusConfigError(f"{path.name} is not valid JSON: {error}") from error
     if not isinstance(payload, list):
         raise FaugusConfigError(f"{path.name} does not hold a list of games.")
+    if strict and any(not isinstance(entry, dict) for entry in payload):
+        raise FaugusConfigError(f"{path.name} contains an invalid game entry.")
     return [entry for entry in payload if isinstance(entry, dict)]
 
 

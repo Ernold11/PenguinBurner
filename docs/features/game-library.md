@@ -28,7 +28,7 @@ Discovery reads the library; wrapping a game changes its launch command.
 | Per-game target | Override the system-wide Adaptive FPS target; off follows that target. |
 | Overlay | Show the in-game HUD. Adaptive keeps required timing markers active when the HUD is hidden. |
 | Command | View or edit the launch command, Lutris prefix, Heroic wrapper row, or Faugus launch arguments. |
-| Compatibility tool | Choose the Wine/Proton version for a Windows game in Steam, Heroic, or native Lutris. Changes take effect on the next launch. |
+| Compatibility tool | Choose the Wine/Proton version for a Windows game in Steam, Heroic, Lutris, or Faugus. Changes take effect on the next launch. |
 
 The compatibility picker uses the launcher's available tools. **Heroic default**
 and **Lutris default** remove the per-game override and restore inherited settings.
