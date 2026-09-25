@@ -259,36 +259,8 @@ def test_store_identity_survives_rescan_failure_and_removal(tmp_path, monkeypatc
     assert manager.non_game_ids == frozenset()
 
 
-def _row(game, *, enabled=True):
-    from integrations.launchers.game_settings import LauncherGameSetting
-    from integrations.launchers.wrapper_manager import (
-        SOURCE_GAME,
-        EffectiveCommand,
-        LauncherGameRow,
-    )
-
-    return LauncherGameRow(game=game, setting=LauncherGameSetting(enabled=enabled),
-                           effective=EffectiveCommand(value="", source=SOURCE_GAME))
-
-
-def test_play_is_refused_while_the_prefix_runs_an_unwrapped_client(tmp_path, monkeypatch):
-    """The EA App opened on its own would start the game outside our wrapper."""
-    from integrations.faugus import library_source as module
-    from integrations.launchers import library_source as shared
-    from integrations.launchers.library import LaunchNotStartedError
-
-    _faugus(tmp_path, [GAME])
-    (game,) = read_faugus_games(tmp_path)
-    source = module.FaugusLibrarySource(manager=object(), home=tmp_path)
-    probed = []
-    monkeypatch.setattr(shared, "prefix_refusal",
-                        lambda prefix, name: probed.append(prefix) or f"EA App blocks {name}")
-
-    with pytest.raises(LaunchNotStartedError, match="EA App blocks Expedition 33"):
-        source.refuse_unwrapped_prefix(_row(game))
-    assert probed == [GAME["prefix"]]
-    # An unwrapped game never promised the overlay, so it is never probed.
-    source.refuse_unwrapped_prefix(_row(game, enabled=False))
-    assert probed == [GAME["prefix"]]
-    native = read_faugus_games(document=[{**GAME, "runner": "Linux-Native"}])[0]
-    assert source.wine_prefix(native) == ""
+def test_a_client_told_to_launch_a_game_is_that_game():
+    """Lutris-style Battle.net entries run the client with a launch argument."""
+    client = {**GAME, "gameid": "battlenet", "path": "/bnet/Battle.net.exe"}
+    diablo = {**client, "gameid": "diablo-iii", "game_arguments": '--exec="launch D3"'}
+    assert [g.game_id for g in read_faugus_games(document=[client, diablo])] == ["diablo-iii"]

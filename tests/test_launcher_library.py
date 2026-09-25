@@ -1075,9 +1075,7 @@ def test_shared_launch_validates_then_dispatches_to_the_selected_launcher(
     source = next(source for source in build_sources(home=tmp_path) if source.launcher_id == launcher)
     assert isinstance(source, WrapperLibrarySource)
     source.can_launch = case != "unavailable"
-    # Unwrapped, so the store-client prefix guard has nothing to protect.
-    row = SimpleNamespace(game=SimpleNamespace(game_id="demo", runner="legendary"),
-                          setting=SimpleNamespace(enabled=False))
+    row = SimpleNamespace(game=SimpleNamespace(game_id="demo", runner="legendary"))
     monkeypatch.setattr(source.manager, "row", lambda _id: None if case == "missing" else row)
     calls = []
     def launch(*args, **kwargs):

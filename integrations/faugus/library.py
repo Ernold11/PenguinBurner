@@ -49,8 +49,6 @@ class InstalledFaugusGame:
     hidden: bool
     installed_at: int = 0
     last_played: int = 0
-    #: The Wine prefix Faugus runs it in; empty for Linux-native entries.
-    prefix: str = ""
 
     @property
     def ready(self) -> bool:
@@ -105,6 +103,10 @@ def read_faugus_games(
 
 
 def is_store_client(entry: dict) -> bool:
+    """A bare store client. The same client told to launch a game -- Battle.net's
+    ``--exec="launch D3"``, EA's ``origin2://game/launch`` -- is that game."""
+    if str(entry.get("game_arguments") or "").strip():
+        return False
     path = str(entry.get("path") or "").replace("\\", "/").strip().casefold()
     return Path(path).name in _STORE_CLIENTS or path.endswith(
         "/rockstar games/launcher/launcher.exe"
@@ -126,7 +128,6 @@ def _game(entry: dict) -> InstalledFaugusGame | None:
         hidden=bool(entry.get("hidden")),
         installed_at=_created_at(executable),
         last_played=_last_played(entry.get("last_played")),
-        prefix=str(entry.get("prefix") or "").strip(),
     )
 
 

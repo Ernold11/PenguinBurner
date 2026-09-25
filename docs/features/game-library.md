@@ -108,16 +108,6 @@ wrapper or GPU-profile evidence is a neutral status shown in the button's
 tooltip, not a failure warning. Wrapper registration confirms the launch
 wrapper, not that the HUD has rendered.
 
-Games that run through a store client — the EA App, Battle.net, Ubisoft
-Connect, Epic Games Launcher, GOG Galaxy and similar — get the overlay and GPU
-profile only when **Play** starts the client too, so the client runs inside the
-wrapper and passes it on. If a Faugus, Lutris or Heroic game is wrapped and a
-program is already running in its Wine prefix without PenguinBurner, **Play**
-refuses and names it, for example *"EA App is already running without
-PenguinBurner"*. Close it, then press **Play**. Wine's own background processes
-do not count, and a check that cannot read the running processes never blocks
-a launch.
-
 If launch preparation fails before a request is sent, **Play** becomes available
 again and other games remain launchable. A refused retry does not clear an earlier
 launch whose status is still unknown. Errors after possible dispatch make
