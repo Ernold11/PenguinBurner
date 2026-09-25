@@ -6,14 +6,16 @@ makes the read a single parse, and it makes ``gameid`` the only identity there
 is: Faugus derives it from the title and uses it for the icon, the cover and
 the launch, so it is what PenguinBurner keys a game on too.
 
-Two things Faugus simply does not record: when a game was installed, and when
-it was last played. Both are reported as unknown rather than guessed, so the
-library's time-based sorts place these games last instead of somewhere wrong.
+Faugus has no install timestamp. The executable creation time provides a local
+install-time estimate; unsupported filesystems leave it unknown. Recent Faugus
+versions also record an ISO last-played timestamp.
 """
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .config_store import FaugusConfigError, read_games_document
@@ -27,6 +29,14 @@ NATIVE_RUNNER = "Linux-Native"
 #: Entries Faugus hands to the Steam client instead of running itself.
 STEAM_RUNNER = "Steam"
 
+# Store clients are launch infrastructure, not games. Match executables rather
+# than editable titles; Launcher.exe alone is also used by real games.
+_STORE_CLIENTS = {
+    "amazon games.exe", "battle.net.exe", "ealauncher.exe", "eadesktop.exe",
+    "epicgameslauncher.exe", "galaxyclient.exe", "ubisoftconnect.exe",
+    "upc.exe", "uplay.exe", "origin.exe", "wgc.exe", "steam.exe",
+}
+
 
 @dataclass(frozen=True)
 class InstalledFaugusGame:
@@ -37,6 +47,8 @@ class InstalledFaugusGame:
     playtime_seconds: int
     art_path: Path | None
     hidden: bool
+    installed_at: int = 0
+    last_played: int = 0
 
     @property
     def ready(self) -> bool:
@@ -65,11 +77,6 @@ class InstalledFaugusGame:
     def playtime_hours(self) -> float:
         return self.playtime_seconds / _SECONDS_PER_HOUR
 
-    @property
-    def last_played(self) -> int:
-        """Unknown: Faugus totals playtime but never records a last launch."""
-        return 0
-
 
 def read_faugus_games(
     home: Path | None = None,
@@ -77,7 +84,7 @@ def read_faugus_games(
     include_hidden: bool = False,
     document: list[dict] | None = None,
 ) -> tuple[InstalledFaugusGame, ...]:
-    """Every game Faugus knows, in the order Faugus stores them.
+    """Games, excluding store clients, in the order Faugus stores them.
 
     Hidden entries are dropped by default: hiding one is the user saying they
     do not want to see it, and the library tab is not the place to overrule
@@ -95,18 +102,28 @@ def read_faugus_games(
     )
 
 
+def is_store_client(entry: dict) -> bool:
+    path = str(entry.get("path") or "").replace("\\", "/").strip().casefold()
+    return Path(path).name in _STORE_CLIENTS or path.endswith(
+        "/rockstar games/launcher/launcher.exe"
+    )
+
+
 def _game(entry: dict) -> InstalledFaugusGame | None:
     game_id = str(entry.get("gameid") or "").strip()
-    if not game_id:
+    executable = str(entry.get("path") or "").strip()
+    if not game_id or is_store_client(entry):
         return None
     return InstalledFaugusGame(
         game_id=game_id,
         name=str(entry.get("title") or "").strip(),
         runner=str(entry.get("runner") or "").strip(),
-        executable=str(entry.get("path") or "").strip(),
+        executable=executable,
         playtime_seconds=_playtime_seconds(entry),
         art_path=_art_path(entry),
         hidden=bool(entry.get("hidden")),
+        installed_at=_created_at(executable),
+        last_played=_last_played(entry.get("last_played")),
     )
 
 
@@ -140,4 +157,25 @@ def _int(value: object) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        return 0
+
+
+def _created_at(executable: str) -> int:
+    """Local file creation, never mtime (which archives can preserve)."""
+    try:
+        if not executable or not Path(executable).is_absolute() or not Path(executable).is_file():
+            return 0
+        result = subprocess.run(
+            ["stat", "-L", "--format=%W", "--", executable],
+            capture_output=True, text=True, timeout=1, check=True,
+        )
+        return max(_int(result.stdout.strip()), 0)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+
+
+def _last_played(value: object) -> int:
+    try:
+        return max(int(datetime.fromisoformat(str(value)).timestamp()), 0)
+    except (ValueError, OverflowError, OSError):
         return 0

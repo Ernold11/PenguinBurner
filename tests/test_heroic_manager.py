@@ -202,13 +202,13 @@ def test_enabling_keeps_the_wrappers_the_game_inherited(tmp_path) -> None:
     assert manager.set_game_enabled("Turkey", True).ok
 
     assert _wrappers(tmp_path) == [
+        {"exe": "game-performance", "args": ""},
         {
             "exe": "env",
             "args": (
                 f"PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0 {WRAPPER_FLAG}"
             ),
         },
-        {"exe": "game-performance", "args": ""},
     ]
     assert _stored(tmp_path).original_command == "game-performance"
 
@@ -244,11 +244,11 @@ def test_the_overlay_switch_rewrites_only_our_own_row(tmp_path) -> None:
     rows = _wrappers(tmp_path)
     # Overlay on, so the wrapper turns the markers on by itself and the env
     # prefix goes away with them.
-    assert rows[0] == {
+    assert rows[-1] == {
         "exe": "PENGUIN_BURNER",
         "args": f"--pb-overlay=1 {WRAPPER_FLAG}",
     }
-    assert rows[1:] == [{"exe": "game-performance", "args": ""}]
+    assert rows[:-1] == [{"exe": "game-performance", "args": ""}]
 
 
 def test_a_hand_edit_re_reads_the_toggles_from_what_landed(tmp_path) -> None:

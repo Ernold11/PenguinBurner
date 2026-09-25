@@ -35,7 +35,7 @@ def _manager(tmp_path):
     )
 
 
-def test_enabling_puts_the_wrapper_in_front_of_what_was_there(tmp_path):
+def test_enabling_puts_the_wrapper_innermost_after_what_was_there(tmp_path):
     path = _faugus(tmp_path, [_game()])
     manager = _manager(tmp_path)
     manager.refresh()
@@ -44,9 +44,10 @@ def test_enabling_puts_the_wrapper_in_front_of_what_was_there(tmp_path):
 
     command = json.loads(path.read_text())[0]["launch_arguments"]
     assert wrapper_present(command)
-    # The user's own command is kept, and kept last: Faugus runs the whole
-    # string as one prefix, so ours has to come first to wrap theirs.
-    assert command.endswith("game-performance")
+    # The user's own prefix is kept, and kept first: ours sits innermost,
+    # next to the game, so gamescope and friends never inherit our layer env.
+    assert command.startswith("game-performance ")
+    assert command.endswith("--pb-game-id=faugus:e33")
 
 
 def test_disabling_restores_the_original_command_exactly(tmp_path):
@@ -74,7 +75,7 @@ def test_the_overlay_switch_rewrites_the_flag_in_place(tmp_path):
     command = json.loads(path.read_text())[0]["launch_arguments"]
     assert overlay_present(command)
     assert command.count("--pb-overlay") == 1
-    assert command.endswith("game-performance")
+    assert command.startswith("game-performance ")
 
 
 def test_a_game_with_no_command_of_its_own_gets_only_ours(tmp_path):

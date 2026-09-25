@@ -21,14 +21,13 @@ from .config_store import (
     read_games_document,
     write_launch_arguments,
 )
-from .library import InstalledFaugusGame, read_faugus_games
+from .library import InstalledFaugusGame, is_store_client, read_faugus_games
 from .paths import faugus_installation, faugus_installed
 from .settings import FAUGUS_GAME_SETTINGS_STORE
 
 
 class FaugusIntegrationManager(WrapperManager):
     launcher_id = "faugus"
-    shell_assignments = True
     display_name = "Faugus"
     source_labels = SOURCE_LABELS
 
@@ -41,6 +40,7 @@ class FaugusIntegrationManager(WrapperManager):
         super().__init__(FAUGUS_GAME_SETTINGS_STORE, settings_path=settings_path)
         self._home = home
         self._document: list[dict] | None = None
+        self.non_game_ids: frozenset[str] = frozenset()
 
     @property
     def installation(self):
@@ -55,6 +55,15 @@ class FaugusIntegrationManager(WrapperManager):
             self._document = read_games_document(self._home)
         except FaugusConfigError:
             self._document = []
+            return ()
+        # Keep known clients through removal/partial rewrites while they run.
+        # An explicitly reused ID for an actual game supersedes that knowledge.
+        kinds = {str(entry.get("gameid") or "").strip(): is_store_client(entry)
+                 for entry in self._document}
+        self.non_game_ids = frozenset(
+            game_id for game_id in self.non_game_ids | kinds.keys()
+            if kinds.get(game_id, True)
+        )
         return read_faugus_games(self._home, document=self._document)
 
     def read_effective(self, game: InstalledFaugusGame) -> EffectiveCommand:

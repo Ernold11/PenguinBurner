@@ -17,22 +17,21 @@ Faugus are not listed; unhide them there to configure them here.
 
 ## Launch arguments
 
-PenguinBurner adds its wrapper to the game's **Launch arguments**, in
-`games.json`, before your existing command. Leading environment assignments
-stay before the wrapper so settings such as `PROTON_ENABLE_WAYLAND=0` still
-reach the game:
+PenguinBurner adds its wrapper to the end of the game's **Launch arguments**,
+in `games.json`, after your existing command:
 
 ```json
-"launch_arguments": "PROTON_ENABLE_WAYLAND=0 PENGUIN_BURNER --pb-overlay=1 --pb-game-id=faugus:expedition-33 game-performance"
+"launch_arguments": "PROTON_ENABLE_WAYLAND=0 gamescope -f -- PENGUIN_BURNER --pb-overlay=1 --pb-game-id=faugus:expedition-33"
 ```
 
 The ID identifies the game to PenguinBurner, qualified by the launcher that
 owns it. Faugus runs the whole field as one command prefix, ahead of gamemode,
-MangoHud and umu-run, so our wrapper goes first and yours stays between it and
-the game. Every other field of the entry, and the order of your library, is
-left exactly as it was. Disabling removes our part and restores your own
-arguments. For a game configured by an older integration, changing a wrapper
-setting rewrites the command with environment assignments in the correct place.
+MangoHud and umu-run. Your part runs first and our wrapper sits last, next to
+the game, as it does in Steam: gamescope and other wrappers you add never pick
+up the overlay layer themselves. Every other field of the entry, and the order
+of your library, is left exactly as it was. Disabling removes our part and
+restores your own arguments. A command written by an older version, with our
+wrapper first, is moved into place the next time you change a wrapper setting.
 
 The **Command** field is editable and shows that field as Faugus stores it.
 Press Enter or leave the field to save. Clearing it leaves the game with no
@@ -56,18 +55,29 @@ from its own entry with the runner you chose there. Wrapped sessions are found
 through the game identity and session PID carried in the process environment,
 and only those sessions can be stopped from PenguinBurner.
 
-If a game starts without the wrapper, Game Library shows **Running in Faugus**
+If a game starts without the wrapper, Game Library shows **Running — PBurn unconfirmed**
 rather than reporting nothing. Close that game in Faugus or in the game
 itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
 in front of every game it starts — the same one its own "kill this game" uses —
 so they are observed even though they carry none of our identity.
 
+An already-running store client can start a game with the client's inherited
+ID. PenguinBurner also checks the game's full executable path in its Wine
+prefix to follow that handoff. Detection alone does not prove that the overlay
+or Adaptive reached the game, and does not grant Stop control over the client.
+
 ## Sorting
 
-Faugus records neither an install date nor a last-played time; it totals
-playtime only. **Recently installed** and **Recently played** therefore place
-Faugus games last, rather than at a guessed position. **Most played** and
-**Alphabetical** work normally.
+**Recently installed** uses the local creation time of the game's executable
+as an estimate, because Faugus does not record an install date. Replacing or
+copying the executable can change this estimate. Filesystems without creation
+timestamps leave the date unknown and sort last. **Recently played** uses
+Faugus's saved last-played timestamp when available.
+
+Store clients such as EA App, Battle.net and Ubisoft Connect are excluded from
+PBurn's Game Library and do not block Play while open. Their entries stay in
+Faugus; add the actual installed
+game there to configure it in PBurn.
 
 ## Troubleshooting
 

@@ -63,8 +63,8 @@ def test_playtime_is_read_in_seconds_not_minutes(tmp_path):
     assert game.playtime_hours == 0.025
 
 
-def test_install_time_and_last_played_are_unknown(tmp_path):
-    """Faugus records neither, so both sort last rather than sort wrong."""
+def test_missing_executable_and_last_played_are_unknown(tmp_path):
+    """Missing local metadata must not turn into a fabricated recent date."""
     _faugus(tmp_path, [GAME])
 
     (game,) = read_faugus_games(tmp_path)
@@ -150,3 +150,110 @@ def test_a_steam_runner_entry_reports_no_playtime_of_its_own(tmp_path):
     hours = {game.game_id: game.playtime_hours for game in read_faugus_games(tmp_path)}
 
     assert hours == {"expedition-33": 2.0, "via-steam": 0.0}
+
+
+@pytest.mark.parametrize("executable", [
+    "EA Desktop/EALauncher.exe", "EA Desktop/EADesktop.exe",
+    "Battle.net/Battle.net.exe", "Ubisoft Game Launcher/UbisoftConnect.exe",
+    "Epic Games/EpicGamesLauncher.exe", "GOG Galaxy/GalaxyClient.exe",
+    "Amazon Games/Amazon Games.exe", "Wargaming.net/GameCenter/wgc.exe",
+    "Rockstar Games/Launcher/Launcher.exe",
+])
+def test_store_clients_are_excluded_even_when_renamed(executable):
+    document = [{**GAME, "title": "Custom name", "path": f"/prefix/{executable}"}, GAME]
+    assert [g.name for g in read_faugus_games(document=document)] == [GAME["title"]]
+
+
+def test_game_launcher_executable_and_shared_ea_prefix_are_kept():
+    document = [
+        {**GAME, "gameid": "ea-app", "path": "/ea/EALauncher.exe"},
+        {**GAME, "gameid": "nfs", "path": "/ea/EA Games/NFS/NFS11Remastered.exe"},
+        {**GAME, "gameid": "game", "path": "/games/Game/Launcher.exe"},
+    ]
+    assert [g.game_id for g in read_faugus_games(document=document)] == ["nfs", "game"]
+
+
+def test_install_estimate_uses_birth_time_and_reaches_shared_sort(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from integrations.faugus import library
+    from integrations.faugus.library_source import FaugusLibrarySource
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from integrations.launchers.wrapper_manager import (
+        SOURCE_GAME,
+        EffectiveCommand,
+        LauncherGameRow,
+    )
+
+    executable = tmp_path / "nfs.exe"
+    executable.touch()
+    monkeypatch.setattr(library.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="1790278954\n"))
+    (game,) = read_faugus_games(document=[{**GAME, "path": str(executable)}])
+    source = FaugusLibrarySource(manager=object())
+    source._rows = (LauncherGameRow(game=game, setting=LauncherGameSetting(),
+                                   effective=EffectiveCommand(value="", source=SOURCE_GAME)),)
+    assert source.games()[0].installed_at == 1790278954
+
+
+@pytest.mark.parametrize("stamp", ["0", "-1", "unknown"])
+def test_missing_birth_time_stays_unknown(tmp_path, monkeypatch, stamp):
+    from types import SimpleNamespace
+
+    from integrations.faugus import library
+    executable = tmp_path / "game.exe"
+    executable.touch()
+    monkeypatch.setattr(library.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout=stamp))
+    assert read_faugus_games(document=[{**GAME, "path": str(executable)}])[0].installed_at == 0
+
+
+@pytest.mark.parametrize("stamp, expected", [
+    ("2026-09-24T19:00:00+00:00", 1790276400),
+    ("", 0), (None, 0), ("bad timestamp", 0), ("1900-01-01", 0),
+])
+def test_reads_saved_last_played(stamp, expected):
+    assert read_faugus_games(document=[{**GAME, "last_played": stamp}])[0].last_played == expected
+
+
+def test_birth_time_probe_failure_keeps_game_visible(tmp_path, monkeypatch):
+    from integrations.faugus import library
+    executable = tmp_path / "game.exe"
+    executable.touch()
+    def unavailable(*args, **kwargs):
+        raise OSError("stat unavailable")
+    monkeypatch.setattr(library.subprocess, "run", unavailable)
+    (game,) = read_faugus_games(document=[{**GAME, "path": str(executable)}])
+    assert game.installed_at == 0
+    assert game.name == GAME["title"]
+
+
+def test_filtered_clients_are_identified_to_the_session_ui(tmp_path):
+    from integrations.faugus.library_source import FaugusLibrarySource
+    from integrations.faugus.manager import FaugusIntegrationManager
+
+    _faugus(tmp_path, [GAME, {**GAME, 'gameid': 'ea-app', 'path': '/ea/EALauncher.exe'}])
+    manager = FaugusIntegrationManager(home=tmp_path)
+    manager.read_games()
+    source = FaugusLibrarySource(manager=manager)
+    assert source.non_game_ids == frozenset({'ea-app'})
+    assert GAME['gameid'] not in source.non_game_ids
+
+
+def test_store_identity_survives_rescan_failure_and_removal(tmp_path, monkeypatch):
+    from integrations.faugus import manager as module
+    from integrations.faugus.config_store import FaugusConfigError
+
+    data = _faugus(tmp_path, [{**GAME, 'gameid': 'client', 'path': '/ea/EALauncher.exe'}])
+    manager = module.FaugusIntegrationManager(home=tmp_path)
+    manager.read_games()
+    (data / 'games.json').write_text('[]')
+    manager.read_games()
+    assert manager.non_game_ids == frozenset({'client'})
+    with monkeypatch.context() as patch:
+        def failed(*args, **kwargs):
+            raise FaugusConfigError('temporarily unreadable')
+        patch.setattr(module, 'read_games_document', failed)
+        manager.read_games()
+        assert manager.non_game_ids == frozenset({'client'})
+    (data / 'games.json').write_text(json.dumps([{**GAME, 'gameid': 'client'}]))
+    manager.read_games()
+    assert manager.non_game_ids == frozenset()

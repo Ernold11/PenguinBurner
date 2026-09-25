@@ -2,8 +2,9 @@
 
 Every launcher splices the same argv fragment — the wrapper name plus its
 ``--pb-*`` flags — into a string the launcher later runs. Only the surrounding
-field differs: Steam replaces ``%command%`` inside its launch options, Lutris
-prepends to ``prefix_command``, Heroic adds a wrapper entry. The vocabulary
+field differs: Steam replaces ``%command%`` inside its launch options; Lutris,
+Heroic and Faugus append to the end of their command prefix. Either way the
+wrapper is innermost, next to the game. The vocabulary
 itself, and stripping it back out, is the wrapper's own business, so it lives
 beside the wrapper rather than inside any one integration.
 """
@@ -128,21 +129,6 @@ def replace_wrapper_executable(value: str, executable: str) -> str:
         if _wrapper_word(word):
             value = value[:start] + shlex.quote(executable) + value[end:]
     return value
-
-
-def split_shell_assignments(value: str) -> tuple[str, str]:
-    """Separate leading shell assignments without rewriting quoted values.
-
-    Shell launchers need these before the wrapper executable, otherwise exec
-    would treat the first assignment as a program name. Check the raw name:
-    quoting a whole ``NAME=value`` word makes it a command, not an assignment.
-    """
-    end = 0
-    for start, stop, _word in _command_words(value):
-        if not re.match(r"[A-Za-z_][A-Za-z_0-9]*=", value[start:stop]):
-            break
-        end = stop
-    return value[:end].strip(), value[end:].lstrip()
 
 
 def wrapper_present(value: str | None) -> bool:

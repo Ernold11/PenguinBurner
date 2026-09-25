@@ -9,7 +9,9 @@ the part they share.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -83,6 +85,10 @@ _ACTIVE_GAME_STATES = ("launching", "running", "external", "stopping", "unconfir
 
 #: Reconcile unsupported launcher notifications and missed filesystem events.
 _RECONCILE_MS = 30000  # recovery for missed events; never establishes failure
+#: A launch with no sign of the game after this long hands Play back, behind a
+#: second-instance confirmation. Launcher clients such as the EA App can take
+#: a minute before the wrapper starts, so this is generous.
+_LAUNCH_STALL_S = 120.0
 #: Roughly three wrapped lines of a launch command.
 _MULTILINE_HEIGHT = 78
 #: Wide enough for a full Proton build name without eliding it.
@@ -102,6 +108,7 @@ class _TrackedGame:
     warning: str = ""
     note: str = ""
     confirmed: bool = False
+    since: float = dataclasses.field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -549,20 +556,12 @@ class GameLibraryPanel:
         self.play_button.setProperty("playState", "idle")
         self.play_button.clicked.connect(self._play_stop_clicked)
         hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
-        self.retry_launch_button = self.QtWidgets.QPushButton("Retry launch…")
-        self.retry_launch_button.clicked.connect(self._retry_launch)
-        self.retry_launch_button.hide()
-        hero.addWidget(self.retry_launch_button, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
         self.launch_warning_label = self.QtWidgets.QLabel("")
         self.launch_warning_label.setObjectName("gameLaunchWarning")
         self.launch_warning_label.setWordWrap(True)
         self.launch_warning_label.hide()
         page.addWidget(self.launch_warning_label)
-        self.launch_note_label = self.QtWidgets.QLabel("")
-        self.launch_note_label.setWordWrap(True)
-        self.launch_note_label.hide()
-        page.addWidget(self.launch_note_label)
         self.compatibility_label = self.QtWidgets.QLabel("")
         self.compatibility_label.setObjectName("gameCompatibility")
         self.compatibility_label.setWordWrap(True)
@@ -855,7 +854,7 @@ class GameLibraryPanel:
             if not isinstance(session, dict):
                 continue
             key = str(session.get("app_id") or "")
-            if key.partition(":")[0] not in self._by_launcher:
+            if key.partition(":")[0] not in self._by_launcher or not self._is_game_session(key):
                 continue
             current.add(key)
             if not session.get("wrapped"):
@@ -1396,8 +1395,6 @@ class GameLibraryPanel:
                 self.title_label.setText("Select a game")
                 self.metadata_label.setText("")
                 self.play_button.setVisible(False)
-                self.retry_launch_button.hide()
-                self.launch_note_label.hide()
                 self.launch_warning_label.hide()
                 self.compatibility_label.hide()
                 self._set_gated(False)
@@ -2212,6 +2209,11 @@ class GameLibraryPanel:
         track = self._tracked.get(key)
         return track.state if track is not None else ""
 
+    def _is_game_session(self, key: str) -> bool:
+        launcher, _, game_id = key.partition(":")
+        source = self._by_launcher.get(launcher)
+        return game_id not in getattr(source, "non_game_ids", ())
+
     def _other_active_game(self) -> str:
         """Name of another game that is launching, running or stopping.
 
@@ -2220,6 +2222,9 @@ class GameLibraryPanel:
         """
         for key, track in self._tracked.items():
             if key == self._selected_key or track.state not in _ACTIVE_GAME_STATES:
+                continue
+            # Also covers clients classified after the first session event.
+            if not self._is_game_session(key):
                 continue
             game = self._game_for_key(key)
             return game.name if game is not None else key
@@ -2231,22 +2236,19 @@ class GameLibraryPanel:
         warning = track.warning if track else ""
         self.launch_warning_label.setText(warning)
         self.launch_warning_label.setVisible(bool(warning))
+        # One button, one line of state. Transient session detail goes in the
+        # tooltip: labels appearing and vanishing under the button while a
+        # launcher hands off between processes read as a flickering mess.
         note = track.note if track else ""
-        self.launch_note_label.setText(note)
-        self.launch_note_label.setVisible(bool(note))
-        self.retry_launch_button.setVisible(
-            bool(game) and self._tracked_state(self._selected_key) == "launching"
-            and self._launch_thread is None
-        )
-        self.retry_launch_button.setEnabled(not self._write_busy and not self._other_active_game())
         if not self._can_launch(game):
-            self.retry_launch_button.hide()
             self.play_button.setVisible(False)
             return
         self.play_button.setVisible(True)
         state = self._tracked_state(self._selected_key)
         blocking = self._other_active_game()
-        if state == "launching":
+        if state == "launching" and self._launch_stalled(track):
+            text, enabled, play_state = "Play", not blocking, "idle"
+        elif state == "launching":
             text, enabled, play_state = "Starting…", False, "starting"
         elif state == "running":
             text, enabled, play_state = "Stop", True, "running"
@@ -2256,7 +2258,7 @@ class GameLibraryPanel:
                     else "Running — PBurn unconfirmed")
             enabled, play_state = False, "external"
         elif state == "unconfirmed":
-            text, enabled, play_state = "Retry launch…", not blocking, "idle"
+            text, enabled, play_state = "Play", not blocking, "idle"
         elif state == "stopping":
             # Live, not greyed out. A launcher's stop is a request its game may
             # shrug off -- Lutris passes one SIGTERM on and only insists when
@@ -2277,7 +2279,7 @@ class GameLibraryPanel:
                 f"{blocking} is still running. Stop it before launching another game."
             )
             if blocking and state not in _ACTIVE_GAME_STATES
-            else ""
+            else wrapped_tooltip(note) if note else ""
         )
         if self.play_button.property("playState") != play_state:
             self.play_button.setProperty("playState", play_state)
@@ -2294,10 +2296,18 @@ class GameLibraryPanel:
             # Pressed again while a stop is pending: ask once more rather than
             # ignore it. Which signal that turns into is the launcher's affair.
             self._stop_game(game)
-        elif state == "unconfirmed":
+        elif state == "unconfirmed" or (
+            state == "launching" and self._launch_stalled(self._tracked.get(self._selected_key))
+        ):
             self._retry_launch()
         elif state not in _ACTIVE_GAME_STATES and not self._other_active_game():
             self._play_game(game)
+
+    def _launch_stalled(self, track: _TrackedGame | None) -> bool:
+        """A dispatched launch that nothing has confirmed for a long time."""
+        return (track is not None and track.state == "launching" and not track.confirmed
+                and self._launch_thread is None
+                and time.monotonic() - track.since > _LAUNCH_STALL_S)
 
     def _retry_launch(self) -> None:
         game = self._selected_game()
@@ -2460,13 +2470,17 @@ class GameLibraryPanel:
                     if self._events is not None and self._events.available and callable(observe):
                         from runtime.daemon_client import observe_launcher_session
 
-                        titles = {g.game_id: g.name for g in source.games()}
+                        games = {g.game_id: g for g in source.games()}
                         for game_id, pids in cast(dict[str, tuple[int, ...]], observe() or {}).items():
+                            if not self._is_game_session(f"{source.launcher_id}:{game_id}"):
+                                continue
+                            game = games.get(game_id)
                             for pid in pids:
                                 try:
                                     observe_launcher_session(
                                         pid, f"{source.launcher_id}:{game_id}",
-                                        title=titles.get(game_id, ""),
+                                        title=game.name if game else "",
+                                        executable=game.executable if game else "",
                                     )
                                 except (RuntimeError, OSError, ValueError):
                                     pass  # An exited/inaccessible process is unconfirmed.
@@ -2501,7 +2515,7 @@ class GameLibraryPanel:
                 continue
             for game_id in running:
                 key = f"{launcher}:{game_id}"
-                if key in self._session_keys:
+                if key in self._session_keys or not self._is_game_session(key):
                     continue
                 track = self._tracked.setdefault(key, _TrackedGame("unconfirmed"))
                 if game_id in (external_by_launcher or {}).get(launcher, ()):

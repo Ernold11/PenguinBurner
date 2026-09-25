@@ -169,6 +169,7 @@ def test_an_external_session_cannot_be_stopped_but_a_wrapped_one_can(monkeypatch
     from integrations.faugus.library_source import FaugusLibrarySource
 
     source = FaugusLibrarySource.__new__(FaugusLibrarySource)
+    source._rows = ()
     source._running_pids = ()
     source._external_games = frozenset()
     monkeypatch.setattr(
@@ -189,6 +190,7 @@ def test_source_exposes_only_external_processes_for_daemon_observation(monkeypat
     from integrations.faugus.library_source import FaugusLibrarySource
 
     source = object.__new__(FaugusLibrarySource)
+    source._rows = ()
     sessions = LauncherSessions(wrapped={"wrapped": (42,)}, external={"external": (43, 44)})
     monkeypatch.setattr(
         "integrations.faugus.library_source.probe_faugus_sessions", lambda **kwargs: sessions,
@@ -200,3 +202,37 @@ def test_source_exposes_only_external_processes_for_daemon_observation(monkeypat
     )
     assert source.observed_processes() is None
     assert source.external_game_ids() == frozenset({"external"})
+
+
+@pytest.mark.parametrize("same_prefix", [True, False])
+def test_store_handoff_matches_full_executable_and_prefix(tmp_path, monkeypatch, same_prefix):
+    prefix = tmp_path / "prefix"
+    (prefix / "dosdevices").mkdir(parents=True)
+    (prefix / "drive_c").mkdir()
+    (prefix / "dosdevices/c:").symlink_to("../drive_c")
+    executable = prefix / "drive_c/NFS.exe"
+    executable.touch()
+    root = tmp_path / "proc"
+    root.mkdir()
+    active_prefix = prefix if same_prefix else tmp_path / "other-prefix"
+    _proc(root, 10, f"FAUGUSID=ea-app\0WINEPREFIX={active_prefix}\0".encode())
+    (root / "10/cmdline").write_bytes(b"C:\\NFS.exe\0")
+    _proc(root, 11, f"FAUGUSID=ea-app\0WINEPREFIX={prefix}\0".encode())
+    (root / "11/cmdline").write_bytes(b"C:\\EADesktop.exe\0C:\\NFS.exe\0")
+    _probe(monkeypatch, root)
+    result = process.probe_faugus_sessions(executables={"nfs": str(executable)})
+    assert result is not None and not result.wrapped
+    assert {key: set(pids) for key, pids in result.external.items()} == (
+        {"nfs": {10}, "ea-app": {11}} if same_prefix else {"ea-app": {10, 11}}
+    )
+
+
+def test_handoff_observation_survives_while_wrapper_is_still_running(monkeypatch):
+    monkeypatch.setattr(wrapped_sessions, "run_on_host", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, json.dumps({
+                            "sessions": [(10, "faugus:nfs")],
+                            "external": [(11, "nfs")], "unreadable": [],
+                        })))
+    assert process.probe_faugus_sessions() == LauncherSessions(
+        wrapped={"nfs": (10,)}, external={"nfs": (11,)},
+    )

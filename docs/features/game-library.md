@@ -96,16 +96,20 @@ current session snapshot. Launchers without complete notifications also receive
 periodic recovery scans; a missed scan never proves that a game failed or that
 PenguinBurner was absent.
 
-**Starting…** means the launch was requested but a game session has not yet been
-confirmed. **Retry launch…** asks before attempting another instance. A detected
+The game has one button: **Play**, **Starting…** while the launch is pending,
+and **Stop** once the game session is confirmed. **Starting…** means the launch
+was requested but a game session has not yet been confirmed. If nothing confirms
+it for two minutes, or its status becomes unknown, the button returns to
+**Play** and asks before attempting a possible second instance. A detected
 external session shows **Running — PBurn unconfirmed** and disables Play. Missing
-wrapper or GPU-profile evidence is a neutral status, not a failure warning.
-Wrapper registration confirms the launch wrapper, not that the HUD has rendered.
+wrapper or GPU-profile evidence is a neutral status shown in the button's
+tooltip, not a failure warning. Wrapper registration confirms the launch
+wrapper, not that the HUD has rendered.
 
 If launch preparation fails before a request is sent, **Play** becomes available
 again and other games remain launchable. A refused retry does not clear an earlier
-launch whose status is still unknown. Errors after possible dispatch continue to
-require **Retry launch…** confirmation.
+launch whose status is still unknown. Errors after possible dispatch make
+**Play** ask for confirmation before launching again.
 
 If the daemon disconnects, the last known session is retained until recovery.
 Reconnection only restores observation: it does not apply a skipped GPU profile

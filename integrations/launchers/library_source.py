@@ -188,6 +188,7 @@ class WrapperLibrarySource(LiveOverlaySource):
             detail=row,
             overlay_supported=supported,
             overlay_unsupported_reason=reason,
+            executable=str(getattr(game, "executable", "") or ""),
         )
 
     def launch(self, game_id: str) -> tuple[bool, str]:

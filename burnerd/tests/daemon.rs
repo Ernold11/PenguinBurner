@@ -3414,3 +3414,60 @@ fn faugus_external_session_verifies_identity_and_reports_exit() {
     }
     panic!("Faugus exit was not reported");
 }
+
+#[test]
+fn faugus_store_handoff_reclassifies_only_the_matching_executable() {
+    use std::os::unix::process::CommandExt;
+    let daemon = Daemon::start(&[]);
+    let prefix = tempfile::tempdir().unwrap();
+    std::fs::create_dir(prefix.path().join("dosdevices")).unwrap();
+    std::fs::create_dir(prefix.path().join("drive_c")).unwrap();
+    std::os::unix::fs::symlink("../drive_c", prefix.path().join("dosdevices/c:")).unwrap();
+    let executable = prefix.path().join("drive_c/NFS.exe");
+    std::fs::write(&executable, "").unwrap();
+    let mut game = Command::new("/usr/bin/python3")
+        .arg0(r"C:\NFS.exe")
+        .args([
+            "-c",
+            "import sys; print('ready', flush=True); sys.stdin.readline()",
+        ])
+        .env("FAUGUSID", "ea-app")
+        .env("WINEPREFIX", prefix.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_eq!(
+        read_line(&mut BufReader::new(game.stdout.take().unwrap()))
+            .unwrap()
+            .trim(),
+        "ready"
+    );
+    let observe = |app_id: &str, path: &std::path::Path| {
+        daemon.request(
+            &serde_json::json!({
+                "method": "observe_launcher_session", "pid": game.id(),
+                "app_id": app_id, "executable": path,
+            })
+            .to_string(),
+        )
+    };
+    assert_eq!(observe("faugus:ea-app", &executable)["ok"], true);
+    assert_eq!(
+        observe("faugus:nfs", &prefix.path().join("elsewhere/NFS.exe"))["ok"],
+        false
+    );
+    assert_eq!(observe("faugus:nfs", &executable)["ok"], true);
+    let snapshot = daemon.request(r#"{"method":"launcher_sessions"}"#);
+    let session = snapshot["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["pid"] == game.id())
+        .unwrap();
+    assert_eq!(session["app_id"], "faugus:nfs");
+    assert_eq!(session["wrapped"], false);
+    assert_eq!(session["profile"], "unconfirmed");
+    drop(game.stdin.take());
+    assert!(game.wait().unwrap().success());
+}

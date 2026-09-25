@@ -37,16 +37,18 @@ PenguinBurner adds its wrapper to the game's `wrapperOptions`, in
 
 ```json
 "wrapperOptions": [
-  { "exe": "PENGUIN_BURNER", "args": "--pb-overlay=1 --pb-game-id=heroic:Turkey" },
-  { "exe": "game-performance", "args": "" }
+  { "exe": "game-performance", "args": "" },
+  { "exe": "PENGUIN_BURNER", "args": "--pb-overlay=1 --pb-game-id=heroic:Turkey" }
 ]
 ```
 
 The ID identifies the game to PenguinBurner, qualified by the launcher that
 owns it. Heroic replaces rather than merges, so a game's own rows win outright
 over the global ones in Settings → Advanced — whatever you had is written along
-with ours and stays between the wrapper and the game, in the same rows Heroic's
-settings table shows. Other settings in the file are untouched. Disabling
+with ours and runs ahead of our wrapper, in the same rows Heroic's settings
+table shows. Our row is last, next to the game as in Steam, so gamescope and
+other wrappers never pick up the overlay layer themselves; a row earlier
+versions put first moves there on the next setting change. Other settings in the file are untouched. Disabling
 removes our row, restoring the game's own wrappers or removing the key entirely
 so the global ones apply again.
 
@@ -97,8 +99,8 @@ shows **Running — PBurn unconfirmed**. This is a neutral observation: it does 
 claim that the overlay or GPU profile failed. Close external sessions in Heroic
 or in the game itself. Wrapper registration and kernel process-exit notifications
 update the state; a slow start or missed recovery scan never becomes a failure
-because a fixed amount of time elapsed. **Retry launch…** asks before attempting
-a possible second instance when the previous launch remains unconfirmed.
+because a fixed amount of time elapsed. **Play** asks before attempting a
+possible second instance when the previous launch remains unconfirmed.
 If a tracked session cannot be inspected, its state is held until it can be
 confirmed again; daemon-tracked sessions remain visible even when their
 environment cannot be read. Play requires either the native Heroic command or

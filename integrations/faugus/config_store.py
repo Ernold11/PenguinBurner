@@ -3,8 +3,9 @@
 Faugus builds its launch line by pushing pieces onto a list in a fixed order:
 the Proton environment, then ``launch_arguments``, then gamemoderun, mangohud
 and finally umu-run with the game. So ``launch_arguments`` is a command prefix
-that runs in front of everything. Unlike an argv-only prefix, leading shell
-environment assignments must stay before the injected wrapper executable.
+that runs in front of everything, and the shared injection appends our wrapper
+at its end. Faugus hoists every ``NAME=value`` word into the environment
+before it execs the rest as argv, so assignments work anywhere in it.
 
 Faugus rewrites the whole games.json when its window saves, so every write is
 read back and the caller is told what actually landed.

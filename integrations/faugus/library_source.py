@@ -47,4 +47,8 @@ class FaugusLibrarySource(WrapperLibrarySource):
         return launch_faugus_game(row.game.game_id, home=self._home)
 
     def probe_sessions(self, *, known_pids=()):
-        return probe_faugus_sessions(known_pids=known_pids)
+        return probe_faugus_sessions(
+            known_pids=known_pids,
+            executables={row.game.game_id: row.game.executable for row in self._rows
+                         if row.game.executable},
+        )
