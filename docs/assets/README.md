@@ -7,33 +7,44 @@ sample data:
 python scripts/render-auto-uv-qt-demo.py
 ```
 
-To show the installed Steam, Lutris and Heroic library instead, use the
-read-only live
-library option and select a game visible on the capture host:
+To show the installed Steam, Lutris, Heroic and Faugus libraries, select a game
+visible on the capture host. The committed GIF selects Faugus's Diablo III:
 
 ```bash
 python scripts/render-auto-uv-qt-demo.py \
-  --live-game-library --select-game Shelter
+  --live-game-library --select-game "Diablo III" --screenshots-dir docs/assets
 ```
 
-The Auto-UV scan and overlay telemetry remain simulated in both modes, and the
-renderer does not contact the hardware daemon. Rendering requires PySide6,
-pyqtgraph, and `ffmpeg`. The committed GIF uses the live-library command above;
-its games and artwork reflect that capture host. Inspect the GIF and generated
-poster before publishing.
+The scan and overlay telemetry are simulated; profiles use fixed example
+results. No scan or GPU write occurs. `--screenshots-dir` also refreshes the
+scan, profiles and overlay PNGs. Rendering requires PySide6, pyqtgraph and
+`ffmpeg`. Inspect the GIF, its generated poster and PNGs before publishing.
 
 Capture Game Library from the current Qt widget and installed games:
 
 ```bash
-python scripts/render-game-library.py --select Shelter
-python scripts/render-game-library.py --select "The First Tree" \
+QT_SCALE_FACTOR=2 python scripts/render-game-library.py --select Shelter
+QT_SCALE_FACTOR=2 python scripts/render-game-library.py --select "The First Tree" \
   --output docs/assets/game-library-heroic.png
+QT_SCALE_FACTOR=2 python scripts/render-game-library.py --select "Diablo III" \
+  --output docs/assets/game-library-faugus.png
 ```
 
-The first is the shared library shot used by the README and the Game Library
-guide; the second shows a Heroic game's own settings for the Heroic guide.
+These show Lutris, Heroic and Faugus settings respectively. The README and
+Game Library guide use the Faugus image. Games and artwork depend on the host;
+choose another installed title if necessary.
 
-Run from the repository root with PySide6 installed. The script uses an offscreen
-window and defaults to the first Lutris game when `--select` is omitted. It reads
-the library without changing game settings or launching a game. Inspect the PNG
-before publishing; available games and artwork depend on the host.
+Refresh setup, curve editors and Afterburner import using fixed examples:
+
+```bash
+python scripts/render-auto-uv-setup.py
+python scripts/render-doc-dialogs.py
+```
+
+The real dialogs are captured and cancelled; nothing is saved or applied.
+Example curves illustrate the interface, not recommended settings or new
+hardware measurements.
+
+Run from the repository root with PySide6 and Noto Sans installed. Captures use
+offscreen Qt windows. The library renderer defaults to the first Lutris game
+when `--select` is omitted; it does not change settings or launch games.

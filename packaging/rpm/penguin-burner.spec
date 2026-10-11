@@ -70,7 +70,7 @@ stock loaded clock at 272 W instead of 341 W.
 
  * Adaptive undervolting switches between the saved tiers while you play to
    hold your frame-rate target, and eases off on frame caps and idle desktops.
- * The Game Library brings Steam, Lutris and Heroic games into one list, each
+ * The Game Library brings Steam, Lutris, Heroic and Faugus games into one list, each
    with its own GPU profile, adaptive FPS target, and overlay setting, applied
    at launch and restored on exit.
  * The in-game Vulkan overlay shows base FPS, frame-generation FPS, PC latency,

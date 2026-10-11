@@ -17,7 +17,7 @@
   <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
 </p>
 
-![PenguinBurner Auto-UV scan, verified profiles, unified Steam, Lutris and Heroic Game Library, and in-game overlay](docs/assets/auto-uv-full-scan-demo.gif)
+![PenguinBurner Auto-UV demo, profiles, Steam, Lutris, Heroic and Faugus Game Library, and overlay](docs/assets/auto-uv-full-scan-demo.gif)
 
 PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
 automatic undervolting, overclocking and adaptive per-game profiles for
@@ -120,7 +120,7 @@ discovery, launcher badges, and sorting by launcher, name, recently played or
 most played. Pick **Adaptive**, a fixed tier or **Stock** for each game;
 PenguinBurner applies it at launch and restores your standing profile when the wrapped session ends.
 
-![Game Library showing Steam, Lutris and Heroic games, with a Lutris game's Adaptive settings and overlay controls](docs/assets/game-library.png)
+![Game Library with a Faugus game's Adaptive settings, Proton selection and overlay controls](docs/assets/game-library-faugus.png)
 
 Enable **Wrap this game**, then choose its GPU profile, Adaptive FPS target,
 and overlay settings. Existing launch options, Lutris command prefixes and
