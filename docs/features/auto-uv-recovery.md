@@ -49,12 +49,11 @@ keeps what the card has already proven unsafe. A file left at the old
 `uv-result/` location by an earlier release is adopted on first use.
 
 Each recorded freeze (an abrupt exit, an NVIDIA Xid, or the CUDA workload's
-hang watchdog) is also one point on the card's stability edge. The edge runs
-parallel to the card's stock V/F curve, so one freeze predicts it at every
-other clock. Every later descent and climb in that scan, and in later scans,
-stays one to four voltage bins above the predicted edge, more the farther it
-is extrapolated; the final soak still decides what ships. Cards that fail softly never record a freeze and keep
-their full search.
+hang watchdog) provides a point for estimating the card's stability edge.
+Auto-UV uses the stock V/F curve's shape to predict it at other clocks. Later
+descents and climbs stay one to four voltage bins above that estimate, more
+the farther it is extrapolated. This is a search heuristic; the final soak
+still decides what ships. Soft failures alone do not trigger this margin.
 
 The blacklist blocks the failed voltage and lower voltages at the recorded
 clock band and above, including a small clock guard band. It is checked before
@@ -62,8 +61,8 @@ voltage probes, clock climbs, and final verification. A tier that already
 passed its soak is invalidated only by a later failure at the same or a lower
 clock and the same or a higher voltage; the guard band below a higher-clock
 failure does not reach back into a verified point. A lower passing clock
-may still be usable. Auto-UV never exceeds the configured voltage target to
-force a higher clock.
+may still be usable. An edited voltage target remains the clock-climb limit;
+default Performance targets allow the six-bin headroom above Balanced.
 
 An abrupt power loss or forced kill can leave the same marker. The record
 means the probe ended abruptly; it does not prove GPU instability.
@@ -132,6 +131,35 @@ reboot. Scan startup stops the daemon's active runtime profile before changing
 fans or checking V/F controls. The daemon service, saved profiles and stock boot
 setting are kept. If the profile cannot stop, the scan stops before GPU writes.
 GUI scans retain the daemon's existing handoff and session-profile restoration.
+
+## CLI-only retry after a hard freeze
+
+`--auto-uv-retry-after-freeze` is a boolean flag: absent means **off** (the
+GUI default); present means **on**. It changes clock-climb recovery, not the
+boost shape or the profile tier.
+
+| Setting | Resume behavior |
+| --- | --- |
+| Off | Prefer a safer saved recovery candidate. When a climb must restart, retain the normal restriction on retrying a frozen clock near its failure voltage. |
+| On | Let an interrupted Performance climb restart from the verified Balanced point and permit frozen clocks to be retried at higher voltage within the existing limits. |
+
+Both settings keep failed voltage/clock points blacklisted, predicted stability
+margins, floor caution, and the same Performance voltage headroom. Enabling the
+flag does not guarantee another attempt is possible: these limits may still
+exclude the candidate. It also does not restart anything automatically after
+boot. Re-run the scan explicitly, using the same options, for example:
+
+```bash
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-retry-after-freeze
+```
+
+Use the flag from the start of a scan you intend to resume this way. Changing
+it after a crash changes the checkpoint inputs and starts a new scan while
+preserving the unsafe-point blacklist. Repeated attempts can cause further
+freezes and reboots.
+
+`--auto-uv-boost standard|aggressive` is independent: it selects a 2- or 4-bin
+rising tail and does not enable retries. See the [CLI controls](auto-uv.md#cli-only-boost-and-freeze-recovery).
 
 ## Clearing scan history
 

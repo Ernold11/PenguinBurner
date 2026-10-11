@@ -27,7 +27,7 @@ from auto_uv.persistence.unsafe_voltage_blacklist_file import (
 )
 from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
 from auto_uv.run.edge_margin import hard_crash_entry
-from auto_uv.run.tuning_policy import TuningPolicy
+from auto_uv.run.tuning_policy import PERFORMANCE_VOLTAGE_HEADROOM_BINS, TuningPolicy
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
 from auto_uv.shared.positive_int import positive_int
@@ -118,7 +118,7 @@ def run_auto_oc_candidate_search(
         # may be retried a few bins higher: Performance is allowed to spend a
         # little more voltage than Balanced proved to buy clock.
         headroom_bins = (
-            int(policy.performance_voltage_headroom_bins) if policy is not None else 0
+            PERFORMANCE_VOLTAGE_HEADROOM_BINS if policy is not None else 0
         )
         retry_voltage_cap_mv = voltage_bins_above(
             base_curve, int(start_candidate.voltage_mv), headroom_bins
@@ -189,7 +189,7 @@ def run_auto_oc_candidate_search(
             lock_clock_mhz=int(candidate.target_mhz),
             profile_tier=target_profile_id,
         )
-        if not blocked and policy is not None and policy.edge_margin is not None:
+        if not blocked and policy is not None:
             # Same handling as a cached band: no hardware call, and the
             # climb may retry this clock at a higher voltage within its cap.
             blocked = policy.edge_margin.block_reason(

@@ -11,8 +11,8 @@ Flatpak Lutris uses `~/.var/app/net.lutris.Lutris/data/lutris/pga.db`, with
 configuration under that app's `config/lutris` directory when present, otherwise
 its data directory. Its compatibility picker queries Lutris inside that sandbox.
 
-[Game Library](game-library.md) lists installed Lutris games beside Steam and
-Heroic.
+[Game Library](game-library.md) lists installed Lutris games beside Steam,
+Heroic and Faugus.
 Enable **Wrap this game**, select a mode, and use **Play** or launch from Lutris.
 Wrapping and compatibility-tool changes take effect on the next launch.
 Profile modes, Adaptive targets and overlay visibility also apply live to an
@@ -53,6 +53,10 @@ fixed profiles and launching remain available. Rescan after changing a renderer.
 Wine/Proton games can use the NVAPI latency shim. Native games use Vulkan timing
 where available. See [latency and FPS](latency-fg.md) for sources and manual
 wrapper commands.
+
+For games that start Battle.net, EA app, Ubisoft Connect or another client,
+[exit the store launcher too](game-library.md#games-that-start-another-launcher)
+to end the wrapped session after playing.
 
 ## Troubleshooting
 

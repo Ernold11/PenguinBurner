@@ -346,7 +346,7 @@ def test_5070_ti_sweep_reaches_auto_oc_after_initial_clock_shortfall(
     )
 
     monkeypatch.setattr("auto_uv.main_loop.write_verified_candidate", lambda *_a, **_k: None)
-    monkeypatch.setattr("auto_uv.main_loop.adaptive_tier_descent_tail_rise_bins", lambda _: tail_bins)
+    monkeypatch.setattr("auto_uv.main_loop.adaptive_tier_descent_tail_rise_bins", lambda _, _options=None: tail_bins)
     accumulated_unsafe = []
     candidate, _, sweep_probe, _ = run_adaptive_tier_descent(
         curve, tier_mode=tier,

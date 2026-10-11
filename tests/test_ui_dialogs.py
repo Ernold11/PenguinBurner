@@ -356,7 +356,8 @@ def test_select_scan_tuning_sends_only_edited_tier_targets(qt, monkeypatch) -> N
     assert not [key for key in options if "_target_" in key]
 
 
-def test_select_scan_tuning_sends_the_tuning_mode_only_when_aggressive(qt, monkeypatch) -> None:
+@pytest.mark.parametrize("scope", ["full", "selected-profile"])
+def test_select_scan_tuning_keeps_boost_and_freeze_retry_cli_only(qt, monkeypatch, scope) -> None:
     qtcore, qtgui, qtwidgets, _pg = qt
     monkeypatch.setattr(
         scan_tuning_dialog, "memory_offset_mhz_range", lambda **_kwargs: (0, 4000)
@@ -367,30 +368,24 @@ def test_select_scan_tuning_sends_the_tuning_mode_only_when_aggressive(qt, monke
         scan_tuning_dialog, "gpu_choices_with_fallback",
         lambda **_: ([GpuChoice(index=0, name="NVIDIA GeForce RTX 3080")], 0),
     )
-    chosen = {"mode": None}
 
     def accept(self):
-        buttons = {
-            str(b.property("tuningMode")): b
-            for b in self.findChildren(qtwidgets.QPushButton)
-            if b.objectName() == "autoUvTuningButton"
-        }
-        assert set(buttons) == {"careful", "aggressive"}
-        assert buttons["careful"].isChecked()
-        if chosen["mode"]:
-            buttons[chosen["mode"]].setChecked(True)
+        assert not self.findChildren(qtwidgets.QPushButton, "autoUvTuningButton")
+        assert not self.findChildren(qtwidgets.QGroupBox, "autoUvTuningGroup")
+        for button in self.findChildren(qtwidgets.QPushButton):
+            assert "Aggressive" not in button.text()
+            if button.property("scopeId") == scope:
+                button.click()
         return qtwidgets.QDialog.Accepted
 
     monkeypatch.setattr(qtwidgets.QDialog, "exec", accept)
     options = scan_tuning_dialog.select_scan_tuning(
         QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None, gpu_index=0
     )
-    assert options is not None and "auto_uv_tuning_mode" not in options
-    chosen["mode"] = "aggressive"
-    options = scan_tuning_dialog.select_scan_tuning(
-        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None, gpu_index=0
-    )
-    assert options is not None and options["auto_uv_tuning_mode"] == "aggressive"
+    assert options is not None
+    assert "auto_uv_tuning_mode" not in options
+    assert "auto_uv_retry_after_freeze" not in options
+    assert options.get("auto_uv_tail_rise_bins", 2) == 2
 
 
 def test_energy_savings_formatting_uptime_and_units() -> None:

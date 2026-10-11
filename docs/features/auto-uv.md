@@ -28,22 +28,32 @@ pburn-cli --auto-uv-voltage-scan --auto-uv-mode efficiency
 
 See the [CLI reference](../../readme-cli.md#auto-uv-scan) for per-tier overrides.
 
-### Tuning mode
+### CLI-only boost and freeze recovery
 
-One scan-wide switch, **Careful** (default) or **Aggressive**, in the setup
-dialog and as `--auto-uv-tuning-mode careful|aggressive` on the CLI.
+GUI scans use **Standard Boost** and normal freeze recovery. The CLI exposes
+two independent controls:
 
-| | Careful | Aggressive |
-| --- | --- | --- |
-| Probes near an edge that recorded freezes predict | kept above it (1 to 4 voltage bins, by distance) | no limit |
-| Descent that reaches its floor with every probe passing | soaks one step above the floor | soaks the floor |
-| Performance voltage above what Balanced proved | up to 6 bins (about 37 mV) | up to 10 bins |
-| A climb rung that froze the host | stays closed within 3 bins above the freeze voltage, one reboot per climb | retried higher after each reboot |
-| Points that actually failed | blacklisted | blacklisted |
+- `--auto-uv-boost standard` (default): a 2-bin rising tail, +30 MHz nominal.
+- `--auto-uv-boost aggressive`: **Aggressive Boost**, a 4-bin rising tail,
+  up to +60 MHz nominal above the selected anchor (30 MHz more than Standard).
+  Applies to every tier of a full scan and is tested and saved
+  with the curve. Extra headroom can increase power use and instability;
+  actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze` (off by default): on an explicit resume after
+  reboot, allow the interrupted clock climb to retry at higher voltage.
+  Further freezes may require further reboots.
 
-Careful suits cards whose failure mode is a hard freeze. Aggressive finds the
-deepest curve a card holds and can freeze it repeatedly on the way; the scan
-resumes after each reboot.
+Boost does not enable freeze retries. Both recovery settings preserve the
+failed-point blacklist, predicted stability margins, floor caution, and the
+six-bin Performance voltage headroom above Balanced. Neither option adds a
+profile tier: Efficiency, Balanced, and Performance keep their usual roles.
+
+For a custom tail, use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost`.
+Resume with the same options so the checkpoint matches.
+
+The tail count describes requested headroom, not a guaranteed measured clock
+increase. See [the exact curve shape and monitoring evidence](auto-uv-search.md#monitoring-the-requested-and-observed-boost)
+for driver-applied limits, workload telemetry, and what a passing scan proves.
 
 ## What happens
 
@@ -56,7 +66,8 @@ Failures fall back to safer settings where possible. Final verification can
 retry another tested curve; a failed later tier preserves completed profiles.
 Stopping the scan remains a user-controlled action.
 
-All tiers use a smooth ramp and **two rising tail bins** (+30 MHz nominal).
+By default, all tiers use a smooth ramp and **two rising tail bins** (+30 MHz nominal).
+The CLI Aggressive Boost option uses four bins (+60 MHz nominal).
 The voltage target is a curve anchor: GPU boost can use higher voltage bins.
 Power limits can also reduce the loaded clock below the requested target.
 There is no fixed percentage cutoff for measured clock loss; workload stability,

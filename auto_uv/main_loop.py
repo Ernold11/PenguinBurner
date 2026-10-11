@@ -98,6 +98,9 @@ from auto_uv.run.scan_runtime_settings import (
 from auto_uv.run.scan_runtime_settings import (
     final_verification_duration_s as resolve_final_verification_duration_s,
 )
+from auto_uv.run.scan_runtime_settings import (
+    tail_rise_bins as resolve_tail_rise_bins,
+)
 from auto_uv.run.tuning_policy import TuningPolicy
 from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepEvent,
@@ -119,7 +122,6 @@ from auto_uv.scan_mode.target_overrides import (
     tier_lock_clock_cap_mhz,
     tier_target_overrides,
 )
-from auto_uv.scan_mode.tuning_mode import tuning_mode_from_runtime_options
 from auto_uv.scan_mode.uv_limits import (
     uv_limit_clock_target_range_for_gpu,
     uv_limit_power_limit_pct_for_gpu,
@@ -203,7 +205,7 @@ def run_voltage_frequency_undervolt_main_loop(
         # climbs may go. Freezes on record feed its edge margin; the soak
         # still decides what ships.
         policy = TuningPolicy.build(
-            tuning_mode_from_runtime_options(runtime_options), unsafe_entries, base_curve
+            runtime_options, unsafe_entries, base_curve
         )
         log_phase(log, "auto-uv", policy.describe())
         if str(getattr(gpu, "gpu_identity", {}).get("uuid") or ""):
@@ -379,7 +381,7 @@ def run_voltage_frequency_undervolt_main_loop(
             # The initial measurements ARE Efficiency's baseline. Establish
             # its full policy before discovery, including CLI table defaults.
             tail_rise_bins = adaptive_tier_descent_tail_rise_bins(
-                AUTO_UV_MODE_EFFICIENCY
+                AUTO_UV_MODE_EFFICIENCY, runtime_options
             )
             descent_tail_rise_bins = int(tail_rise_bins)
             apply_adaptive_tier_memory_offset(
@@ -1042,7 +1044,7 @@ def run_adaptive_tier_scans(
     accumulated_unsafe: list[dict] = list(unsafe_entries or [])
     # A freeze recorded by an earlier tier of this scan bounds the later ones.
     policy = (
-        policy or TuningPolicy.build(tuning_mode_from_runtime_options(runtime_options), [], base_curve)
+        policy or TuningPolicy.build(runtime_options, [], base_curve)
     ).with_entries(accumulated_unsafe)
 
     def record_tier_failure(
@@ -1100,6 +1102,7 @@ def run_adaptive_tier_scans(
             if tier_mode == AUTO_UV_MODE_BALANCED:
                 balanced_donation = balanced_donation_from_completed_tier(
                     completed_tier,
+                    runtime_options=runtime_options,
                     memory_offset_mhz=resolve_adaptive_tier_memory_offset_mhz(
                         runtime_options,
                         tier_mode=str(tier_mode),
@@ -1126,7 +1129,7 @@ def run_adaptive_tier_scans(
                 memory_offset_from_gpu_policy(gpu.translated_gpu_policy) or 0
             )
             tier_tail_rise_bins = adaptive_tier_descent_tail_rise_bins(
-                str(tier_mode)
+                str(tier_mode), runtime_options
             )
             request_adaptive_tier_power_limit(
                 gpu,
@@ -1186,6 +1189,7 @@ def run_adaptive_tier_scans(
                 and balanced_donation is not None
                 and performance_can_reuse_balanced_descent(
                     balanced_donation,
+                    runtime_options=runtime_options,
                     performance_memory_offset_mhz=tier_memory_offset_mhz,
                     performance_baseline_voltage_mv=int(
                         tier_baseline_candidate.voltage_mv
@@ -1228,6 +1232,7 @@ def run_adaptive_tier_scans(
                 tier_candidate, tier_final_tail, tier_probe, tier_history = (
                     run_adaptive_tier_descent(
                         base_curve,
+                        runtime_options=runtime_options,
                         tier_mode=str(tier_mode),
                         base_loop_settings=tier_base_loop_settings,
                         baseline_candidate=tier_baseline_candidate,
@@ -1406,6 +1411,7 @@ def run_adaptive_tier_descent(
     gpu,
     log: Callable[[str], None],
     policy: TuningPolicy | None = None,
+    runtime_options: dict | None = None,
 ) -> tuple[VfCurveCandidate, int, AutoUvProbeSummary | None, list[AutoUvProbeSummary]]:
     """Run one tier's tailed descent under its shipped cap.
 
@@ -1418,7 +1424,7 @@ def run_adaptive_tier_descent(
     if recovery is not None and checkpoint is not None:
         history = checkpoint.history_for(tier_mode)
         return recovery, int(recovery.metadata.get("tail_rise_bins", 0)), None, history
-    tier_descent_tail = adaptive_tier_descent_tail_rise_bins(tier_mode)
+    tier_descent_tail = adaptive_tier_descent_tail_rise_bins(tier_mode, runtime_options)
     tier_settings = replace(
         base_loop_settings,
         auto_uv_mode=tier_mode,
@@ -1635,6 +1641,7 @@ def balanced_donation_from_completed_tier(
     *,
     memory_offset_mhz: int,
     power_limit_w: int | None,
+    runtime_options: dict | None = None,
 ) -> BalancedDescentDonation | None:
     """Rebuild Balanced's donation from a checkpointed, verified Balanced tier.
 
@@ -1667,7 +1674,9 @@ def balanced_donation_from_completed_tier(
         tail_rise_bins=tail_rise_bins,
         probe=verified,
         history=[verified],
-        descent_tail_rise_bins=adaptive_tier_descent_tail_rise_bins(AUTO_UV_MODE_BALANCED),
+        descent_tail_rise_bins=adaptive_tier_descent_tail_rise_bins(
+            AUTO_UV_MODE_BALANCED, runtime_options,
+        ),
         memory_offset_mhz=int(memory_offset_mhz),
         power_limit_w=positive_int(power_limit_w),
         baseline_voltage_mv=None,
@@ -1761,18 +1770,16 @@ ADAPTIVE_TIER_ORDER = (
 )
 
 
-def adaptive_tier_descent_tail_rise_bins(tier_mode: str) -> int:
+def adaptive_tier_descent_tail_rise_bins(
+    tier_mode: str, runtime_options: dict | None = None,
+) -> int:
     """The rising tail each tier descends WITH.
 
     Each tier includes its full boost headroom in every stability probe.
     Measured tail boost does not change the requested descent clock, and the
     saved curve retains the tail that was tested.
     """
-    if tier_mode == AUTO_UV_MODE_BALANCED:
-        return int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)
-    if tier_mode == AUTO_UV_MODE_PERFORMANCE:
-        return int(AUTO_UV_DEFAULTS.performance_tail_rise_bins)
-    return int(AUTO_UV_DEFAULTS.tail_rise_bins)
+    return resolve_tail_rise_bins(runtime_options or {}, auto_uv_mode=tier_mode)
 
 
 @dataclass(frozen=True)
@@ -1804,6 +1811,7 @@ def performance_can_reuse_balanced_descent(
     performance_baseline_target_mhz: int,
     performance_power_limit_w: int | None,
     log: Callable[[str], None],
+    runtime_options: dict | None = None,
 ) -> bool:
     """Whether the balanced descent doubles as performance's downsweep.
 
@@ -1818,7 +1826,7 @@ def performance_can_reuse_balanced_descent(
     if donation is None:
         return False
     performance_tail = adaptive_tier_descent_tail_rise_bins(
-        AUTO_UV_MODE_PERFORMANCE
+        AUTO_UV_MODE_PERFORMANCE, runtime_options
     )
     if int(performance_tail) != int(donation.descent_tail_rise_bins):
         log_phase(

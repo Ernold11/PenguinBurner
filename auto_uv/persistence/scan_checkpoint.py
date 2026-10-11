@@ -286,7 +286,7 @@ class ScanCheckpoint:
     ) -> None:
         """Pick the point the interrupted tier resumes at.
 
-        ``recover_climbs`` False (aggressive tuning) lets an interrupted
+        ``recover_climbs`` False (explicit retry after freeze) lets an interrupted
         Performance tier climb again from the Balanced point with the new
         band in place instead of soaking one bin above its last pass.
         """

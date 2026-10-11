@@ -513,14 +513,15 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert options["auto_uv_tail_rise_bins"] == 2
 
 
-def test_ui_scan_command_forwards_the_tuning_mode_only_when_set(monkeypatch) -> None:
+def test_ui_scan_command_does_not_forward_cli_only_recovery_options(monkeypatch) -> None:
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
-    careful = _scan_daemon_options(commands.scan_command({"auto_uv_mode": "adaptive"}))
-    assert "auto_uv_tuning_mode" not in careful
-    aggressive = _scan_daemon_options(
-        commands.scan_command({"auto_uv_mode": "adaptive", "auto_uv_tuning_mode": "aggressive"})
-    )
-    assert aggressive["auto_uv_tuning_mode"] == "aggressive"
+    options = _scan_daemon_options(commands.scan_command({
+        "auto_uv_mode": "adaptive",
+        "auto_uv_tuning_mode": "aggressive",
+        "auto_uv_retry_after_freeze": True,
+    }))
+    assert "auto_uv_tuning_mode" not in options
+    assert "auto_uv_retry_after_freeze" not in options
 
 
 def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:

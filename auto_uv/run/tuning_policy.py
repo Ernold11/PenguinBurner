@@ -1,21 +1,10 @@
-"""What a scan may do near a card's stability edge, decided once per scan.
-
-Careful (the default) keeps every probe above the edge that recorded freezes
-predict, soaks one step above a cleanly reached floor, and lets Performance
-spend a little more voltage than Balanced proved. Aggressive drops the
-predictions and the floor caution and gives Performance more voltage to climb
-with; the hard blacklist of points that actually failed applies in both.
-"""
+"""Scan safeguards and the explicit opt-in to retry climbs after a freeze."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
 from auto_uv.run.edge_margin import EdgeMargin
-from auto_uv.scan_mode.tuning_mode import (
-    AUTO_UV_TUNING_MODE_AGGRESSIVE,
-    normalize_auto_uv_tuning_mode,
-)
 
 # Voltage bins (about 6 mV each) Performance may add above the Balanced-proven
 # voltage to climb past rungs the blacklist or the edge margin close at that
@@ -23,38 +12,28 @@ from auto_uv.scan_mode.tuning_mode import (
 # 1920 MHz crash band closes everything at or below 937, so the climb needs
 # 943: six bins from 912. The tester's hand-tuned Performance sits 13 to
 # 38 mV above his Balanced point, the same range.
-PERFORMANCE_VOLTAGE_HEADROOM_BINS = {"careful": 6, "aggressive": 10}
+PERFORMANCE_VOLTAGE_HEADROOM_BINS = 6
 
 
 @dataclass(frozen=True, slots=True)
 class TuningPolicy:
-    mode: str
-    edge_margin: EdgeMargin | None
-    floor_caution: bool
-    performance_voltage_headroom_bins: int
+    edge_margin: EdgeMargin
     # Whether a climb may retry, at a higher voltage, a rung (or anything
     # above it) that already froze the host at a Performance-class voltage.
-    # Careful mode spends at most one reboot per climb; aggressive keeps going.
+    # Retrying is opt-in; it does not relax any of the other safeguards.
     retry_frozen_rungs: bool
 
     @classmethod
     def build(
-        cls, mode: object | None, unsafe_entries: list[dict], base_curve: list[dict]
+        cls, runtime_options: dict, unsafe_entries: list[dict], base_curve: list[dict]
     ) -> TuningPolicy:
-        tuning_mode = normalize_auto_uv_tuning_mode(mode)
-        aggressive = tuning_mode == AUTO_UV_TUNING_MODE_AGGRESSIVE
         return cls(
-            mode=tuning_mode,
-            edge_margin=None if aggressive else EdgeMargin(unsafe_entries, base_curve),
-            floor_caution=not aggressive,
-            performance_voltage_headroom_bins=PERFORMANCE_VOLTAGE_HEADROOM_BINS[tuning_mode],
-            retry_frozen_rungs=aggressive,
+            edge_margin=EdgeMargin(unsafe_entries, base_curve),
+            retry_frozen_rungs=runtime_options.get("auto_uv_retry_after_freeze") is True,
         )
 
     def with_entries(self, unsafe_entries: list[dict]) -> TuningPolicy:
         """Bind the edge margin to the list a scan accumulates freezes into."""
-        if self.edge_margin is None:
-            return self
         return replace(
             self,
             edge_margin=EdgeMargin(
@@ -64,15 +43,9 @@ class TuningPolicy:
         )
 
     def describe(self) -> str:
-        parts = [f"tuning mode: {self.mode}"]
-        if self.edge_margin is None:
-            parts.append("no predicted-edge margin, no floor caution")
-        else:
-            margin = self.edge_margin.describe()
-            parts.append(margin or "no freezes on record")
-        parts.append(
-            f"performance may add {self.performance_voltage_headroom_bins} voltage bins"
-            + (" and retry rungs that froze" if self.retry_frozen_rungs else
-               ", one reboot per climb at most")
+        state = "on" if self.retry_frozen_rungs else "off"
+        margin = self.edge_margin.describe() or "no freezes on record"
+        return (
+            f"retry after freeze: {state}; {margin}; "
+            f"performance may add {PERFORMANCE_VOLTAGE_HEADROOM_BINS} voltage bins"
         )
-        return "; ".join(parts)

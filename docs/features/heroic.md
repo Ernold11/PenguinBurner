@@ -1,7 +1,7 @@
 # Heroic in Game Library
 
 [Game Library](game-library.md) lists installed Heroic games — Epic, GOG,
-Amazon and sideloaded — beside Steam and Lutris. Enable **Wrap this game**,
+Amazon and sideloaded — beside Steam, Lutris and Faugus. Enable **Wrap this game**,
 select a mode, and use **Play** or launch from Heroic. Game Library's **Play**
 refreshes saved launch settings automatically,
 restarting an idle Heroic when necessary to clear its cached configuration.
@@ -76,10 +76,10 @@ setting is also saved for future launches. If the game started without the
 PenguinBurner wrapper, the GUI reports that a relaunch is needed: the overlay
 must be loaded at game startup before its visibility can be changed live.
 
-Heroic games run under Proton unless the store shipped a Linux build, and
-everything Proton runs is translated to Vulkan, so the overlay reaches them. A
-native game known to use OpenGL shows **Game not compatible with Overlay or
-Adaptive**; fixed profiles and launching remain available.
+Overlay and Adaptive frame telemetry require Vulkan, including DXVK and
+vkd3d-proton; a Proton runner alone does not guarantee either. Known native
+OpenGL games show **Game not compatible with Overlay or Adaptive**; fixed
+profiles and launching remain available.
 
 Adaptive keeps timing markers active even with the overlay hidden. The opt-in
 has to be set before the wrapper runs, so it rides an `env` prefix
@@ -107,6 +107,10 @@ If a tracked session cannot be inspected, its state is held until it can be
 confirmed again; daemon-tracked sessions remain visible even when their
 environment cannot be read. Play requires either the native Heroic command or
 the installed Heroic Flatpak application.
+
+For games that start EA app, Ubisoft Connect or another client,
+[exit the store launcher too](game-library.md#games-that-start-another-launcher)
+to end the wrapped session after playing.
 
 ## Troubleshooting
 

@@ -9,7 +9,7 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
     ("gpu_index", "--gpu-index"),
     ("auto_uv_mode", "--auto-uv-mode"),
     ("auto_uv_q2rtx_resolution", "--auto-uv-q2rtx-resolution"),
-    ("auto_uv_tuning_mode", "--auto-uv-tuning-mode"),
+    ("auto_uv_retry_after_freeze", "--auto-uv-retry-after-freeze"),
     ("auto_uv_min_voltage_mv", "--auto-uv-min-voltage-mv"),
     ("auto_uv_memory_offset_mhz", "--auto-uv-memory-offset-mhz"),
     ("auto_uv_power_limit_w", "--auto-uv-power-limit-w"),
@@ -133,6 +133,14 @@ fn option_args(
             if text.is_empty() {
                 continue;
             }
+        }
+        if *key == "auto_uv_retry_after_freeze" {
+            match value.as_bool() {
+                Some(true) => args.push((*flag).to_string()),
+                Some(false) => (),
+                None => return Err(format!("{label} {key} must be boolean")),
+            }
+            continue;
         }
         let text = match command_value_text(value) {
             Some(text) => text,
@@ -297,18 +305,35 @@ mod tests {
     }
 
     #[test]
-    fn scan_command_forwards_tuning_mode_after_resolution() {
+    fn scan_command_forwards_freeze_retry_as_a_flag_after_resolution() {
         let options = json!({
-            "gpu_index": 0, "auto_uv_tuning_mode": "aggressive", "auto_uv_q2rtx_resolution": "auto"
+            "gpu_index": 0, "auto_uv_retry_after_freeze": true, "auto_uv_q2rtx_resolution": "auto"
         });
         assert_eq!(
             auto_uv_option_args(&options).unwrap(),
             vec![
-                "--gpu-index", "0",
-                "--auto-uv-q2rtx-resolution", "auto",
-                "--auto-uv-tuning-mode", "aggressive",
+                "--gpu-index",
+                "0",
+                "--auto-uv-q2rtx-resolution",
+                "auto",
+                "--auto-uv-retry-after-freeze",
             ]
         );
+    }
+
+    #[test]
+    fn scan_command_freeze_retry_requires_an_explicit_boolean() {
+        assert!(
+            auto_uv_option_args(&json!({"auto_uv_retry_after_freeze": false}))
+                .unwrap()
+                .is_empty()
+        );
+        for value in [json!("false"), json!("true"), json!(0), json!(1)] {
+            assert_eq!(
+                auto_uv_option_args(&json!({"auto_uv_retry_after_freeze": value})),
+                Err("Auto-UV option auto_uv_retry_after_freeze must be boolean".into())
+            );
+        }
     }
 
     #[test]

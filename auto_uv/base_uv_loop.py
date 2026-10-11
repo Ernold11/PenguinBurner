@@ -144,7 +144,7 @@ def run_base_uv_loop(
             lock_clock_mhz=int(candidate.target_mhz),
             profile_tier=settings.auto_uv_mode,
         )
-        if not block_reason and policy is not None and policy.edge_margin is not None:
+        if not block_reason and policy is not None:
             block_reason = policy.edge_margin.block_reason(
                 candidate_voltage_mv=int(candidate.voltage_mv),
                 lock_clock_mhz=int(candidate.target_mhz),
@@ -194,7 +194,6 @@ def run_base_uv_loop(
     excluded_candidate = None
     if (
         not ended_by_stop
-        and (policy is None or policy.floor_caution)
         and min_search_voltage_mv is not None
         and len(passes) >= 2
         and same_candidate_identity(selected_result.selected_candidate, passes[-1][0])

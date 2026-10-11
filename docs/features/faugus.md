@@ -8,8 +8,9 @@ changes.
 
 [Game Library](game-library.md) lists your Faugus Launcher games beside Steam,
 Lutris and Heroic. Enable **Wrap this game**, select a mode, and use **Play** or
-launch from Faugus. Changes apply the next time Faugus starts the game: it
-reads its library file at launch, so nothing needs restarting.
+launch from Faugus. Wrapper and runner changes apply on the next launch;
+profile modes, Adaptive targets and overlay visibility also update live in
+confirmed wrapped sessions.
 
 See [per-game settings](game-library.md#per-game-settings) for profiles,
 Adaptive targets, GPU selection, and overlay controls. Games you have hidden in
@@ -50,11 +51,10 @@ launch arguments, which is what Faugus's own editor writes for an empty field.
 
 ## Overlay and Adaptive
 
-Faugus exists to run Windows games through Proton, and everything Proton runs
-is translated to Vulkan, so the overlay reaches them. An entry whose runner is
-**Linux-Native** is checked like any other native game: one known to use OpenGL
-shows **Game not compatible with Overlay or Adaptive**, and fixed profiles and
-launching remain available.
+Overlay and Adaptive frame telemetry require Vulkan, including DXVK and
+vkd3d-proton. Selecting a Proton runner alone does not prove the overlay is
+active. Known native OpenGL games keep fixed profiles and launching available
+but cannot use Overlay or Adaptive.
 
 Adaptive keeps timing markers active even with the overlay hidden. See
 [latency and FPS](latency-fg.md) for the sources.
@@ -72,17 +72,35 @@ itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
 in front of every game it starts — the same one its own "kill this game" uses —
 so they are observed even though they carry none of our identity.
 
-An already-running store client can start a game with the client's inherited
-ID. PenguinBurner also checks the game's full executable path in its Wine
-prefix to follow that handoff. Detection alone does not prove that the overlay
-or Adaptive reached the game, and does not grant Stop control over the client.
+## Battle.net, Ubisoft Connect, EA app and other launchers
+
+A game entry may start a proprietary launcher first. In this case,
+**PenguinBurner's wrapper and overlay environment attach to the launcher**;
+the game it starts can inherit them. If the launcher stays open after the
+game exits, PenguinBurner can still show **Stop** or **Running** and keep the
+session's GPU profile active. **Quit the game, then fully exit the launcher
+(including its tray process) to return to stopped/Play and restore the standing
+profile.** Closing only the game window is insufficient.
+
+Use a separate Faugus entry for each game, with its executable or the store
+client's game-launch arguments and the correct Wine prefix. Bare known store
+clients with no **Game arguments** are omitted from Game Library. Entries
+with arguments are retained; PenguinBurner does not validate that those
+arguments actually launch a game. **Game arguments** select what the client
+runs; **Launch arguments** hold the PenguinBurner wrapper.
+
+An already-running client may handle the request without inheriting the new
+wrapper environment. Fully exit it before relaunching the wrapped entry if
+the game's overlay or profile is missing. Executable-path detection can show
+the game as running without proving overlay or Adaptive activity. **Stop**
+controls confirmed wrapped processes only; with a wrapped client, that can
+include the launcher as well as its game.
 
 ## Troubleshooting
 
-- **Running**, greyed out: the game started without the wrapper, so its
-  overlay and GPU profile were not activated, and **Stop** cannot reach it.
-  Close the game, then use **Play** in Game Library to launch it with the
-  saved settings.
+- **Running**, greyed out: the process is visible without confirmed wrapper
+  ownership; **Stop** is unavailable. Close the game and its store launcher,
+  then use **Play** to relaunch with the saved settings.
 - **Changes revert:** close the game's settings window in Faugus Launcher, then
   retry. Saving that window rewrites the whole library file over an external
   edit.

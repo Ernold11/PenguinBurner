@@ -3,6 +3,83 @@
 See [Auto-UV](auto-uv.md) for setup and [recovery](auto-uv-recovery.md) for
 failed probes and interrupted scans.
 
+## Boost shape and freeze retries
+
+The GUI always uses **Standard Boost**. On the CLI, choose the rising tail
+independently of Efficiency, Balanced, Performance, or a full adaptive scan:
+
+| CLI option | Rising tail | Nominal headroom above the undervolt point |
+| --- | --- | --- |
+| Omitted, or `--auto-uv-boost standard` | 2 bins | +30 MHz |
+| `--auto-uv-boost aggressive` | 4 bins | +60 MHz |
+
+Every scanned tier tests its selected tail during the search and final
+verification, then saves that tested shape. A full adaptive scan applies the
+choice to all three tiers, including Balanced-to-Performance reuse and resume.
+Aggressive Boost permits more headroom; it does not promise higher measured
+clocks or FPS and may increase power use or instability.
+
+The count refers to successive **editable voltage points above the anchor**.
+The anchor itself stays at the selected clock. Each following point adds
+15 MHz until the chosen number of steps is reached; higher editable points
+then keep that ceiling. With an illustrative 2800 MHz anchor:
+
+| Curve point | Standard Boost | Aggressive Boost |
+| --- | --- | --- |
+| Anchor | 2800 MHz | 2800 MHz |
+| First editable voltage point above it | 2815 MHz | 2815 MHz |
+| Second | 2830 MHz | 2830 MHz |
+| Third | 2830 MHz | 2845 MHz |
+| Fourth and later | 2830 MHz | 2860 MHz |
+
+These are requested curve targets, before driver clock-step constraints.
+Aggressive Boost adds **30 MHz more nominal headroom than Standard**, not
+60 MHz more. If fewer than four editable voltage points remain above the
+anchor, the generated tail cannot reach all four steps. Voltage spacing is
+GPU-dependent: four points do not imply a fixed mV increase. The GPU may use
+higher voltage to reach the tail; the anchor is not a voltage lock.
+
+`--auto-uv-tail-rise-bins N` remains the custom numeric alternative (0 makes a
+flat tail; the supported range is 0–8). It cannot be combined with
+`--auto-uv-boost`. Neither boost setting changes the freeze blacklist,
+predicted stability margin, floor caution, or Performance voltage headroom.
+
+`--auto-uv-retry-after-freeze` separately permits another clock-climb attempt
+at higher voltage after an explicitly resumed scan. It defaults off, is
+CLI-only, and can require further reboots. See [freeze-retry behavior](auto-uv-recovery.md#cli-only-retry-after-a-hard-freeze)
+for the off/on rules and checkpoint requirements.
+
+## Monitoring the requested and observed boost
+
+Keep three kinds of evidence separate when reading a scan:
+
+| Evidence | What it establishes |
+| --- | --- |
+| Requested curve | The anchor, tail-bin count and complete target plan describe the intended shape. Saved profiles retain the tested plan and tail-bin count. |
+| Applied controls | Before a probe workload starts, the scan refreshes driver V/F offsets and checks each planned point. A mismatch stops the scan. The temporary clock ceiling is selected from supported driver steps at or below the requested ceiling; Auto-OC and final verification log requested-to-applied ceiling changes. This is a control setting, not a measured running clock. |
+| Workload telemetry | Live samples and probe summaries report measured clock and voltage, power, temperature, FPS and limiting reasons. Loaded median and 90th-percentile clocks, loaded median voltage, and qualified sample counts help distinguish sustained behavior from occasional boost. Missing measurements remain unknown. |
+
+For the example above, `2860MHz` describes the requested Aggressive Boost
+ceiling. If the driver applies a lower ceiling, report that separately. If the
+loaded clock stays below either ceiling, report the measured value rather
+than claiming +60 MHz of observed boost. A saved 4-bin curve or higher FPS alone
+does not prove that the extra tail headroom was used.
+
+The full curve is present during probing and final verification, but the
+workload chooses which voltage points the GPU visits. Current monitoring does
+**not** certify that every tail point was exercised, or that the top of the
+tail was sustained. A passing run establishes stability only for the tested
+workload and duration; it is not a guarantee for every game.
+
+To compare Standard and Aggressive Boost, record the anchor and curve shape,
+requested and applied ceilings, measured clocks and voltage, average/maximum
+power, temperature, FPS, performance-cap reason and hardware-brake samples.
+Use the same GPU, anchor, power limit, memory offset, workload/resolution,
+probe duration and comparable thermal conditions. Separate Q2RTX and CUDA
+measurements, and do not compare a short probe with a longer final soak as if
+they were equivalent. Two independently optimized scans may choose different
+anchors; their difference cannot be attributed to the tail setting alone.
+
 ## Baselines and power limits
 
 Each tier applies and reads back its power limit before its stock baseline,
@@ -57,15 +134,15 @@ baseline and stability checks determine the saved result. A 5 MHz target
 change does not necessarily change the clock bin held by the GPU.
 
 If the proven Performance starting voltage exceeds its default table target,
-Auto-OC can still increase clocks at that same voltage up to the existing
-Performance clock target. An edited voltage target keeps its requested
+Auto-OC can increase clocks toward the Performance clock target and retry
+blocked rungs up to six editable voltage bins above that proven voltage. An edited voltage target keeps its requested
 bound; the scan dialog sends only edited targets, so an unchanged table
 default never becomes that bound. Balanced and Performance retain their shared power budget and can
 still converge if no higher stable measured clock is found.
 
 A cached unsafe voltage/clock band is skipped before touching the GPU. Auto-OC
 can test the same clock at a higher editable voltage outside that band, within
-the voltage target. After a successful voltage retry, remaining clock steps
+the applicable voltage cap. After a successful voltage retry, remaining clock steps
 continue from at least that voltage, even if the retry already reached the
 voltage target. Reusing Balanced therefore does not cap Performance at an early
 clock step. A new unsafe probe or a measured power wall still ends the climb;
@@ -79,7 +156,8 @@ candidates when further probing cannot improve the result.
 ## Curve shape and measured voltage
 
 Every candidate has a gradual ramp into its selected voltage/clock anchor and
-a two-bin rising tail (+30 MHz nominal). The tail is present during testing.
+a rising tail: two bins (+30 MHz nominal) by default, or four bins (+60 MHz)
+with CLI Aggressive Boost. The selected tail is present during testing.
 The saved profile retains the complete tested curve; selection does not
 rebuild it or splice lower-voltage points from other candidates.
 

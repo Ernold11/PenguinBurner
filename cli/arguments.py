@@ -9,7 +9,6 @@ import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode.auto_uv_mode import ADAPTIVE_TIER_MODES, AUTO_UV_MODES
-from auto_uv.scan_mode.tuning_mode import AUTO_UV_TUNING_MODES
 from common.penguin_burner_paths import default_runtime_config_path
 from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
@@ -120,18 +119,13 @@ def parse_arguments(argv):
         ),
     )
     auto_uv_group.add_argument(
-        "--auto-uv-tuning-mode",
-        choices=AUTO_UV_TUNING_MODES,
-        default=None,
-        metavar="MODE",
+        "--auto-uv-retry-after-freeze",
+        action="store_true",
         help=(
-            "How close to the card's stability edge the scan may go. careful "
-            "(default) keeps probes above the edge that recorded freezes predict, "
-            "soaks one step above a cleanly reached floor, lets Performance add "
-            "up to 6 voltage bins over Balanced and spends at most one reboot "
-            "per climb. aggressive drops the predictions and the floor caution, "
-            "allows 10 bins and retries rungs that froze; it can crash the GPU "
-            "repeatedly. Points that actually failed stay blacklisted in both."
+            "CLI only; off by default. On an explicit scan resume after a hard "
+            "freeze, allow retrying the interrupted clock climb at higher voltage. "
+            "May require further reboots. Keeps the failed-point blacklist, "
+            "predicted stability margins, floor caution and voltage headroom."
         ),
     )
     auto_uv_group.add_argument(
@@ -169,7 +163,18 @@ def parse_arguments(argv):
             "minimum and maximum power-limit range."
         ),
     )
-    auto_uv_group.add_argument(
+    boost_group = auto_uv_group.add_mutually_exclusive_group()
+    boost_group.add_argument(
+        "--auto-uv-boost",
+        choices=("standard", "aggressive"),
+        default=None,
+        help=(
+            "CLI-only boost headroom for every scanned tier: Standard Boost "
+            "(default) uses 2 rising tail bins (+30 MHz nominal); Aggressive "
+            "Boost uses 4 (+60 MHz nominal). Does not enable freeze retries."
+        ),
+    )
+    boost_group.add_argument(
         "--auto-uv-tail-rise-bins",
         type=int,
         default=None,

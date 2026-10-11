@@ -613,7 +613,8 @@ def test_stock_drift_beyond_the_tolerance_still_starts_over(tmp_path):
     assert restarted.rejection_reason == "scan inputs changed: base_curve"
 
 
-def test_issue109_climb_crash_then_reboot_finishes_performance_on_the_balanced_point(monkeypatch):
+@pytest.mark.parametrize("retry", [False, True])
+def test_issue109_climb_crash_then_reboot_resumes_from_the_balanced_point(monkeypatch, retry):
     """Launch 5 and 6 of the tester's history, end to end.
 
     The climb crashed at 937 mV / 1920 MHz with 1890 and 1905 already passed.
@@ -657,7 +658,7 @@ def test_issue109_climb_crash_then_reboot_finishes_performance_on_the_balanced_p
     monkeypatch.setattr(runner_module, "probe_voltage_candidate", probe)
     monkeypatch.setattr(main, "probe_voltage_candidate", probe)
     monkeypatch.setattr(final_module, "apply_plan_and_refresh", lambda *_args: None)
-    options = {"auto_uv_mode": "adaptive", **GUI_DEFAULT_TARGETS}
+    options = {"auto_uv_mode": "adaptive", "auto_uv_retry_after_freeze": retry, **GUI_DEFAULT_TARGETS}
 
     for index, curve in enumerate((warm, _drift(warm, mhz=-30)), start=1):
         state["launch"] = index
@@ -682,7 +683,8 @@ def test_issue109_climb_crash_then_reboot_finishes_performance_on_the_balanced_p
     assert [c[3] for c in first if c[1] == "candidate"] == [1890, 1905, 1920]
 
     assert any("shifted by up to 30MHz" in m for m in logs[1]), logs[1][:30]
-    assert any("performance restarts from its baseline" in m for m in logs[1]), logs[1][:30]
+    if not retry:
+        assert any("performance restarts from its baseline" in m for m in logs[1]), logs[1][:30]
     assert not any("Cannot resume" in m for m in logs[1])
     assert not [c for c in second if c[1] in ("efficiency-candidate", "balanced-candidate", "resume-verify")]
     # Performance started from the checkpointed Balanced point and did not
@@ -694,11 +696,17 @@ def test_issue109_climb_crash_then_reboot_finishes_performance_on_the_balanced_p
     assert [(p["voltage_mv"], p["target_mhz"]) for p in reused] == [(937, 1875)]
     assert not [c for c in second if c[1] == "performance-candidate"]
     climb = [(c[2], c[3]) for c in second if c[1] == "candidate"]
-    assert climb == [(943, 1890), (943, 1905), (962, 1920), (968, 1930)], logs[1][-30:]
-    assert any("stays closed up to 956mV" in m and "1920MHz" in m for m in logs[1])
+    if retry:
+        assert climb[:2] == [(943, 1890), (943, 1905)]
+        assert any(clock == 1920 and 937 < voltage < 962 for voltage, clock in climb), climb
+        assert not any("stays closed up to 956mV" in m for m in logs[1])
+    else:
+        assert climb == [(943, 1890), (943, 1905), (962, 1920), (968, 1930)], logs[1][-30:]
+        assert any("stays closed up to 956mV" in m and "1920MHz" in m for m in logs[1])
     completed_2 = {p["tier"]: (p["voltage_mv"], p["target_mhz"]) for e, p in events[1] if e == "tier_completed"}
-    assert completed_2 == {"performance": (968, 1930)}
-    assert [c for c in second if c[1] == "final-verify"][-1][2:4] == (968, 1930)
+    assert completed_2 == {"performance": climb[-1]}
+    assert climb[-1][1] == 1930
+    assert [c for c in second if c[1] == "final-verify"][-1][2:4] == climb[-1]
     assert len(list(auto_uv_profiles_dir().glob("*.json"))) == 3
     assert not scan_checkpoint_path().exists()
 
@@ -894,7 +902,7 @@ def test_issue109_clean_floor_descent_soaks_one_step_above_the_floor(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Aggressive tuning: no predicted edge, no floor caution, frozen rungs retried.
+# Explicit freeze retry keeps predicted-edge and floor safeguards.
 # ---------------------------------------------------------------------------
 
 def _run_scripted_scan(monkeypatch, *, runtime_options, freeze_at=None, floors=None, pass_all=False):
@@ -934,34 +942,20 @@ def _run_scripted_scan(monkeypatch, *, runtime_options, freeze_at=None, floors=N
     return calls, logs, completed
 
 
-def test_aggressive_mode_ignores_the_predicted_edge_and_the_floor_caution(monkeypatch):
+@pytest.mark.parametrize("retry", [None, False, True])
+def test_freeze_retry_keeps_the_predicted_edge_and_floor_caution(monkeypatch, retry):
     record_unsafe_voltage(**EFFICIENCY_SOAK_FREEZE)
-    options = {"auto_uv_mode": "adaptive", "auto_uv_tuning_mode": "aggressive"}
+    options = {"auto_uv_mode": "adaptive"}
+    if retry is not None:
+        options["auto_uv_retry_after_freeze"] = retry
     calls, logs, completed = _run_scripted_scan(
         monkeypatch, runtime_options=options, floors={"balanced-candidate": 937},
+        freeze_at=(937, 1920),
     )
-    assert any("tuning mode: aggressive; no predicted-edge margin, no floor caution" in m for m in logs)
-    assert not any("predicted edge" in m for m in logs)
-    # The descent reached the blacklist band's edge (806, one bin above the
-    # 800 mV freeze band) and soaked that point: no floor caution.
-    efficiency = [c for c in calls if c[0] == "efficiency-candidate"]
-    assert efficiency[-1][1] == 806 and completed["efficiency"][0] == 806
-    assert not any("sweep-floor-caution" in m for m in logs)
-    # The climb walked 1890, 1905, 1920 and 1930 at the Balanced voltage.
-    climb = [(c[1], c[2]) for c in calls if c[0] == "candidate"]
-    assert climb == [(937, 1890), (937, 1905), (937, 1920), (937, 1930)]
-    assert completed["performance"] == (937, 1930)
-
-
-def test_careful_mode_is_the_default_and_keeps_the_guards(monkeypatch):
-    record_unsafe_voltage(**EFFICIENCY_SOAK_FREEZE)
-    calls, logs, completed = _run_scripted_scan(
-        monkeypatch, runtime_options={"auto_uv_mode": "adaptive"},
-        floors={"balanced-candidate": 937}, freeze_at=(937, 1920),
-    )
-    assert any("tuning mode: careful" in m for m in logs)
+    assert any(f"retry after freeze: {'on' if retry else 'off'}" in m for m in logs)
     assert any("predicted edge: 937mV@1920MHz" in m for m in logs)
     assert completed["efficiency"][0] == 806
+    assert all(v > 937 or c < 1920 for _, v, c, _ in calls)
 
 
 def test_balanced_at_912_still_leaves_performance_room_to_climb(monkeypatch):
@@ -982,7 +976,7 @@ def test_balanced_at_912_still_leaves_performance_room_to_climb(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Whole-scan simulation of the tester's card, fresh, in both tuning modes.
+# Whole-scan simulation with freeze retry off and on.
 # ---------------------------------------------------------------------------
 
 def _rtx3080_edge_mv(lock_clock_mhz: int) -> int:
@@ -996,7 +990,7 @@ def _rtx3080_edge_mv(lock_clock_mhz: int) -> int:
     return round(803 + (int(lock_clock_mhz) - 1740) * 0.78)
 
 
-def _simulate_fresh_card(monkeypatch, *, mode: str, max_launches: int = 14):
+def _simulate_fresh_card(monkeypatch, *, retry: bool, tail_bins: int = 2, max_launches: int = 14):
     """Run launches until the scan completes; a probe below the edge freezes the host."""
     warm = rtx_3080_issue109_stock_curve_warm()
     calls: list[tuple[int, str, int, int]] = []
@@ -1012,6 +1006,9 @@ def _simulate_fresh_card(monkeypatch, *, mode: str, max_launches: int = 14):
             clock, mv = STOCK_LOAD[cap]
             return _probe_result(voltage, lock, kw["candidate_plan"],
                                  measured_clock=clock, measured_mv=mv, power_w=PROBE_POWER_W[cap])
+        # Real generated probe plans must carry the selected boost shape,
+        # including final verification after a simulated reboot.
+        assert max(point["target_mhz"] for point in kw["candidate_plan"]) == lock + 15 * tail_bins
         if voltage < _rtx3080_edge_mv(lock):
             reboots.append((stage, voltage, lock))
             write_probe_in_progress_marker(
@@ -1031,7 +1028,8 @@ def _simulate_fresh_card(monkeypatch, *, mode: str, max_launches: int = 14):
     monkeypatch.setattr(main, "probe_voltage_candidate", probe)
     monkeypatch.setattr(final_module, "apply_plan_and_refresh", lambda *_args: None)
     monkeypatch.setattr(main, "open_live_gpu_vf_curve_applier", lambda **_kw: Rtx3080(warm))
-    options = {"auto_uv_mode": "adaptive", "auto_uv_tuning_mode": mode}
+    options = {"auto_uv_mode": "adaptive", "auto_uv_retry_after_freeze": retry,
+               "auto_uv_tail_rise_bins": tail_bins}
     for _ in range(max_launches):
         launch["n"] += 1
         events: list[tuple[str, dict]] = []
@@ -1051,16 +1049,17 @@ def _simulate_fresh_card(monkeypatch, *, mode: str, max_launches: int = 14):
     return launch["n"], reboots, completed
 
 
-@pytest.mark.parametrize("mode", ["careful", "aggressive"])
-def test_issue109_fresh_card_full_scan_in_both_tuning_modes(monkeypatch, mode):
-    launches, reboots, completed = _simulate_fresh_card(monkeypatch, mode=mode)
-    print(f"\nSIM {mode}: launches={launches} reboots={len(reboots)} "
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("tail_bins", [2, 4])
+def test_issue109_fresh_card_full_scan_with_cli_controls(monkeypatch, retry, tail_bins):
+    launches, reboots, completed = _simulate_fresh_card(monkeypatch, retry=retry, tail_bins=tail_bins)
+    print(f"\nSIM retry={retry} tail={tail_bins}: launches={launches} reboots={len(reboots)} "
           f"result={completed} reboot_points={[(s, v, c) for s, v, c in reboots]}")
     assert set(completed) == {"efficiency", "balanced", "performance"}
     for tier, (voltage, lock) in completed.items():
         assert voltage >= _rtx3080_edge_mv(lock), (tier, voltage, lock)
     assert completed["performance"][1] > completed["balanced"][1] > completed["efficiency"][1]
-    if mode == "careful":
+    if not retry:
         assert len(reboots) <= 3
         assert not any(stage == "candidate" for stage, _, _ in reboots)  # no climb reboot
     assert len(list(auto_uv_profiles_dir().glob("*.json"))) == 3

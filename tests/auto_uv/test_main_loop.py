@@ -3888,7 +3888,7 @@ def test_full_scan_reuses_only_matching_measured_baselines(
     monkeypatch.setattr(
         main,
         "adaptive_tier_descent_tail_rise_bins",
-        lambda tier: (
+        lambda tier, _options=None: (
             2
             if tier == "efficiency"
             else performance_tail

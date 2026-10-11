@@ -45,22 +45,15 @@ visible inside its sandbox. A missing tool remains visible as the saved selectio
 but cannot be newly selected.
 
 Existing launch options, command prefixes and wrapper rows are preserved.
-Lutris and Faugus changes apply on the next launch.
-Adaptive FPS targets update live for running wrapped Steam, Lutris, and Heroic
-games, including switching back to the system-wide target. Tier changes still
-wait for sustained frame-time headroom. Heroic's Play action refreshes saved
-launch settings automatically, restarting an idle launcher when necessary. Overlay visibility also updates live
-in already wrapped Heroic and Lutris games.
-Steam supports live mode, target, and overlay updates
-for a running wrapped game; changing its GPU requires a relaunch.
+Wrapper and compatibility-tool changes apply on the next launch. Profile mode,
+Adaptive FPS target and overlay visibility update live in confirmed wrapped
+Steam, Lutris, Heroic and Faugus sessions. Changing the target GPU requires a
+relaunch. Adaptive tier changes still wait for sustained frame-time headroom.
 
-Changing a running wrapped Heroic or Lutris game's Auto-UV mode applies it live,
-including switching between Adaptive and a fixed tier. PenguinBurner verifies
-the running mode with the daemon before reporting success. If the live update
-fails or cannot be confirmed, the selection remains saved for the next launch
-and the status reports the problem; a saved choice alone is not a live readout.
-Changing the target GPU still requires a relaunch.
-
+If a live update fails or cannot be confirmed, the preference stays saved for
+the next launch and the status reports the problem. The overlay layer must
+already be loaded to change its visibility live. Heroic's **Play** refreshes
+saved launch settings, restarting an idle launcher when necessary.
 
 ## Library controls
 
@@ -68,20 +61,35 @@ Sort by launcher, name, recently played, or most played. **Rescan** refreshes
 discovery without clearing settings. Scans and bulk writes run in the background.
 
 The **All games** menu enables or disables wrapping, or shows or hides overlays
-for enabled games across Steam, Lutris, and native or Flatpak Heroic. Bulk enable
-preserves saved modes and overlay choices; new games default to overlay off.
+for enabled games across all four integrations, including native and Flatpak
+launcher installations. Bulk enable preserves saved modes and overlay choices; new games default to overlay off.
 Show skips games whose renderer cannot display the overlay. Other per-game
 settings stay intact, and failures are reported while remaining games update.
 Each action shows the affected count before confirmation. Overlay changes reach
-already wrapped Steam, Heroic, and Lutris sessions live through the same handler.
+already wrapped sessions live through the same handler.
 The overlay layer must already be loaded; unconfirmed sessions require a relaunch.
 The visibility override is shared by concurrently running overlays.
+
+## Games that start another launcher
+
+With Battle.net (Blizzard), Ubisoft Connect, EA app or a similar client,
+**the wrapper and overlay environment attach to the launcher first**. Its
+games can inherit that environment. After quitting the game, **fully exit the
+launcher too, including its tray process**, to end the session, return to
+stopped/**Play**, and restore the standing profile. While the wrapped launcher
+remains alive, PenguinBurner can still show **Stop** or **Running**.
+
+An already-running client may bypass the new wrapper environment; exit it
+before relaunching if the game's overlay or profile is missing. **Stop** can
+terminate wrapped launcher processes as well as the game. A running process
+alone does not prove that the game inherited the overlay. See
+[Faugus game entries](faugus.md#battlenet-ubisoft-connect-ea-app-and-other-launchers).
 
 ## Runtime behavior
 
 The wrapper asks `penguin-burnerd` to apply the game profile, then restores your
-standing profile when the game exits. If the daemon is unavailable, the game
-still launches. Only one game can own the daemon's active monitoring and
+standing profile when the wrapped session ends. If the daemon is unavailable,
+the game still launches. Only one game can own the daemon's active monitoring and
 Adaptive engine at a time; concurrent games do not replace that owner.
 
 Adaptive and fixed-tier game profiles preserve the target GPU's active fan
@@ -91,8 +99,8 @@ the game. Switching back from Stock restores the target GPU's standing fan
 policy; exiting restores the standing profile and its fan settings.
 
 Game status follows wrapper registration and kernel process-exit events for
-Steam, Lutris and Heroic. Opening Game Library during a game reconnects to the
-current session snapshot. Launchers without complete notifications also receive
+Steam, Lutris, Heroic and Faugus. Opening Game Library during a game reconnects
+to the current session snapshot. Launchers without complete notifications also receive
 periodic recovery scans; a missed scan never proves that a game failed or that
 PenguinBurner was absent.
 
