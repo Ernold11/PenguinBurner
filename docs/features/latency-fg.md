@@ -19,7 +19,7 @@ Add this to the game's launch options:
 PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
-### Lutris, Heroic and other Wine launchers
+### Lutris, Heroic, Faugus and other Wine launchers
 
 In Lutris, open **Game → Configure → System options** and set
 **Command prefix** to:
@@ -29,6 +29,8 @@ PENGUIN_BURNER --pb-overlay=1
 ```
 
 In Heroic, the equivalent field is **Settings → Advanced → Wrapper commands**.
+In Faugus, use **Launch arguments**, or enable wrapping in
+[Game Library](faugus.md).
 
 The `PENGUIN_BURNER` command must be installed and available on the launcher's
 `PATH`. This path also works for other launchers that expose the active prefix

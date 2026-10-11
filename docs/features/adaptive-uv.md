@@ -17,7 +17,8 @@ Create profiles with [Auto-UV](auto-uv.md), then enable Adaptive per game in
 
 Auto-UV assigns tiers when saving profiles. To change one, right-click a
 profile in **Profiles → Assign Tier**; **None** removes the assignment.
-All three scan presets use two rising tail bins.
+All three scan presets default to two rising tail bins;
+[CLI Aggressive Boost](auto-uv.md#cli-only-boost-and-freeze-recovery) uses four.
 
 Adaptive needs at least two usable tiers to switch. With one tier, it runs
 that profile. Verify imported or edited curves before relying on them.

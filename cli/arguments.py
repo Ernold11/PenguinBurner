@@ -46,7 +46,8 @@ def parse_arguments(argv):
         help=(
             "Discover a stable fixed-clock undervolt from the live/default "
             "NVIDIA V/F curve, step the lock voltage down through real editable "
-            "VF bins, and verify candidates with Q2RTX plus CUDA load"
+            "VF bins, and verify candidates with Q2RTX plus CUDA load. "
+            "Resume an unfinished scan automatically when the GPU and settings match"
         ),
     )
     auto_uv_group.add_argument(
@@ -111,8 +112,20 @@ def parse_arguments(argv):
         default=None,
         help=(
             "Q2RTX resolution for the complete Auto-UV scan and final verification. "
-            "Default: auto (1440p with up to 8 GiB VRAM, otherwise 4K). "
+            "Default: auto (4K on desktop RTX 4080/Super, 4090, 5070 Ti, "
+            "5080 and 5090, plus RTX 4090/5090 Laptop; "
+            "1080p on all others, including unknown GPUs). "
             "Use 1080p to compare a lighter rendering workload. CUDA is unchanged."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-retry-after-freeze",
+        action="store_true",
+        help=(
+            "CLI only; off by default. On an explicit scan resume after a hard "
+            "freeze, allow retrying the interrupted clock climb at higher voltage. "
+            "May require further reboots. Keeps the failed-point blacklist, "
+            "predicted stability margins, floor caution and voltage headroom."
         ),
     )
     auto_uv_group.add_argument(
@@ -150,7 +163,18 @@ def parse_arguments(argv):
             "minimum and maximum power-limit range."
         ),
     )
-    auto_uv_group.add_argument(
+    boost_group = auto_uv_group.add_mutually_exclusive_group()
+    boost_group.add_argument(
+        "--auto-uv-boost",
+        choices=("standard", "aggressive"),
+        default=None,
+        help=(
+            "CLI-only boost headroom for every scanned tier: Standard Boost "
+            "(default) uses 2 rising tail bins (+30 MHz nominal); Aggressive "
+            "Boost uses 4 (+60 MHz nominal). Does not enable freeze retries."
+        ),
+    )
+    boost_group.add_argument(
         "--auto-uv-tail-rise-bins",
         type=int,
         default=None,

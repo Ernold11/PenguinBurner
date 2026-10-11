@@ -513,6 +513,17 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert options["auto_uv_tail_rise_bins"] == 2
 
 
+def test_ui_scan_command_does_not_forward_cli_only_recovery_options(monkeypatch) -> None:
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
+    options = _scan_daemon_options(commands.scan_command({
+        "auto_uv_mode": "adaptive",
+        "auto_uv_tuning_mode": "aggressive",
+        "auto_uv_retry_after_freeze": True,
+    }))
+    assert "auto_uv_tuning_mode" not in options
+    assert "auto_uv_retry_after_freeze" not in options
+
+
 def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
@@ -1742,7 +1753,7 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     window.window.close()
 
 
-def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
+def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1759,6 +1770,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     # The adaptive target FPS moved to the Steam tab's per-game settings.
     assert panel.widget.layout().contentsMargins().top() >= 16
@@ -1768,7 +1780,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
     )
 
 
-def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
+def test_overlay_panel_saves_manual_scale(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1787,6 +1799,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=config_path,
     )
+    qtbot.addWidget(panel.widget)
 
     # Defaults to the adaptive 1x option.
     assert panel.scale_combo.currentText() == "1x"
@@ -1798,7 +1811,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
 
-def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
+def test_overlay_panel_has_no_steam_launch_controls(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1815,6 +1828,7 @@ def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
     assert panel.widget.findChild(QtWidgets.QLineEdit, "overlaySteamLaunchLine") is None
@@ -2942,9 +2956,9 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     assert "auto_uv_max_clock_drop_pct" not in options
     assert "auto_uv_memory_offset_mhz" not in options
     assert "auto_uv_tail_rise_bins" not in options
-    assert options["auto_uv_efficiency_target_voltage_mv"] == 850
-    assert options["auto_uv_balanced_target_voltage_mv"] == 900
-    assert options["auto_uv_performance_target_voltage_mv"] == 925
+    # Unedited table defaults (850/900/925 mV on the 5080) stay automatic:
+    # sent as explicit targets they became hard Auto-OC bounds (issue #109).
+    assert not any("_target_" in key for key in options)
 
 
 def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
@@ -3226,8 +3240,15 @@ def test_tier_target_controls_validate_ranges_and_auto(monkeypatch, gpu_name, ha
                                        QtWidgets=QtWidgets, parent=None, gpu_index=0)
     assert options is not None
     if gpu_name.startswith("NVIDIA"):
-        for tier, (low, _, voltage) in expected.items():
-            assert options[f"auto_uv_{tier}_target_clock_mhz"] == low
-            assert options[f"auto_uv_{tier}_target_voltage_mv"] == voltage
+        # The clock boxes were edited down to their minimum; the voltage boxes
+        # still hold the table default, which is not an override. Balanced and
+        # Performance minimums equal their table clocks, so those stay automatic.
+        defaults = {"efficiency": 2800, "balanced": 2800, "performance": 2950}
+        for tier, (low, _, _voltage) in expected.items():
+            if low != defaults[tier]:
+                assert options[f"auto_uv_{tier}_target_clock_mhz"] == low
+            else:
+                assert f"auto_uv_{tier}_target_clock_mhz" not in options
+            assert f"auto_uv_{tier}_target_voltage_mv" not in options
     else:
         assert not any("target_" in key for key in options)

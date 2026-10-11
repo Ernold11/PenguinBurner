@@ -530,6 +530,9 @@ def select_scan_tuning(
                     low, high = bounds
                     auto_value = max(0, int(low) - step) if default is None else None
                     controls[f"{key}_auto_value"] = auto_value
+                    # An unedited table default is "automatic": the scan must
+                    # not receive it as an explicit, hard target.
+                    controls[f"{key}_default_value"] = default
                     spin.setEnabled(True)
                     spin.setSpecialValueText("Auto" if auto_value is not None else "")
                     spin.setRange(
@@ -665,6 +668,9 @@ def select_scan_tuning(
     buttons.addButton(standard_enum.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
+    start_button.setToolTip(
+        "Resume an unfinished scan when the GPU and settings match; otherwise start a new scan."
+    )
     start_button.setDefault(True)
     start_button.setEnabled(bool(gpu_choices))
     for group in (scope_group, preset_group, advanced_group):
@@ -729,8 +735,13 @@ def select_scan_tuning(
 
 
 def _configured_target_value(controls: dict, key: str) -> int | None:
+    """The user's explicit target, or None for Auto and the unedited table default."""
+    if not controls[key].isEnabled():
+        return None
     value = int(controls[key].value())
-    if value == controls.get(f"{key}_auto_value") or not controls[key].isEnabled():
+    if value == controls.get(f"{key}_auto_value"):
+        return None
+    if value == controls.get(f"{key}_default_value"):
         return None
     return value
 

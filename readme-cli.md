@@ -67,7 +67,7 @@ be installed and running (see one-time setup above). Start a scan with:
 ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
-The CLI scan options mirror the GUI Auto-UV tuning dialog. Start with
+The common CLI scan options mirror the GUI Auto-UV setup dialog. Start with
 `--auto-uv-voltage-scan`, then choose the same preset family shown in the GUI
 with `--auto-uv-mode efficiency|balanced|performance|adaptive` (`adaptive` runs all tiers).
 
@@ -83,6 +83,19 @@ Common scan controls, shown for every GUI preset:
 - `--gpu-index N`: select the NVIDIA GPU used for scan, verification, and runtime.
 - `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
 - `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
+
+CLI-only controls (independent of the profile tier):
+
+- `--auto-uv-boost standard|aggressive`: Standard Boost uses 2 rising tail bins (+30 MHz nominal); Aggressive Boost uses 4 (+60 MHz nominal). Standard is the default. Applies to every scanned tier, including full scans. Actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze`: off by default. When you explicitly resume after a reboot, allow the interrupted climb to retry at higher voltage. Failed points remain blacklisted; prediction margins, floor caution and voltage headroom stay unchanged. Further freezes may require further reboots.
+
+Use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost` for a custom tail.
+Resume with the same options. See [boost and freeze recovery](docs/features/auto-uv.md#cli-only-boost-and-freeze-recovery).
+
+```bash
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-boost aggressive
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-retry-after-freeze
+```
 
 Full-scan (`--auto-uv-mode adaptive`) per-tier overrides — each tier of the
 combined run can carry its own limits, mirroring the GUI's per-profile
