@@ -3176,7 +3176,19 @@ assert json.loads(s.makefile().readline())['ok']
 "#]).arg(&daemon.socket).arg(launcher).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut child_out = BufReader::new(child.stdout.take().unwrap());
     assert_eq!(read_line(&mut child_out).unwrap().trim(), "registered");
-    let registered: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+    // Startup recovery can queue events from other concurrently running tests.
+    // Wait for our registration, not merely the next registry snapshot.
+    let registered = loop {
+        let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+        if event["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| session["pid"] == child.id())
+        {
+            break event;
+        }
+    };
     let session = registered["result"]["sessions"]
         .as_array()
         .unwrap()
@@ -3298,10 +3310,9 @@ print(child.pid, flush=True)
     loop {
         let event: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
         let sessions = event["result"]["sessions"].as_array().unwrap();
-        assert!(sessions
-            .iter()
-            .any(|s| s["session_id"] == "handoff-event-test"));
+        // Ignore unrelated startup-recovery snapshots while awaiting our child.
         if let Some(child) = sessions.iter().find(|s| s["pid"] == successor) {
+            assert_eq!(child["session_id"], "handoff-event-test");
             assert_eq!(child["phase"], "running");
             assert_eq!(child["profile"], "applied");
             break;
