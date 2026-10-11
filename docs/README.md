@@ -4,7 +4,7 @@
 - [Installation](install.md) · [Flatpak](flatpak.md)
 - [Feature guides](features/README.md)
 - [Game Library](features/game-library.md) · [Steam](steam.md) ·
-  [Lutris](features/lutris.md) · [Heroic](features/heroic.md)
+  [Lutris](features/lutris.md) · [Heroic](features/heroic.md) · [Faugus](features/faugus.md)
 - [Troubleshooting](features/troubleshooting.md)
 - [CLI reference](../readme-cli.md)
 

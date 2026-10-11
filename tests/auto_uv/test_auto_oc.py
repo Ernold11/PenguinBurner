@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 
 import pytest
+from auto_uv_test_data import base_curve, rtx_5080_20260524_high_oc_base_curve
 
 import auto_uv.auto_oc.search as auto_oc_search
 from auto_uv.auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
@@ -18,7 +19,6 @@ from auto_uv.domain.types import (
     VfCurveCandidate,
 )
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
-from auto_uv_test_data import base_curve, rtx_5080_20260524_high_oc_base_curve
 
 
 def _probe(
@@ -152,6 +152,51 @@ def test_auto_oc_ladder_can_reclaim_clock_at_fixed_voltage() -> None:
     ]
 
 
+@pytest.mark.parametrize("voltage, clock", [(956, 1920), (937, 1890)])
+def test_performance_climbs_above_3080_balanced_point_at_proven_voltage(voltage, clock):
+    curve = base_curve(800, 1000, 1, 1500, 15)
+    start = VfCurveCandidate("balanced", voltage, clock, curve)
+    tried = []
+
+    class Runner:
+        power_limit_w = 380
+
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append(candidate)
+            return _passed_outcome(_probe(candidate.voltage_mv, candidate.target_mhz))
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve, start_candidate=start, start_probe=_probe(voltage, clock),
+        runner=Runner(), gpu_name="NVIDIA GeForce RTX 3080", clock_ceiling=None,
+        probe_history=[], log=lambda _: None,
+    )
+
+    assert tried
+    assert all(candidate.voltage_mv == voltage for candidate in tried)
+    assert all(clock < candidate.target_mhz <= 1930 for candidate in tried)
+    assert result.selected_candidate.target_mhz == 1930
+    assert result.endpoint.voltage_mv == voltage
+
+
+def test_performance_keeps_explicit_voltage_limit_below_start():
+    curve = base_curve(800, 1000, 1, 1500, 15)
+    start = VfCurveCandidate("balanced", 956, 1920, curve)
+
+    class Runner:
+        def probe_candidate(self, *_args, **_kwargs):
+            pytest.fail("an explicit voltage limit must not be raised")
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve, start_candidate=start, start_probe=_probe(956, 1920),
+        runner=Runner(), gpu_name="NVIDIA GeForce RTX 3080", clock_ceiling=None,
+        probe_history=[], log=lambda _: None, target_voltage_mv=900,
+    )
+
+    assert result.selected_candidate is start
+    assert result.endpoint.voltage_mv == 900
+    assert not result.attempts
+
+
 def test_auto_oc_probe_key_uses_q2rtx_clock_before_fps() -> None:
     lower_fps_higher_clock = _probe(950, 2745, fps=80.0, q2rtx_clock_mhz=2735.0)
     higher_fps_lower_clock = _probe(925, 2670, fps=120.0, q2rtx_clock_mhz=2680.0)
@@ -264,6 +309,48 @@ def test_auto_oc_search_climbs_voltage_and_clock_to_target() -> None:
         925,
         2980,
     )
+
+
+@pytest.mark.parametrize("obstacle", ["cached", "retry"])
+def test_5070_ti_climbs_after_reaching_voltage_cap_early(monkeypatch, obstacle):
+    """A low-voltage obstacle must not strand Performance at 2745 MHz."""
+    curve = base_curve(850, 950, 5, 2400, 15)
+    start = VfCurveCandidate("balanced-verified", 850, 2730, curve)
+    unsafe = ([{
+        "candidate_voltage_mv": 915, "lock_clock_mhz": 2775,
+        "reason": "benchmark-crash",
+    }] if obstacle == "cached" else [])
+    monkeypatch.setattr(auto_oc_search, "load_unsafe_voltage_blacklist", lambda: unsafe)
+    tried = []
+
+    class Runner:
+        power_limit_w = 300
+
+        def probe_candidate(self, candidate, **_kwargs):
+            point = (candidate.voltage_mv, candidate.target_mhz)
+            assert point not in tried
+            assert not auto_oc_search.unsafe_voltage_block_reason(
+                unsafe, candidate_voltage_mv=point[0], lock_clock_mhz=point[1],
+                profile_tier="performance",
+            )
+            tried.append(point)
+            probe = _probe(*point)
+            if obstacle == "retry" and candidate.voltage_mv < 925:
+                return _failed_outcome(probe)
+            return _passed_outcome(probe)
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve, start_candidate=start, start_probe=_probe(850, 2730),
+        runner=Runner(), gpu_name="NVIDIA GeForce RTX 5070 Ti", clock_ceiling=None,
+        probe_history=[], log=lambda _: None, tail_rise_bins=2,
+    )
+
+    assert tried[-1] == (925, 2920)
+    assert len(tried) <= 24  # Ten clock rungs plus the bounded voltage retries.
+    assert all(v <= 925 and c <= 2920 for v, c in tried)
+    cap_index = next(i for i, (v, _) in enumerate(tried) if v == 925)
+    assert all(v == 925 for v, _ in tried[cap_index:])
+    assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (925, 2920)
 
 
 def test_auto_oc_search_reclaims_clock_at_fixed_voltage_with_capped_history() -> None:
@@ -521,13 +608,46 @@ def test_auto_oc_search_skips_more_mhz_until_failed_clock_is_stable(monkeypatch)
         measured_baseline_clock_mhz=2735,
     )
 
-    assert tried == [(875, 2820), (885, 2820), (890, 2880)]
+    assert tried == [
+        (875, 2820), (885, 2820), (885, 2835), (885, 2865), (890, 2880),
+    ]
     assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (
         890,
         2880,
     )
     assert (875, 2835) not in tried
-    assert (885, 2865) not in tried
+
+
+@pytest.mark.parametrize("obstacle", ["cached", "retry"])
+def test_auto_oc_voltage_retry_stops_at_measured_power_wall(monkeypatch, obstacle):
+    curve = base_curve(850, 950, 5, 2400, 15)
+    start = VfCurveCandidate("balanced-verified", 850, 2730, curve)
+    monkeypatch.setattr(auto_oc_search, "load_unsafe_voltage_blacklist", lambda: [{
+        "candidate_voltage_mv": 900, "lock_clock_mhz": 2745,
+        "reason": "benchmark-crash",
+    }] if obstacle == "cached" else [])
+    tried = []
+
+    class Runner:
+        power_limit_w = 300
+
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            probe = _probe(candidate.voltage_mv, candidate.target_mhz, q2rtx_clock_mhz=2700)
+            if candidate.voltage_mv <= 900:
+                return _failed_outcome(probe)
+            probe.avg_power_w = 299.0
+            return _passed_outcome(probe)
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve, start_candidate=start, start_probe=_probe(850, 2730),
+        runner=Runner(), gpu_name="NVIDIA GeForce RTX 5070 Ti", clock_ceiling=None,
+        probe_history=[], log=lambda _: None,
+    )
+
+    assert tried[-1] == (905, 2745)
+    assert all(clock == 2745 for _, clock in tried)
+    assert result.selected_candidate is start
 
 
 @pytest.mark.parametrize(
@@ -730,6 +850,7 @@ def test_restart_skips_crashed_endpoint_before_hardware_and_verifies_lower_clock
     tmp_path, monkeypatch
 ):
     import json
+
     from auto_uv.persistence import interrupted_probe_crash_cache as crash_cache
     from auto_uv.persistence import unsafe_voltage_blacklist_file as blacklist
 
@@ -886,3 +1007,30 @@ def test_crash_during_voltage_retry_stops_instead_of_retrying_failed_clock_again
     )
     assert tried == [(935, 2715), (940, 2715), (950, 2670)]
     assert result.selected_candidate.target_mhz == 2670
+
+
+def test_frozen_rung_closes_only_near_the_freeze_voltage():
+    """A 5080 climbing at 900 mV must not be stopped by a July freeze at 865 mV
+    (2026-10-09 host scan shipped 925 / 2895 instead of climbing on); the issue
+    109 card's 937 mV / 1920 MHz freeze still closes 943 to 956 at that clock."""
+    from auto_uv_test_data import base_curve, rtx_3080_issue109_stock_curve_warm
+
+    from auto_uv.auto_oc.search import frozen_rung_block_reason
+
+    five = base_curve(800, 1000, 5, 2000, 15)  # 5 mV bins like the 5080
+    freeze = [{"candidate_voltage_mv": 865, "lock_clock_mhz": 2898, "reason": "previous-run-abruptly-ended"}]
+    kw = dict(start_voltage_mv=860, lock_clock_mhz=2910)
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=870, **kw)
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=880, **kw)  # 3 bins above
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=885, **kw) == ""
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=900, **kw) == ""
+    # Below the frozen clock nothing is closed; freezes under the start voltage do not count.
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=870, start_voltage_mv=860, lock_clock_mhz=2895) == ""
+    assert frozen_rung_block_reason(freeze, five, rung_voltage_mv=870, start_voltage_mv=870, lock_clock_mhz=2910) == ""
+
+    warm = rtx_3080_issue109_stock_curve_warm()
+    climb = [{"candidate_voltage_mv": 937, "lock_clock_mhz": 1920, "reason": "stability-probe-failed",
+              "details": {"result_reason": "cuda-bruteforce-failed exit=4"}}]
+    for voltage in (943, 950, 956):
+        assert frozen_rung_block_reason(climb, warm, start_voltage_mv=937, rung_voltage_mv=voltage, lock_clock_mhz=1920)
+    assert frozen_rung_block_reason(climb, warm, start_voltage_mv=937, rung_voltage_mv=962, lock_clock_mhz=1920) == ""

@@ -72,6 +72,12 @@ The boot summary lists every saved GPU UUID and a replay outcome such as
 `applied`, `active`, `stock-skipped`, `gpu-not-detected`, or `stock-fallback`.
 Include this output when reporting missing cards or boot recovery problems.
 
+### The game closed but PenguinBurner still shows Stop or Running
+
+A wrapped Battle.net, Ubisoft Connect, EA app or other store launcher may still
+be running. Fully exit it, including its tray process, to end the session and
+return to stopped/Play. See [launcher sessions](game-library.md#games-that-start-another-launcher).
+
 ### Adaptive switching isn't doing anything
 
 Adaptive needs at least two profiles with different tiers assigned. With one

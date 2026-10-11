@@ -52,3 +52,32 @@ def test_qt_accepts_the_stylesheet(qapp) -> None:
 
     parse_failures = [m for m in messages if "Could not parse" in m]
     assert not parse_failures, parse_failures
+
+
+def test_checked_scope_buttons_look_selected(qapp) -> None:
+    """A checked option in an exclusive group must not render like an unchecked one."""
+    from ui.qt import import_qt
+
+    _QtCore, _QtGui, QtWidgets, _pg = import_qt()
+    if QtWidgets is None:
+        pytest.skip("PySide6 not available")
+
+    container = QtWidgets.QWidget()
+    container.setStyleSheet(STYLESHEET)
+    layout = QtWidgets.QHBoxLayout(container)
+    buttons = []
+    for checked in (True, False):
+        button = QtWidgets.QPushButton("Option")
+        button.setObjectName("autoUvScopeButton")
+        button.setCheckable(True)
+        button.setChecked(checked)
+        layout.addWidget(button)
+        buttons.append(button)
+    container.show()
+    qapp.processEvents()
+
+    checked_image, unchecked_image = (button.grab().toImage() for button in buttons)
+    container.close()
+
+    center = checked_image.rect().center()
+    assert checked_image.pixelColor(center) != unchecked_image.pixelColor(center)

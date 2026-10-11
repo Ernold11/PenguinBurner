@@ -63,6 +63,11 @@ def build_effective_auto_uv_runtime_options(args) -> dict:
     resolution = getattr(args, "auto_uv_q2rtx_resolution", None)
     if resolution is not None:
         runtime_options["auto_uv_q2rtx_resolution"] = str(resolution)
+    if getattr(args, "auto_uv_retry_after_freeze", False):
+        runtime_options["auto_uv_retry_after_freeze"] = True
+    boost = getattr(args, "auto_uv_boost", None)
+    if boost is not None:
+        runtime_options["auto_uv_tail_rise_bins"] = {"standard": 2, "aggressive": 4}[boost]
 
     if getattr(args, "auto_uv_mode", None) is not None:
         requested_auto_uv_mode = str(args.auto_uv_mode).strip().lower()
@@ -70,7 +75,7 @@ def build_effective_auto_uv_runtime_options(args) -> dict:
         runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(args.auto_uv_mode)
         if (
             requested_auto_uv_mode == AUTO_UV_MODE_BALANCED
-            and args.auto_uv_tail_rise_bins is None
+            and "auto_uv_tail_rise_bins" not in runtime_options
         ):
             runtime_options["auto_uv_tail_rise_bins"] = (
                 AUTO_UV_DEFAULTS.balanced_tail_rise_bins
