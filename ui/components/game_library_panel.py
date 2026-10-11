@@ -119,7 +119,8 @@ class _TrackedGame:
     warning: str = ""
     note: str = ""
     confirmed: bool = False
-    since: float = dataclasses.field(default_factory=time.monotonic)
+    # Looked up per call, not bound at import, so it reads the same clock as the rest.
+    since: float = dataclasses.field(default_factory=lambda: time.monotonic())
 
 
 @dataclass
