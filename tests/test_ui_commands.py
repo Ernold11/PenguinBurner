@@ -1753,7 +1753,7 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     window.window.close()
 
 
-def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
+def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1770,6 +1770,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     # The adaptive target FPS moved to the Steam tab's per-game settings.
     assert panel.widget.layout().contentsMargins().top() >= 16
@@ -1779,7 +1780,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
     )
 
 
-def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
+def test_overlay_panel_saves_manual_scale(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1798,6 +1799,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=config_path,
     )
+    qtbot.addWidget(panel.widget)
 
     # Defaults to the adaptive 1x option.
     assert panel.scale_combo.currentText() == "1x"
@@ -1809,7 +1811,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
 
-def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
+def test_overlay_panel_has_no_steam_launch_controls(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1826,6 +1828,7 @@ def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
     assert panel.widget.findChild(QtWidgets.QLineEdit, "overlaySteamLaunchLine") is None
