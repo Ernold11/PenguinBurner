@@ -38,6 +38,7 @@ from integrations.steam.manager import SteamGameRow
 from integrations.steam.settings import SteamGameSetting
 from overlay.config import OverlayConfig
 from ui.components.game_library_panel import game_key
+from ui.features.tuning.gpu_selection import GpuChoice  # noqa: E402
 from ui.main import APP_DISPLAY_NAME
 from ui.qt import apply_dark_palette, import_qt
 from ui.window import MainWindow
@@ -53,6 +54,10 @@ DEFAULT_OUTPUT = REPO_ROOT / "docs/assets/auto-uv-full-scan-demo.gif"
 PROFILES_REVEAL_S = 15.6
 GAME_LIBRARY_REVEAL_S = 18.4
 OVERLAY_REVEAL_S = 21.2
+DEMO_GPU = GpuChoice(
+    index=0, name="NVIDIA GeForce RTX 5080",
+    uuid="GPU-00000000-0000-0000-0000-000000005080", power_limit_default_w=360,
+)
 
 SOURCE_POINTS: list[tuple[float, float]] = [
     (800, 1940),
@@ -307,6 +312,8 @@ def _stub_external_state(*, live_game_library: bool) -> None:
     window_mod.penguin_burner_runtime_is_active = lambda: False
     window_mod.silent_fan_curve_from_runtime_config = lambda: False
     window_mod.silent_fan_curve_to_runtime_config = lambda value: value
+    window_mod.detected_gpu_choices = lambda: [DEMO_GPU]
+    window_mod.gpu_choices_with_fallback = lambda **_kwargs: ([DEMO_GPU], 0)
 
 
 def _demo_steam_source():
@@ -349,7 +356,7 @@ def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
                 state_flags=4,
                 last_played=game.last_played,
                 last_updated=game.last_played,
-                icon_path=None,
+                art_path=None,
                 compat_tool=game.compat_tool,
                 effective_compat_tool=(
                     game.effective_compat_tool
@@ -560,6 +567,7 @@ def render(
     *,
     live_game_library: bool = False,
     selected_game: str = "",
+    screenshots_dir: Path | None = None,
 ) -> None:
     _stub_external_state(live_game_library=live_game_library)
     QtCore, QtGui, QtWidgets, pg = import_qt()
@@ -608,7 +616,7 @@ def render(
     window.header.set_candidate("Simulation only — the hardware daemon is not used")
     window.log_view.text_edit.clear()
     window.log_view._at_line_start = True
-    _append_log(window, "$ penguin-burner demo-auto-uv --mode adaptive --no-gpu-writes")
+    _append_log(window, "Auto-UV demonstration — simulated events, no GPU writes")
 
     window._handle_scan_event(
         {
@@ -633,6 +641,13 @@ def render(
     profiles_revealed = False
     game_library_revealed = False
     overlay_revealed = False
+    screenshots = {
+        round(15.5 * FPS): "auto-uv-scan.png",
+        round(18.0 * FPS): "profiles-management.png",
+        round(23.0 * FPS): "overlay.png",
+    }
+    if screenshots_dir is not None:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         frame_count = round(DURATION_S * FPS)
@@ -889,12 +904,14 @@ def render(
             if elapsed_s >= PROFILES_REVEAL_S and not profiles_revealed:
                 profiles_revealed = True
                 window.profile_list.set_profiles(
-                    [dict(profile) for profile in DEMO_PROFILES],
+                    [dict(profile, gpu_identity={
+                        "name": DEMO_GPU.name, "uuid": DEMO_GPU.uuid,
+                    }) for profile in DEMO_PROFILES],
                     silent_fan_checked=True,
                 )
                 window.tabs.setCurrentIndex(window.profiles_tab_index)
                 window.controls.set_status_text(
-                    "Verified RTX 5080 results — every GPU tunes differently."
+                    "Example RTX 5080 profiles — every GPU tunes differently."
                 )
 
             if elapsed_s >= GAME_LIBRARY_REVEAL_S and not game_library_revealed:
@@ -937,7 +954,7 @@ def render(
                     "Overlay: base FPS · frame generation · PC latency"
                 )
                 window.controls.set_status_text(
-                    "In-Game Overlay — representative live telemetry."
+                    "In-Game Overlay — simulated telemetry."
                 )
                 window.tabs.setCurrentIndex(window.overlay_tab_index)
 
@@ -948,6 +965,16 @@ def render(
                 app,
                 frame_dir / f"frame-{frame_index:03d}.png",
             )
+            if screenshots_dir is not None and frame_index in screenshots:
+                name = screenshots[frame_index]
+                height = {"profiles-management.png": 430, "overlay.png": 600}.get(
+                    name, CAPTURE_SIZE[1]
+                )
+                window.window.resize(CAPTURE_SIZE[0], height)
+                app.processEvents()
+                if not window.window.grab().save(str(screenshots_dir / name)):
+                    raise RuntimeError(f"Could not save {name}")
+                window.window.resize(*CAPTURE_SIZE)
 
         # GitHub mobile does not autoplay GIFs: the static miniature is the
         # FIRST frame. Open on the scan-complete payoff (all three verified
@@ -994,11 +1021,16 @@ def main() -> int:
         default="",
         help="Select this installed game in a live Game Library capture.",
     )
+    parser.add_argument(
+        "--screenshots-dir", type=Path,
+        help="Also save the scan, profiles and overlay screenshots here.",
+    )
     args = parser.parse_args()
     render(
         args.output.resolve(),
         live_game_library=args.live_game_library,
         selected_game=args.select_game,
+        screenshots_dir=args.screenshots_dir,
     )
     return 0
 

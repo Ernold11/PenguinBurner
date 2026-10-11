@@ -1,5 +1,7 @@
 # Faugus Launcher in Game Library
 
+![Diablo III in Faugus, with Adaptive tuning, Proton selection and overlay controls](../assets/game-library-faugus.png)
+
 Native and Flatpak installations share the same integration. When both have a
 configured library, PenguinBurner prefers native while its executable is
 available; otherwise it selects Flatpak. Library discovery, settings and Play
