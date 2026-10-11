@@ -67,6 +67,11 @@ be installed and running (see one-time setup above). Start a scan with:
 ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
+After a successful interactive scan, the CLI asks whether to start the profile
+and save it for startup. Each successful action prints a confirmation. After
+the final answer, the CLI prints its completion message and exits, returning
+to your shell prompt; the root daemon manages any requested runtime.
+
 The common CLI scan options mirror the GUI Auto-UV setup dialog. Start with
 `--auto-uv-voltage-scan`, then choose the same preset family shown in the GUI
 with `--auto-uv-mode efficiency|balanced|performance|adaptive` (`adaptive` runs all tiers).

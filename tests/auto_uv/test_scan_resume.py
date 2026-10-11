@@ -265,7 +265,9 @@ def test_failure_then_scan_click_restores_table_plot_and_long_verifies_safer_poi
         "systemd_autostart_profile_info",
         lambda: {"selector": "", "silent_fan_curve": False},
     )
-    monkeypatch.setattr(window_module, "running_auto_uv_profile_info", lambda: {})
+    monkeypatch.setattr(window_module, "running_auto_uv_profile_info", lambda: {
+        "selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False,
+    })
     monkeypatch.setattr(
         window_module, "penguin_burner_runtime_is_active", lambda: False
     )
