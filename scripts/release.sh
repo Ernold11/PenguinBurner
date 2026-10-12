@@ -5,17 +5,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [[ $# != 1 ]]; then
-    echo "usage: $0 VERSION" >&2
+if [[ $# != 1 && ( $# != 2 || "$2" != --github-only ) ]]; then
+    echo "usage: $0 VERSION [--github-only]" >&2
     exit 2
 fi
 version="$1"
+github_only="${2:-}"
 tag="v$version"
 export GH_PROMPT_DISABLED=1 GIT_TERMINAL_PROMPT=0 PIP_NO_INPUT=1
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}"
 export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring
 
-for command in gh git python3 rpmbuild copr-cli makepkg cargo dpkg-buildpackage dput gpg gpg-connect-agent flatpak flatpak-builder flock; do
+commands=(gh git python3 rpmbuild cargo flock)
+if [[ -z "$github_only" ]]; then
+    commands+=(copr-cli makepkg dpkg-buildpackage dput gpg gpg-connect-agent flatpak flatpak-builder)
+fi
+for command in "${commands[@]}"; do
     command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 1; }
 done
 scripts/check-release-version.sh "$version" >/dev/null
@@ -24,26 +29,28 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 gh auth status >/dev/null
-python3 scripts/release_pypi.py --check-credentials
-copr_args=()
-if [[ -n "${COPR_CONFIG_FILE:-}" ]]; then copr_args+=(--config "$COPR_CONFIG_FILE"); fi
-if [[ -n "${COPR_CONFIG:-}" && -z "${COPR_CONFIG_FILE:-}" ]]; then
-    copr-cli --config <(printf '%s\n' "$COPR_CONFIG") whoami >/dev/null
-else
-    copr-cli "${copr_args[@]}" whoami >/dev/null
+if [[ -z "$github_only" ]]; then
+    python3 scripts/release_pypi.py --check-credentials
+    copr_args=()
+    if [[ -n "${COPR_CONFIG_FILE:-}" ]]; then copr_args+=(--config "$COPR_CONFIG_FILE"); fi
+    if [[ -n "${COPR_CONFIG:-}" && -z "${COPR_CONFIG_FILE:-}" ]]; then
+        copr-cli --config <(printf '%s\n' "$COPR_CONFIG") whoami >/dev/null
+    else
+        copr-cli "${copr_args[@]}" whoami >/dev/null
+    fi
+    aur_repo="${PENGUIN_BURNER_AUR_REPO:-$ROOT/../penguin-burner-aur}"
+    aur_repo="$(realpath -m "$aur_repo")"
+    aur_remote="ssh://aur@aur.archlinux.org/penguin-burner.git"
+    if [[ -d "$aur_repo/.git" ]]; then
+        [[ -z "$(git -C "$aur_repo" status --porcelain)" ]] || {
+            echo "AUR checkout has uncommitted changes: $aur_repo" >&2; exit 1;
+        }
+        aur_remote="$(git -C "$aur_repo" remote get-url origin)"
+    fi
+    git ls-remote "$aur_remote" >/dev/null
+    scripts/release-gpg.sh --check "${DEBSIGN_KEYID:-B098E377E3C3C124A009E54093CEE10EDB7F01A2}"
+    scripts/release-gpg.sh --check-unattended "${PENGUIN_BURNER_FLATPAK_GPG_KEY:-2800D243DB4657B3}"
 fi
-aur_repo="${PENGUIN_BURNER_AUR_REPO:-$ROOT/../penguin-burner-aur}"
-aur_repo="$(realpath -m "$aur_repo")"
-aur_remote="ssh://aur@aur.archlinux.org/penguin-burner.git"
-if [[ -d "$aur_repo/.git" ]]; then
-    [[ -z "$(git -C "$aur_repo" status --porcelain)" ]] || {
-        echo "AUR checkout has uncommitted changes: $aur_repo" >&2; exit 1;
-    }
-    aur_remote="$(git -C "$aur_repo" remote get-url origin)"
-fi
-git ls-remote "$aur_remote" >/dev/null
-scripts/release-gpg.sh --check "${DEBSIGN_KEYID:-B098E377E3C3C124A009E54093CEE10EDB7F01A2}"
-scripts/release-gpg.sh --check-unattended "${PENGUIN_BURNER_FLATPAK_GPG_KEY:-2800D243DB4657B3}"
 git fetch origin main --tags
 commit="$(git rev-parse HEAD)"
 git merge-base --is-ancestor "$commit" origin/main || {
@@ -171,6 +178,12 @@ step python-build python_build
 step rpm-build rpm_build
 step github publish_github
 step github-assets publish_assets
+
+if [[ -n "$github_only" ]]; then
+    echo "Released $version to GitHub: https://github.com/jpietek/PenguinBurner/releases/tag/$tag"
+    echo "Artifacts and receipts: $out"
+    exit 0
+fi
 
 pids=()
 for channel in pypi copr aur flatpak ppa; do

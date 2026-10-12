@@ -11,6 +11,16 @@ release, then publishes **PyPI, AUR, COPR, Ubuntu PPA, and Flatpak/Pages**.
 Distribution channels run concurrently; a failure in one does not skip others.
 The command waits for remote COPR/PPA builds and the Pages deployment.
 
+For a GitHub-only release (tag, notes, Python artifacts, and source RPM):
+
+```bash
+scripts/release.sh VERSION --github-only
+```
+
+This mode requires GitHub access and the build tools, but no other publication
+credentials or signing keys. Run the full command later from the same commit
+to publish the remaining channels using the retained artifacts.
+
 ## Before running
 
 1. Update Python, Cargo, Arch, RPM, and Flatpak version metadata and write

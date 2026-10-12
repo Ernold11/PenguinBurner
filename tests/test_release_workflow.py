@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -137,9 +137,11 @@ touch "$RELEASE_STATE/pypi"
     return repo, env
 
 
-def _release(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _release(
+    repo: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["scripts/release.sh", "0.8.1"],
+        ["scripts/release.sh", "0.8.1", *args],
         cwd=repo,
         env=env,
         text=True,
@@ -166,6 +168,33 @@ def test_release_publishes_all_channels_from_clean_clone(release_repo) -> None:
     work = repo / "dist/release/0.8.1" / commit / "source"
     assert not (work / "private-untracked.txt").exists()
     assert (repo / "private-untracked.txt").read_text() == "must stay local"
+
+
+@pytest.mark.parametrize("resume_full", [False, True])
+def test_github_only_skips_other_channels_and_can_resume_full_release(
+    release_repo, resume_full
+) -> None:
+    repo, env = release_repo
+    result = _release(repo, {**env, "LOCKED_KEY": "1"}, "--github-only")
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = Path(env["RELEASE_STATE"])
+    assert (state / "github").exists()
+    assert {p.name for p in (state / "assets").iterdir()} == {
+        "package.whl",
+        "package.tar.gz",
+        "package.src.rpm",
+    }
+    assert not Path(env["RELEASE_TRACE"]).exists()
+    if resume_full:
+        result = _release(repo, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert set(Path(env["RELEASE_TRACE"]).read_text().splitlines()) == {
+            "pypi",
+            "copr",
+            "aur",
+            "ppa",
+            "flatpak-pages",
+        }
 
 
 def test_failed_channel_does_not_stop_others_and_resume_skips_successes(
