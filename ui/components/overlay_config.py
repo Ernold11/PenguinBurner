@@ -76,7 +76,6 @@ ITEM_LABELS = {
     "base_fps": "Base frame rate",
     "fg_fps": "FPS after frame generation",
     "latency_ms": "Frame latency",
-    "nr_gpu_ms": "DLSS 5 neural rendering GPU time",
     "fps_1pct_low": "1% low frame rate",
     "frametime_p97": "Frame time · 97th percentile",
     "fps_session": "Session minimum / average / maximum",
@@ -104,7 +103,6 @@ ITEM_LABELS = {
 }
 
 ITEM_TELEMETRY_KEYS = {
-    "nr_gpu_ms": "nr_gpu_ms",
     "clock_mhz": "clock_mhz",
     "voltage_mv": "voltage_mv",
     "power_w": "power_w",
@@ -122,12 +120,6 @@ ITEM_TELEMETRY_KEYS = {
 }
 
 ITEM_TOOLTIPS = {
-    "nr_gpu_ms": (
-        "Average GPU elapsed time per DLSS 5 neural-rendering model evaluation, "
-        "in milliseconds. This excludes surrounding injector work and is not "
-        "added input latency. Enable before launching the game; restart an "
-        "already running game to start capture. Missing measurements are hidden."
-    ),
     "base_fps": (
         "Exact base present FPS published by PenguinBurner. This is the "
         "pre-frame-generation present_fps headline, not the output FG cadence."
@@ -992,8 +984,7 @@ def _sample_text(item_id: str, telemetry: dict[str, str]) -> str:
         "cpu_peak_thread_pct": "CPU-T ",
         "fan_pct": "Fan ",
         "uv_offset_mv": "UV ",
-        "nr_gpu_ms": "NR GPU ",
-        "fps_1pct_low": "1% low ",
+            "fps_1pct_low": "1% low ",
         "frametime_p97": "p97 ",
         "fps_session": "min/avg/max ",
         "ram": "RAM ",
