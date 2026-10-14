@@ -76,6 +76,10 @@ translucency and rounded corners, and retains the automatic solid fallback
 when a driver cannot create the pipeline. Opening the tab preserves an older
 saved renderer choice; the next explicit settings change selects Blended.
 
+After enabling the overlay or changing the game's resolution, the HUD appears
+once preparation finishes. The game continues presenting during preparation.
+Switching from Solid to Blended keeps the Solid HUD visible until Blended is ready.
+
 The default **HUD** layout puts the frame rate on top, then frame generation,
 latency and the active tier; a rule; the card (clocks, power, temperature,
 load, memory clock, undervolt offset); a rule; the frame-timing statistics,
