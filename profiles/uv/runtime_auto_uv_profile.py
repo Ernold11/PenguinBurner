@@ -13,6 +13,7 @@ from auto_uv.gpu.memory_clock_offset_user_option import (
 )
 from common.penguin_burner_errors import NvmlError
 from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from profiles.gpu_identity import profile_gpu_identity
 
 from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
 from .profile_tiers import profile_tier_summary_fields
@@ -102,6 +103,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
     tier_fields = profile_tier_summary_fields(payload)
     return {
         "path": path,
+        "gpu_identity": profile_gpu_identity(profile_payload),
         "profile_id": str(
             payload.get("profile_id") or profile_payload.get("profile_id") or ""
         ),

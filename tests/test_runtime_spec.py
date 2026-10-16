@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from cli.runtime_config_file import default_runtime_config
+from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime import daemon_client, runtime_spec
 
 
@@ -150,6 +152,49 @@ def test_explicit_gpu_index_cannot_override_bound_profile_uuid(monkeypatch) -> N
             profile_selector="gpu-a-profile",
             gpu_index=1,
         )
+
+
+@pytest.mark.parametrize(
+    ("bound_uuid", "gpu_index", "expected_index", "error"),
+    [
+        ("GPU-test-1", None, 1, None),
+        ("GPU-test-1", 1, 1, None),
+        ("GPU-test-1", 0, None, "not requested GPU 0"),
+        ("GPU-missing", None, None, "profile GPU GPU-missing is not currently detected"),
+        (None, None, 2, None),
+    ],
+)
+def test_saved_profile_gpu_binding_reaches_runtime_spec(
+    monkeypatch, tmp_path, bound_uuid, gpu_index, expected_index, error
+) -> None:
+    payload = _curve("saved-profile")
+    payload["final_verified"] = True
+    if bound_uuid is not None:
+        payload["gpu_identity"] = {
+            "uuid": bound_uuid,
+            "index_at_verification": 0,
+        }
+    path = tmp_path / "saved-profile.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    _stub_runtime_sources(monkeypatch)
+    # Keep the real resolver and loader: mocking their output hid the lost binding.
+    monkeypatch.setattr(runtime_spec, "load_auto_uv_final_curve", load_auto_uv_final_curve)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [SimpleNamespace(index=i, uuid=f"GPU-test-{i}") for i in range(3)],
+    )
+
+    if error is not None:
+        with pytest.raises(RuntimeError, match=error):
+            runtime_spec.build_runtime_spec(profile_selector=str(path), gpu_index=gpu_index)
+    else:
+        spec = runtime_spec.build_runtime_spec(
+            profile_selector=str(path), gpu_index=gpu_index
+        )
+        assert spec["gpu"]["uuid"] == f"GPU-test-{expected_index}"
+        assert spec["gpu"]["index_at_resolution"] == expected_index
+        assert spec["static_profile"]["profile_id"] == "saved-profile"
 
 
 def test_single_gpu_adaptive_runtime_includes_legacy_tiers(monkeypatch) -> None:
