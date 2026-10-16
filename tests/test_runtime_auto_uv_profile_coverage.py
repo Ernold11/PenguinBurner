@@ -86,6 +86,16 @@ def test_missing_file_returns_none(monkeypatch, tmp_path):
 # --- load_auto_uv_final_curve: points discovery / validation ---------------
 
 
+@pytest.mark.parametrize("identity", [{}, {"uuid": "GPU-bound", "index_at_verification": 1}])
+def test_loader_preserves_resolved_gpu_identity(monkeypatch, tmp_path, identity):
+    path = _write_profile(tmp_path, _good_payload())
+    _stub_resolver(monkeypatch, path, {"gpu_identity": identity})
+
+    result = runtime.load_auto_uv_final_curve("pid-1")
+
+    assert result["gpu_identity"] == identity
+
+
 def test_falls_back_to_plan_key(monkeypatch, tmp_path):
     payload = _good_payload()
     payload["plan"] = payload.pop("points")  # no "points" key -> use "plan"
