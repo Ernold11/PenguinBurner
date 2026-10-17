@@ -10,3 +10,12 @@ Categories=Settings;HardwareSettings;Qt;
 Keywords=Penguin;Burner;Penguin Burner;PenguinBurner;penguin-burner;pburn;Nvidia;NVIDIA;GPU;Tuning;Undervolt;Undervolting;Overclock;Overclocking;Adaptive;Overlay;Auto-UV;Q2RTX;CUDA;Steam;Lutris;Heroic;Faugus;
 StartupNotify=true
 StartupWMClass=io.github.jpietek.PenguinBurner
+Actions=ToggleOverlay;NextOverlayDetail;
+
+[Desktop Action ToggleOverlay]
+Name=Toggle overlay
+Exec=penguin-burner-cli --overlay-toggle
+
+[Desktop Action NextOverlayDetail]
+Name=Next overlay detail level
+Exec=penguin-burner-cli --overlay-detail-next

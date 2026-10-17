@@ -301,6 +301,13 @@ int print_origin(char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--visibility-watch") {
+        std::string command;
+        while (std::getline(std::cin, command)) {
+            std::cout << pblayer::overlay_enabled() << std::endl;
+        }
+        return 0;
+    }
     if (argc > 2 && std::string(argv[1]) == "--glyphs") {
         return print_glyphs(argv[2]);
     }

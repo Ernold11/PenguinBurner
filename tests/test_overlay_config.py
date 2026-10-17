@@ -370,6 +370,8 @@ def test_overlay_panel_refreshes_value_rows_from_current_telemetry(monkeypatch) 
             self.enabled = enabled
 
     panel = object.__new__(overlay_config.OverlayConfigPanel)
+    panel.config_path = None
+    monkeypatch.setattr(overlay_config, "load_overlay_config", lambda _: panel.config)
     panel.config = OverlayConfig(
         enabled=True,
         enabled_item_ids=("clock_mhz",),

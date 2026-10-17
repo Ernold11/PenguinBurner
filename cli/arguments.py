@@ -203,7 +203,7 @@ def parse_arguments(argv):
         help=(
             "Show or hide the in-game overlay in a running game and exit. Bind "
             "this to a desktop shortcut to reach it without leaving the game; "
-            "the running layer picks the change up within a second."
+            "the running layer checks visibility every 50 ms."
         ),
     )
     overlay_group.add_argument(

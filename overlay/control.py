@@ -2,7 +2,7 @@
 
 The layer captures no input. A desktop shortcut runs one of these instead, and
 the running game picks the change up on its own: the visibility override is
-re-read about once a second and overlay.toml four times a second, so nothing
+re-read every 50 ms and overlay.toml four times a second, so nothing
 here has to reach into the game process.
 
 Everything in here is an unprivileged write to the user's own files. Changing

@@ -43,6 +43,7 @@ from overlay.live_preview import (
 )
 from overlay.overlay_text import SAMPLE_OVERLAY_VALUES, format_overlay_item
 from overlay.state import read_overlay_state
+from ui.dialogs.overlay_shortcuts import overlay_shortcuts_dialog
 
 from .overlay_preview import MAX_PREVIEW_H, overlay_preview_class
 from .toggle_switch import make_toggle_switch, toggle_state_text
@@ -346,6 +347,10 @@ class OverlayConfigPanel:
         enable_row.addWidget(enable_label)
         enable_row.addWidget(self.enabled_state_label)
         enable_row.addStretch(1)
+        self.shortcuts_button = QtWidgets.QPushButton("Keyboard shortcuts…")
+        self.shortcuts_button.setObjectName("overlayShortcutsButton")
+        self.shortcuts_button.clicked.connect(self._show_shortcuts)
+        enable_row.addWidget(self.shortcuts_button)
         layout.addLayout(enable_row)
 
         # The controls are grouped by the question they answer rather than
@@ -718,6 +723,12 @@ class OverlayConfigPanel:
         self.config = after
         self._save("Saved. Running overlay updates live.")
 
+    def _show_shortcuts(self) -> None:
+        self._shortcuts_dialog = overlay_shortcuts_dialog(
+            QtCore=self.QtCore, QtWidgets=self.QtWidgets, parent=self.widget
+        )
+        self._shortcuts_dialog.show()
+
     def _toggle_live_preview(self) -> None:
         if self._live_process is not None:
             self._stop_live_preview()
@@ -881,6 +892,10 @@ class OverlayConfigPanel:
             self._syncing = False
 
     def refresh_preview(self) -> None:
+        saved = load_overlay_config(self.config_path)
+        if saved != self.config:
+            self.config = saved
+            self._sync_widgets()
         values = read_overlay_state()
         # Live numbers when a wrapped game is publishing them, the canned demo
         # values otherwise, so the preview is never an empty box.

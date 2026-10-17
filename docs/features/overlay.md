@@ -157,8 +157,8 @@ missing row is honest; a zero would read as a real measurement.
 
 PenguinBurner captures no keyboard input. Instead it ships one-shot commands
 that your desktop's own global shortcuts can run, and the overlay picks the
-change up by itself: the running layer re-reads its visibility override about
-once a second and `overlay.toml` four times a second.
+change up by itself: the running layer re-reads its visibility override every
+50 ms and `overlay.toml` four times a second.
 
 That is deliberate. A desktop shortcut already works over a fullscreen game, on
 both X11 and Wayland, and needs no new privileges. Reading the keyboard from
@@ -179,6 +179,15 @@ own `PB_OVERLAY=1` launch option is the exception: the shortcut cannot see that
 option, so with **Enable overlay** off it takes a second press to hide it.
 
 ### Binding a key
+
+Open **Overlay → Keyboard shortcuts…** for commands you can copy and a button
+to open KDE or GNOME shortcut settings. The desktop handles the keypress, so
+the PenguinBurner window can be closed. This works on both Wayland and X11.
+For example, assign **Alt+X** to toggle visibility if that key is free.
+
+On KDE, PenguinBurner's desktop entry also exposes **Toggle overlay** and
+**Next overlay detail level** as actions in the shortcut chooser. No key is
+assigned automatically, so existing desktop and game bindings are preserved.
 
 **KDE Plasma** — System Settings → Shortcuts → Add New → Command or Script.
 Enter the command, then click the shortcut field and press the key you want.

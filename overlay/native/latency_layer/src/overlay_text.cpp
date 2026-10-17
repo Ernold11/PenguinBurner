@@ -136,7 +136,7 @@ static int overlay_visibility_override() {
     // Launch-time default from the wrapper env, overridable LIVE by a small
     // runtime file the UI writes ("1"/"0"): the layer is always loaded, so
     // visibility can flip on a running game without a restart. The file is
-    // re-checked at most once a second; the wrapper clears it at launch so a
+    // re-checked every 50 ms; the wrapper clears it at launch so a
     // stale override never leaks into the next game.
     static std::mutex override_mutex;
     static std::chrono::steady_clock::time_point last_check{};
@@ -145,7 +145,7 @@ static int overlay_visibility_override() {
     std::lock_guard<std::mutex> lock(override_mutex);
     const auto now = std::chrono::steady_clock::now();
     if (last_check.time_since_epoch().count() == 0
-        || now - last_check >= std::chrono::seconds(1)) {
+        || now - last_check >= std::chrono::milliseconds(50)) {
         last_check = now;
         override_state = -1;
         static const std::string override_path = overlay_runtime_path(
