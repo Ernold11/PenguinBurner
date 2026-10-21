@@ -10,6 +10,7 @@ from overlay.config import (
     MIN_OVERLAY_OPACITY,
     MIN_OVERLAY_UPDATE_INTERVAL_S,
     OVERLAY_DETAIL_IDS,
+    OVERLAY_DETAIL_LABELS,
     OVERLAY_FONTS,
     OVERLAY_ITEM_SECTIONS,
     OVERLAY_LAYOUTS,
@@ -47,14 +48,6 @@ from ui.dialogs.overlay_shortcuts import overlay_shortcuts_dialog
 
 from .overlay_preview import MAX_PREVIEW_H, overlay_preview_class
 from .toggle_switch import make_toggle_switch, toggle_state_text
-
-DETAIL_LABELS = {
-    "minimal": "Minimal",
-    "standard": "Standard",
-    "detailed": "Detailed",
-    "full": "Everything",
-    "custom": "Custom",
-}
 
 LIVE_PREVIEW_START = "Live preview"
 LIVE_PREVIEW_STOP = "Stop preview"
@@ -474,7 +467,7 @@ class OverlayConfigPanel:
         self.detail_combo = QtWidgets.QComboBox()
         self.detail_combo.setObjectName("overlayDetailCombo")
         for detail_id in OVERLAY_DETAIL_IDS:
-            self.detail_combo.addItem(DETAIL_LABELS[detail_id])
+            self.detail_combo.addItem(OVERLAY_DETAIL_LABELS[detail_id])
         _row(behaviour_form, "Detail", self.detail_combo, detail_tooltip)
 
         interval_tooltip = _wrapped_tooltip(

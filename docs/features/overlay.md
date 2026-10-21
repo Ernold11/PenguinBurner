@@ -26,9 +26,9 @@ below.
   The fractional steps need **Sans** or **Mono**; the **Pixel (bitmap)** face
   can only be magnified by whole pixels, so it rounds to the nearest whole
   size.
-- **Detail** — how much the overlay shows: **Minimal** (frame rate only),
-  **Standard** (frame rate, FG, latency, tier), **Detailed** (adds clocks,
-  voltage, power, 1% low, GPU/CPU load and temperature), **Everything** (all
+- **Detail** — how much the overlay shows: **Small** (frame rate only),
+  **Medium** (frame rate, FG, latency, tier), **Large** (adds clocks,
+  voltage, power, 1% low, GPU/CPU load and temperature), **Biggest** (all
   fields),
   or **Custom**. Ticking or unticking any field below switches to Custom and
   keeps your own selection.
@@ -169,8 +169,14 @@ to use, per game, with everything that implies for anti-cheat.
 | --- | --- |
 | `penguin-burner-cli --overlay-toggle` | Show or hide the overlay |
 | `penguin-burner-cli --overlay-visible on\|off\|auto` | Set it explicitly; `auto` hands it back to the game's launch setting |
-| `penguin-burner-cli --overlay-detail-next` | Step to the next detail level, wrapping at the end |
+| `penguin-burner-cli --overlay-detail-next` | Cycle Small → Medium → Large → Biggest → Small |
 | `penguin-burner-cli --overlay-detail minimal\|standard\|detailed\|full\|custom` | Jump straight to one level |
+| `penguin-burner-cli --overlay-scale-down` / `--overlay-scale-up` | Decrease or increase Scale |
+| `penguin-burner-cli --overlay-position-prev` / `--overlay-position-next` | Cycle overlay position in either direction |
+
+Custom fields are saved separately and restored when Custom is selected again.
+Preset cycling starts at Small from Custom and leaves Scale unchanged. Scale
+stops at its limits; positions wrap.
 
 With no override in place the game is following its launch setting, which is
 **Enable overlay** on the Overlay tab — so the first `--overlay-toggle` hides

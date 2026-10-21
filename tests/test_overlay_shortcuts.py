@@ -78,7 +78,7 @@ def test_gui_follows_detail_changes_made_by_a_shortcut(qtbot, tmp_path):
     saved_bytes = config.read_bytes()
     panel.refresh_preview()
     assert panel.config != before
-    assert panel.detail_combo.currentText() == "Minimal"
+    assert panel.detail_combo.currentText() == "Small"
     assert {key for key, box in panel.item_checkboxes.items() if box.isChecked()} == set(
         panel.config.enabled_item_ids
     )
