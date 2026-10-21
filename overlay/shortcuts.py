@@ -70,8 +70,9 @@ def shortcut_instructions() -> str:
         )
     if desktop == "gnome":
         return (
-            "In Settings → Keyboard → View and Customize Shortcuts → Custom "
-            "Shortcuts, add a shortcut, paste a command below and choose a key."
+            "Set up all six overlay shortcuts automatically. Existing shortcuts and "
+            "your customized bindings are preserved. If a default key is already "
+            "used, its new action is left unassigned for you to choose a free key."
         )
     return (
         "Add a global shortcut in your desktop settings and paste a command "

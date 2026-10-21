@@ -71,26 +71,92 @@ def test_settings_target_matches_the_desktop(monkeypatch, desktop, expected):
     assert shortcuts.shortcut_settings_command() == expected
 
 
-def test_gnome_panel_opens_manual_shortcut_setup_without_changing_settings(qtbot, monkeypatch, tmp_path):
+def test_gnome_setup_registers_on_explicit_click_without_copy_fields(qtbot, monkeypatch, tmp_path):
+    from overlay.gnome_shortcuts import GnomeShortcutSetupResult
+
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
-    launched = []
+    launched, calls = [], []
     monkeypatch.setattr(overlay_shortcuts, "start_on_host", lambda command: launched.append(command) or True)
+    def setup():
+        calls.append(True)
+        return GnomeShortcutSetupResult(success=True, message="All six shortcuts are ready.")
+    monkeypatch.setattr(overlay_shortcuts, "setup_gnome_shortcuts", setup)
     config = tmp_path / "overlay.toml"
     panel = OverlayConfigPanel(QtCore=QtCore, QtWidgets=QtWidgets, config_path=config)
     qtbot.addWidget(panel.widget)
-    panel.widget.show()
     panel.shortcuts_button.click()
     dialog = panel.widget.findChild(QtWidgets.QDialog, "overlayShortcutsDialog")
     assert dialog is not None and dialog.isVisible()
+    assert not config.exists() and not calls and not launched
+    assert not dialog.findChildren(QtWidgets.QLineEdit)
+    assert not any(button.text() == "Copy command" for button in dialog.findChildren(QtWidgets.QPushButton))
+    button = dialog.findChild(QtWidgets.QPushButton, "overlayShortcutSetup")
+    button.click()
+    qtbot.waitUntil(lambda: bool(launched))
+    assert calls == [True]
+    assert launched == [["/usr/bin/gnome-control-center", "keyboard"]]
+    assert button.isEnabled()
+    assert any("All six shortcuts are ready." in label.text() for label in dialog.findChildren(QtWidgets.QLabel))
     assert not config.exists()
+    dialog.close()
+
+
+def test_gnome_setup_failure_shows_error_without_opening_settings(qtbot, monkeypatch):
+    from overlay.gnome_shortcuts import GnomeShortcutSetupResult
+
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    launched = []
+    monkeypatch.setattr(overlay_shortcuts, "start_on_host", lambda command: launched.append(command) or True)
+    monkeypatch.setattr(overlay_shortcuts, "setup_gnome_shortcuts", lambda: GnomeShortcutSetupResult(
+        success=False, message="GNOME keyboard settings are unavailable."
+    ))
+    dialog = overlay_shortcuts.overlay_shortcuts_dialog(QtCore=QtCore, QtWidgets=QtWidgets, parent=None)
+    qtbot.addWidget(dialog)
+    button = dialog.findChild(QtWidgets.QPushButton, "overlayShortcutSetup")
+    button.click()
+    qtbot.waitUntil(lambda: button.isEnabled())
     assert not launched
+    assert any(label.text() == "GNOME keyboard settings are unavailable." for label in dialog.findChildren(QtWidgets.QLabel))
+
+
+def test_gnome_setup_can_finish_after_dialog_closes(qtbot, monkeypatch):
+    import threading
+
+    from overlay.gnome_shortcuts import GnomeShortcutSetupResult
+
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    started, release, done = threading.Event(), threading.Event(), threading.Event()
+    launched = []
+    def setup():
+        started.set()
+        release.wait(5)
+        done.set()
+        return GnomeShortcutSetupResult(success=True, message="Ready.")
+    monkeypatch.setattr(overlay_shortcuts, "setup_gnome_shortcuts", setup)
+    monkeypatch.setattr(overlay_shortcuts, "start_on_host", lambda command: launched.append(command) or True)
+    dialog = overlay_shortcuts.overlay_shortcuts_dialog(QtCore=QtCore, QtWidgets=QtWidgets, parent=None)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    button = dialog.findChild(QtWidgets.QPushButton, "overlayShortcutSetup")
+    button.click()
+    qtbot.waitUntil(started.is_set)
+    assert not button.isEnabled()
+    dialog.close()
+    release.set()
+    qtbot.waitUntil(done.is_set)
+    assert not launched
+
+
+def test_other_desktops_keep_manual_shortcut_commands(qtbot, monkeypatch):
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "sway")
+    dialog = overlay_shortcuts.overlay_shortcuts_dialog(QtCore=QtCore, QtWidgets=QtWidgets, parent=None)
+    qtbot.addWidget(dialog)
+    assert len(dialog.findChildren(QtWidgets.QLineEdit)) == 6
+    assert dialog.findChild(QtWidgets.QPushButton, "overlayShortcutSetup") is None
     command = dialog.findChild(QtWidgets.QLineEdit, "overlayShortcutCommand0")
     dialog.findChild(QtWidgets.QPushButton, "overlayShortcutCopy0").click()
     assert QtWidgets.QApplication.clipboard().text() == command.text()
     assert shlex.split(command.text())[-1] == "--overlay-toggle"
-    dialog.findChild(QtWidgets.QPushButton, "overlayShortcutSettings").click()
-    assert launched == [["/usr/bin/gnome-control-center", "keyboard"]]
-    dialog.close()
 
 
 def test_kde_panel_opens_penguinburner_shortcuts_directly(qtbot, monkeypatch, tmp_path):

@@ -204,13 +204,21 @@ option, so with **Enable overlay** off it takes a second press to hide it.
 On KDE, **Keyboard shortcuts…** opens the PenguinBurner entry directly, with
 all six actions and their defaults already registered by the installed desktop
 entry. No commands need to be copied or added. Existing custom bindings take
-precedence, and keys can be changed in KDE. On other desktops, the button shows commands and setup guidance. Opening settings does not change bindings.
+precedence, and keys can be changed in KDE. On GNOME, the button offers
+**Set up GNOME shortcuts**. Other desktops show commands and setup guidance. Opening settings does not change bindings.
 
 **KDE Plasma** — System Settings → Keyboard → Shortcuts → PenguinBurner.
 Select an action to change its key binding.
 
-**GNOME** — Settings → Keyboard → View and Customize Shortcuts → Custom
-Shortcuts → +. Give it a name, paste the command, and set the shortcut.
+**GNOME** — Click **Keyboard shortcuts…**, then **Set up GNOME shortcuts**.
+All six actions are added to GNOME's Custom Shortcuts and its settings window
+opens automatically. No commands need to be copied. Repeating setup preserves
+existing actions, customized keys, disabled bindings, and unrelated shortcuts.
+If a default conflicts with an existing GNOME binding, the new action is added
+without a key and setup reports which action needs a free combination.
+The same workflow supports native and Flatpak installations; Flatpak registers
+commands on the host. Registration requires GNOME's keyboard settings service.
+
 
 If the command is not on your `PATH` (a `pip install --user` that did not add
 `~/.local/bin`), use the full path in the shortcut.
