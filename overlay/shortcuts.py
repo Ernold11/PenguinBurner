@@ -10,8 +10,20 @@ from common.flatpak_wrappers import running_in_flatpak
 
 SHORTCUT_ACTIONS = (
     ("Toggle overlay", "--overlay-toggle"),
-    ("Next detail level", "--overlay-detail-next"),
+    ("Cycle overlay preset", "--overlay-detail-next"),
+    ("Decrease overlay Scale", "--overlay-scale-down"),
+    ("Increase overlay Scale", "--overlay-scale-up"),
+    ("Previous overlay position", "--overlay-position-prev"),
+    ("Next overlay position", "--overlay-position-next"),
 )
+SHORTCUT_DEFAULTS = {
+    "--overlay-toggle": "Alt+X",
+    "--overlay-detail-next": "Alt+C",
+    "--overlay-scale-down": "Alt+[",
+    "--overlay-scale-up": "Alt+]",
+    "--overlay-position-prev": "Alt+<",
+    "--overlay-position-next": "Alt+>",
+}
 
 
 def shortcut_command(action: str) -> str:
@@ -39,7 +51,10 @@ def shortcut_desktop() -> str:
 def shortcut_settings_command() -> list[str] | None:
     desktop = shortcut_desktop()
     if desktop == "kde":
-        return ["/usr/bin/kcmshell6", "kcm_keys"]
+        return [
+            "/usr/bin/kcmshell6", "kcm_keys", "--args",
+            "io.github.jpietek.PenguinBurner.desktop",
+        ]
     if desktop == "gnome":
         return ["/usr/bin/gnome-control-center", "keyboard"]
     return None
@@ -49,9 +64,9 @@ def shortcut_instructions() -> str:
     desktop = shortcut_desktop()
     if desktop == "kde":
         return (
-            "In System Settings → Keyboard → Shortcuts, add PenguinBurner and "
-            "assign a key to Toggle overlay or Next overlay detail level. "
-            "You can also add a Command or Script and paste a command below."
+            "PenguinBurner's overlay actions are provided in KDE shortcut settings. "
+            "Choose a key beside an action to change it. "
+            "Default keys apply unless you have assigned your own."
         )
     if desktop == "gnome":
         return (
