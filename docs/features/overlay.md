@@ -81,6 +81,9 @@ saved renderer choice; the next explicit settings change selects Blended.
 After enabling the overlay or changing the game's resolution, the HUD appears
 once preparation finishes. The game continues presenting during preparation.
 Switching from Solid to Blended keeps the Solid HUD visible until Blended is ready.
+The HUD text and its glyph geometry are rebuilt every 250 ms on a worker
+thread; the game's present thread only appends the live graph bars and
+submits, so a refresh never stalls a frame.
 
 The default **HUD** layout puts the frame rate on top, then frame generation,
 latency and the active tier; a rule; the card (clocks, power, temperature,

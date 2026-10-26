@@ -1103,6 +1103,7 @@ int main(int argc, char**) {
             str(source_dir / "overlay_text.cpp"),
             str(source_dir / "latency_state.cpp"),
             str(source_dir / "overlay_render.cpp"),
+            str(source_dir / "overlay_worker.cpp"),
             "-o",
             str(output),
         ],
