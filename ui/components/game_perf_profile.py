@@ -41,7 +41,7 @@ _FALLBACK_TARGET_FPS = 60.0
 
 # Mockup geometry: fill alpha .18 labeled / .30 badge, 2 px / 1.6 px strokes,
 # spokes start at 10% radius so a zero still reads as a vertex.
-_FILL_ALPHA_LABELED = 46
+_FILL_ALPHA_LABELED = 72
 _FILL_ALPHA_BADGE = 77
 _POINT_FLOOR = 0.1
 
@@ -132,6 +132,10 @@ def _vertex(center: float, radius: float, index: int, count: int, fraction: floa
     )
 
 
+def _dot_radius(size: int) -> float:
+    return max(3.0, size * 0.026)
+
+
 def _label_font(QtGui, size: int, *, compact: bool):
     font = QtGui.QFont()
     families = getattr(font, "setFamilies", None)
@@ -172,13 +176,18 @@ def perf_profile_pixmap(
             font = _label_font(QtGui, size, compact=False)
             painter.setFont(font)
             metrics = QtGui.QFontMetricsF(font)
-            gap = max(2.0, size * 0.02)
+            # Room for a vertex dot on the outer ring, so it never meets its code.
+            gap = max(2.0, size * 0.02) + _dot_radius(size)
             radius = size / 2 - (metrics.height() + gap)
         else:
             metrics = None
             gap = 0.0
             radius = size * 0.42
-        grid_pen = QtGui.QPen(QtGui.QColor(theme.PERF_PROFILE_GRID))
+        # The labeled chart sits on the app's card surface, where the mock's
+        # near-black grid disappears; it takes the theme's card border instead.
+        grid_pen = QtGui.QPen(
+            QtGui.QColor(theme.BORDER_STRONG if labels else theme.PERF_PROFILE_GRID)
+        )
         grid_pen.setWidthF(1.0)
 
         if axes is None:
@@ -227,14 +236,14 @@ def perf_profile_pixmap(
                 baseline = min(
                     max(baseline, metrics.ascent()), size - metrics.descent()
                 )
-                painter.setPen(QtGui.QPen(QtGui.QColor(theme.PERF_PROFILE_TEXT_MUTED)))
+                painter.setPen(QtGui.QPen(QtGui.QColor(theme.TEXT_MUTED)))
                 painter.drawText(QtCore.QPointF(text_x, baseline), axis.code)
 
         color = QtGui.QColor(tier_color(tier))
         fill = QtGui.QColor(color)
         fill.setAlpha(_FILL_ALPHA_LABELED if labels else _FILL_ALPHA_BADGE)
         outline = QtGui.QPen(color)
-        outline.setWidthF(2.0 if labels else 1.6)
+        outline.setWidthF(2.4 if labels else 1.6)
         outline.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
         polygon = QtGui.QPolygonF([QtCore.QPointF(x, y) for x, y in points])
         painter.setPen(outline)
@@ -242,9 +251,9 @@ def perf_profile_pixmap(
         painter.drawPolygon(polygon)
 
         if labels:
-            ring = QtGui.QPen(QtGui.QColor(theme.PERF_PROFILE_SURFACE))
+            ring = QtGui.QPen(QtGui.QColor(theme.SURFACE_BG))
             ring.setWidthF(1.5)
-            dot_radius = max(2.4, size * 0.018)
+            dot_radius = _dot_radius(size)
             for x, y in points:
                 painter.setPen(ring)
                 painter.setBrush(QtGui.QBrush(color))

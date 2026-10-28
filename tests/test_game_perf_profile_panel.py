@@ -358,3 +358,33 @@ def test_live_window_dropdown_switches_the_tail_span(qtbot, tmp_path: Path) -> N
         panel.live_toggle.setChecked(False)
     finally:
         _timer(panel).stop()
+
+
+def test_panel_reflows_columns_like_the_overlay_tab(qtbot, tmp_path: Path) -> None:
+    panel = _make_panel(_write_ring(tmp_path, 4242))
+    qtbot.addWidget(panel.widget)
+    try:
+        grid = panel._grid
+
+        def cell(widget):
+            row, column, _rows, columns = grid.getItemPosition(grid.indexOf(widget))
+            return row, column, columns
+
+        panel._reflow_columns(1000)
+        assert cell(panel._frame_rate_group) == (0, 1, 1)
+        assert cell(panel._hardware_group) == (0, 2, 1)
+        assert cell(panel._frametime_figure) == (1, 0, 3)  # full width
+        assert grid.rowStretch(1) == 1  # and the rest of the height
+
+        panel._reflow_columns(800)
+        assert cell(panel._hardware_group) == (1, 1, 1)
+        assert cell(panel._frametime_figure) == (2, 0, 2)  # full width
+        assert grid.rowStretch(1) == 0 and grid.rowStretch(2) == 1
+
+        panel._reflow_columns(600)
+        assert [cell(w)[:2] for w in (
+            panel._fingerprint_card, panel._frame_rate_group,
+            panel._hardware_group, panel._frametime_figure,
+        )] == [(0, 0), (1, 0), (2, 0), (3, 0)]
+    finally:
+        _timer(panel).stop()

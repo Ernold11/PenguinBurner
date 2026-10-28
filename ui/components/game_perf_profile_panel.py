@@ -27,11 +27,7 @@ from ui.components.game_perf_profile import (
     tier_label,
     warming_text,
 )
-from ui.components.preference_rows import (
-    GROUP_SPACING,
-    preference_group,
-    preference_row,
-)
+from ui.components.preference_rows import preference_group, preference_row
 
 _REFRESH_MS = 2000
 # A recording ring flushes once a second; match it so a live session visibly
@@ -42,10 +38,13 @@ _LIVE_WINDOW_MS = 10_000.0
 _STUTTER_RATIO = 1.6
 _STUTTER_MILD_MS = 16.7
 _STUTTER_SEVERE_MS = 33.3
-_PERF_PROFILE_SIZE = 200
-# The mock is a measured column, not a full-bleed sprawl: cap the content so
-# a very wide window keeps the composed, centered layout.
-_CONTENT_MAX_WIDTH = 1500
+# Sized so the fingerprint card ends level with the five-row stat card.
+_PERF_PROFILE_SIZE = 170
+# Three columns, then two, then one, like the In-Game Overlay tab. These cards
+# are narrower than the overlay's (fingerprint ~256 px, stat groups ~261 px),
+# so three columns hold down to a smaller window.
+_THREE_COLUMN_WIDTH = 960
+_TWO_COLUMN_WIDTH = 720
 
 _EMPTY_HINT = (
     "Select a game in the Game Library tab and click its Perf Profile button.\n"
@@ -119,6 +118,28 @@ def live_tail(
     return tuple(xs), tuple(values)
 
 
+_REFLOW_FILTER_CLASSES: dict[int, Any] = {}
+
+
+def _ReflowFilter(QtCore, panel):
+    """An event filter that reflows the panel's grid on resize."""
+    cls = _REFLOW_FILTER_CLASSES.get(id(QtCore))
+    if cls is None:
+
+        class ReflowFilter(QtCore.QObject):
+            def __init__(self, owner):
+                super().__init__(owner.widget)
+                self.owner = owner
+
+            def eventFilter(self, watched, event):
+                if event.type() == QtCore.QEvent.Type.Resize:
+                    self.owner._reflow_columns(watched.width())
+                return False
+
+        cls = _REFLOW_FILTER_CLASSES[id(QtCore)] = ReflowFilter
+    return cls(panel)
+
+
 def _mk_color(QtGui, color: str, alpha: int):
     value = QtGui.QColor(color)
     value.setAlpha(alpha)
@@ -177,12 +198,15 @@ class GamePerfProfilePanel:
             self._refresh_timer = None
             return
 
-        # The In-Game Overlay tab's language: page title and muted subtitle,
-        # a framed card on the left, boxed preference groups with muted values
-        # on the right. Only the trace and the stutter needles keep the
-        # PERF_PROFILE palette; everything around them uses the app theme.
+        # The In-Game Overlay tab's language and geometry: page title and muted
+        # subtitle, a scrolling grid of a framed card and boxed preference
+        # groups with muted values. Only the trace and the stutter needles keep
+        # the PERF_PROFILE palette; everything around them uses the app theme.
         self.widget.setStyleSheet(
             f"""
+            QWidget#gamePerfProfilePanel, QWidget#gamePerfProfilePage {{
+                background: {theme.WINDOW_BG};
+            }}
             QLabel#gamePerfProfileTitle {{
                 color: {theme.TEXT_STRONG}; font-size: 23px; font-weight: 700;
             }}
@@ -192,9 +216,7 @@ class GamePerfProfilePanel:
                 border: 1px solid {theme.BORDER_STRONG}; border-radius: 10px;
                 padding: 3px 12px;
             }}
-            QLabel#gamePerfProfileCardTitle {{
-                color: {theme.TEXT_STRONG}; font-size: 13px; font-weight: 600;
-            }}
+            QLabel#gamePerfProfileGroupNote {{ color: {theme.TEXT_DISABLED}; font-size: 11px; }}
             QLabel#gamePerfProfileCaption {{ color: {theme.TEXT_MUTED}; font-size: 11px; }}
             QLabel#gamePerfProfileValue {{ color: {theme.TEXT_MUTED}; font-size: 12px; }}
             QLabel#gamePerfProfileEmpty {{ color: {theme.TEXT_MUTED}; font-size: 13px; }}
@@ -203,36 +225,40 @@ class GamePerfProfilePanel:
                 border: 1px solid {theme.BORDER_STRONG}; border-radius: 6px;
             }}
             QToolButton#gamePerfProfileLiveToggle {{
-                color: {theme.TEXT_MUTED}; background: {theme.CONTROL_BG};
-                border: 1px solid {theme.BORDER_STRONG}; border-radius: 5px;
-                font-size: 11px; font-weight: 700; padding: 3px 12px;
+                color: #9fd3b6; background: transparent; border: 0;
+                padding: 2px 6px; font-size: 12px;
             }}
-            QToolButton#gamePerfProfileLiveToggle:hover {{ background: {theme.CONTROL_HOVER_BG}; }}
+            QToolButton#gamePerfProfileLiveToggle:hover {{
+                color: {theme.PRIMARY_BUTTON_TEXT}; background: {theme.CONTROL_HOVER_BG};
+            }}
             QToolButton#gamePerfProfileLiveToggle:checked {{
                 color: {theme.PRIMARY_BUTTON_TEXT}; background: {theme.PRIMARY_BUTTON_BG};
-                border-color: {theme.PRIMARY_BUTTON_BORDER};
+                border-radius: 4px;
             }}
             QComboBox#gamePerfProfileLiveWindow {{
-                min-height: 22px; padding: 1px 8px; font-size: 11px;
+                min-height: 20px; padding: 1px 8px; font-size: 12px;
                 background: {theme.SURFACE_BG}; color: {theme.TEXT};
                 border: 1px solid {theme.BORDER_STRONG}; border-radius: 4px;
+            }}
+            QWidget#gamePerfProfilePanel QScrollArea {{ background: transparent; border: 0; }}
+            QWidget#gamePerfProfilePanel QScrollBar:vertical {{
+                background: transparent; width: 9px; margin: 0;
+            }}
+            QWidget#gamePerfProfilePanel QScrollBar::handle:vertical {{
+                background: {theme.BORDER_STRONG}; border-radius: 4px; min-height: 32px;
+            }}
+            QWidget#gamePerfProfilePanel QScrollBar::add-line:vertical,
+            QWidget#gamePerfProfilePanel QScrollBar::sub-line:vertical {{ height: 0; }}
+            QWidget#gamePerfProfilePanel QScrollBar::add-page:vertical,
+            QWidget#gamePerfProfilePanel QScrollBar::sub-page:vertical {{
+                background: transparent;
             }}
             """
         )
 
-        # A centered, width-capped column: the content expands up to the cap,
-        # extra width becomes symmetric margins.
-        outer = QtWidgets.QHBoxLayout(self.widget)
-        outer.setContentsMargins(10, 10, 10, 10)
-        content = QtWidgets.QWidget()
-        content.setMaximumWidth(_CONTENT_MAX_WIDTH)
-        outer.addStretch(1)
-        outer.addWidget(content, 100)
-        outer.addStretch(1)
-        root = QtWidgets.QVBoxLayout(content)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(GROUP_SPACING)
-
+        root = QtWidgets.QVBoxLayout(self.widget)
+        root.setContentsMargins(24, 20, 24, 16)
+        root.setSpacing(0)
         self._stack = QtWidgets.QStackedLayout()
         root.addLayout(self._stack)
 
@@ -250,16 +276,15 @@ class GamePerfProfilePanel:
         message_layout.addStretch(2)
         self._stack.addWidget(message_page)
 
-        # Page 1: the detail.
+        # Page 1: the detail. The header stays put; the grid scrolls.
         detail_page = QtWidgets.QWidget()
         detail = QtWidgets.QVBoxLayout(detail_page)
         detail.setContentsMargins(0, 0, 0, 0)
-        detail.setSpacing(GROUP_SPACING)
+        detail.setSpacing(20)
 
         header = QtWidgets.QHBoxLayout()
-        header.setSpacing(12)
         heading = QtWidgets.QVBoxLayout()
-        heading.setSpacing(2)
+        heading.setSpacing(4)
         self.game_title = QtWidgets.QLabel("")
         self.game_title.setObjectName("gamePerfProfileTitle")
         heading.addWidget(self.game_title)
@@ -269,14 +294,25 @@ class GamePerfProfilePanel:
         header.addLayout(heading, 1)
         self.tier_chip = QtWidgets.QLabel("")
         self.tier_chip.setObjectName("gamePerfProfileTierChip")
-        header.addWidget(self.tier_chip, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.tier_chip, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         detail.addLayout(header)
 
-        top = QtWidgets.QHBoxLayout()
-        top.setSpacing(GROUP_SPACING + 4)
-        top.addWidget(self._build_fingerprint_card(), 0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page = QtWidgets.QWidget()
+        page.setObjectName("gamePerfProfilePage")
+        self._grid = QtWidgets.QGridLayout(page)
+        self._grid.setContentsMargins(0, 0, 8, 0)
+        self._grid.setHorizontalSpacing(20)
+        self._grid.setVerticalSpacing(20)
+        scroll.setWidget(page)
+        detail.addWidget(scroll, 1)
+
         self._stat_values: dict[str, Any] = {}
-        frame_rate, frame_rows = preference_group(QtWidgets=QtWidgets, heading="Frame rate")
+        self._fingerprint_card = self._build_fingerprint_card()
+        self._frame_rate_group, frame_rows, _ = self._group("Frame rate", "window medians")
         self._stat_row(frame_rows, "MEDIAN", "Median")
         self._stat_row(frame_rows, "1%-LOW", "1% low")
         # Latency has no spoke and no placeholder: the row exists only while
@@ -284,23 +320,19 @@ class GamePerfProfilePanel:
         self._latency_cell = self._stat_row(frame_rows, "LATENCY", "Latency")
         self._latency_key = self._latency_cell.property("titleLabel")
         self._latency_cell.setVisible(False)
-        hardware, hardware_rows = preference_group(QtWidgets=QtWidgets, heading="GPU and system")
+        self._hardware_group, hardware_rows, _ = self._group(
+            "GPU and system", "window medians"
+        )
         self._stat_row(hardware_rows, "POWER", "Power draw")
         self._stat_row(hardware_rows, "CLOCK", "GPU clock")
         self._stat_row(hardware_rows, "GPU / CPU-THREAD", "GPU / busiest CPU thread")
         self._stat_row(hardware_rows, "TEMP", "GPU temperature")
         self._stat_row(hardware_rows, "FAN", "Fan")
-        for group in (frame_rate, hardware):
-            column = QtWidgets.QVBoxLayout()
-            column.addWidget(group)
-            column.addStretch(1)
-            top.addLayout(column, 1)
-        detail.addLayout(top)
-
-        # The figure takes the remaining height (up to its cap) so the plot
-        # breathes at any window shape; leftover falls below as quiet margin.
-        detail.addWidget(self._build_frametime_figure(), 1)
-        detail.addStretch(0)
+        self._frametime_figure = self._build_frametime_figure()
+        self._layout_columns = 0
+        self._reflow_columns(1300)
+        self._reflow_filter = _ReflowFilter(QtCore, self)
+        self.widget.installEventFilter(self._reflow_filter)
         self._stack.addWidget(detail_page)
 
         self._refresh_timer = QtCore.QTimer(self.widget)
@@ -308,58 +340,107 @@ class GamePerfProfilePanel:
         self._refresh_timer.timeout.connect(self._timer_tick)
         self._refresh_timer.start()
 
-    # ---------- figures ----------
+    # ---------- layout ----------
+
+    def _reflow_columns(self, width: int) -> None:
+        """Place the cards like the In-Game Overlay tab: the fingerprint beside
+        the stat columns, the frametime card full width below them, taking the
+        rest of the window's height."""
+        mode = 3 if width >= _THREE_COLUMN_WIDTH else 2 if width >= _TWO_COLUMN_WIDTH else 1
+        if mode == self._layout_columns:
+            return
+        self._layout_columns = mode
+        grid = self._grid
+        top = self.QtCore.Qt.AlignmentFlag.AlignTop
+        widgets = (
+            self._fingerprint_card, self._frame_rate_group,
+            self._hardware_group, self._frametime_figure,
+        )
+        for widget in widgets:
+            grid.removeWidget(widget)
+        for index in range(4):
+            grid.setColumnStretch(index, 0)
+            grid.setRowStretch(index, 0)
+        if mode == 3:
+            grid.addWidget(self._fingerprint_card, 0, 0, top)
+            grid.addWidget(self._frame_rate_group, 0, 1, top)
+            grid.addWidget(self._hardware_group, 0, 2, top)
+            figure_row, columns = 1, 3
+            for index, stretch in enumerate((10, 11, 11)):
+                grid.setColumnStretch(index, stretch)
+        elif mode == 2:
+            grid.addWidget(self._fingerprint_card, 0, 0, 2, 1, top)
+            grid.addWidget(self._frame_rate_group, 0, 1, top)
+            grid.addWidget(self._hardware_group, 1, 1, top)
+            figure_row, columns = 2, 2
+            grid.setColumnStretch(0, 10)
+            grid.setColumnStretch(1, 13)
+        else:
+            for row, widget in enumerate(widgets[:-1]):
+                grid.addWidget(widget, row, 0)
+            figure_row, columns = 3, 1
+            grid.setColumnStretch(0, 1)
+        grid.addWidget(self._frametime_figure, figure_row, 0, 1, columns)
+        grid.setRowStretch(figure_row, 1)
+
+    def _group(self, heading: str, note: str):
+        """A preference group whose heading row also carries a muted note and
+        room on the right for controls, like the overlay's metric sections."""
+        QtWidgets = self.QtWidgets
+        group, rows = preference_group(QtWidgets=QtWidgets, heading=heading)
+        outer = group.layout()
+        heading_label = outer.takeAt(0).widget()
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        header.addWidget(heading_label)
+        note_label = QtWidgets.QLabel(note)
+        note_label.setObjectName("gamePerfProfileGroupNote")
+        header.addWidget(note_label)
+        header.addStretch(1)
+        outer.insertLayout(0, header)
+        return group, rows, header
 
     def _stat_row(self, rows_layout, key: str, title: str):
         value = self.QtWidgets.QLabel("")
         value.setObjectName("gamePerfProfileValue")
+        value.setAlignment(
+            self.QtCore.Qt.AlignmentFlag.AlignRight | self.QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
         self._stat_values[key] = value
-        return preference_row(
+        row = preference_row(
             QtWidgets=self.QtWidgets, QtCore=self.QtCore, rows_layout=rows_layout,
             title=title, control=value,
         )
+        row.layout().setContentsMargins(14, 12, 14, 12)
+        row.layout().setSpacing(14)
+        return row
 
     def _build_fingerprint_card(self):
-        """The overlay tab's Preview card, holding the fingerprint."""
-        QtWidgets = self.QtWidgets
-        card = QtWidgets.QFrame()
-        card.setObjectName("gamePerfProfileCard")
-        layout = QtWidgets.QVBoxLayout(card)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(4)
-        title = QtWidgets.QLabel("Fingerprint")
-        title.setObjectName("gamePerfProfileCardTitle")
-        layout.addWidget(title)
-        self.profile_label = QtWidgets.QLabel("")
+        """The fingerprint in a group of its own, headed like the stat groups
+        so the three cards start on one line."""
+        group, rows, _ = self._group("Fingerprint", "window medians")
+        # The darker surface of the overlay's Preview card: the fingerprint's
+        # rings vanish on the lighter stat-card fill.
+        group.findChild(self.QtWidgets.QFrame, "prefGroupCard").setObjectName(
+            "gamePerfProfileCard"
+        )
+        rows.setContentsMargins(8, 8, 8, 8)
+        self.profile_label = self.QtWidgets.QLabel("")
         self.profile_label.setFixedSize(_PERF_PROFILE_SIZE + 30, _PERF_PROFILE_SIZE + 30)
         self.profile_label.setAlignment(self.QtCore.Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.profile_label, 0, self.QtCore.Qt.AlignmentFlag.AlignHCenter)
-        caption = QtWidgets.QLabel("Medians of the window · hover for each spoke")
-        caption.setObjectName("gamePerfProfileCaption")
-        layout.addWidget(caption)
-        return card
+        rows.addWidget(self.profile_label, 0, self.QtCore.Qt.AlignmentFlag.AlignHCenter)
+        return group
 
     def _figure(self, title: str, caption: str):
         """A preference group whose card holds a plot: overline heading with
         the controls on its right, then the plot and a muted caption inside."""
         QtWidgets = self.QtWidgets
-        frame = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(frame)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
-        header = QtWidgets.QHBoxLayout()
-        header.setSpacing(8)
-        section = QtWidgets.QLabel(" ".join(title.upper()))
-        section.setObjectName("prefGroupHeading")
-        header.addWidget(section, 0)
-        header.addStretch(1)
-        outer.addLayout(header)
-        card = QtWidgets.QFrame()
-        card.setObjectName("prefGroupCard")
-        layout = QtWidgets.QVBoxLayout(card)
+        frame, _rows, header = self._group(title, "every frame, in milliseconds")
+        card = frame.findChild(QtWidgets.QFrame, "prefGroupCard")
+        layout = card.layout()
         layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(0)
-        outer.addWidget(card, 1)
+        frame.layout().setStretchFactor(card, 1)
         caption_label = QtWidgets.QLabel(caption)
         caption_label.setObjectName("gamePerfProfileCaption")
         caption_label.setWordWrap(True)
@@ -422,10 +503,12 @@ class GamePerfProfilePanel:
                 pass
         plot.setLabel("bottom", x_label, color=text_color)
         plot.setLabel("left", y_label, color=text_color)
-        # Keep the mock's figure proportions: fill the window's height but
-        # never stretch into a barren wall of empty plot.
-        plot.setMinimumHeight(220)
-        plot.setMaximumHeight(460)
+        plot.setMinimumHeight(150)
+        # The plot fills whatever height the window has left below the cards.
+        # Inside the scrolling grid a preferred height would decide the page
+        # height instead, so it is ignored.
+        policy = self.QtWidgets.QSizePolicy
+        plot.setSizePolicy(policy.Policy.Expanding, policy.Policy.Ignored)
         return plot
 
     def _build_frametime_figure(self):
@@ -440,7 +523,7 @@ class GamePerfProfilePanel:
         self._frametime_caption_base = caption.text()
         self.live_toggle = QtWidgets.QToolButton()
         self.live_toggle.setObjectName("gamePerfProfileLiveToggle")
-        self.live_toggle.setText("LIVE")
+        self.live_toggle.setText("Live")
         self.live_toggle.setCheckable(True)
         self.live_toggle.toggled.connect(self._live_toggled)
         header.addWidget(self.live_toggle, 0)
@@ -483,9 +566,6 @@ class GamePerfProfilePanel:
         layout.addWidget(self.frametime_plot, 1)
         layout.addSpacing(6)
         layout.addWidget(caption)
-        # The frame must stop where its content stops — no dead surface
-        # below the caption once the plot reaches its own height cap.
-        frame.setMaximumHeight(560)
         return frame
 
     # ---------- data flow ----------
