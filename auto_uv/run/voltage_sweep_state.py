@@ -16,8 +16,6 @@ class VoltageSweepState:
     stable_voltage_mv: int
     stable_target_mhz: int
     next_voltage_mv: int | None
-    stable_measured_target_mhz: int | None = None
-    failed_floor_voltage_mv: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,3 +40,6 @@ class LowerVoltageSweepResult:
     stable_outcome: VoltageProbeOutcome | None = None
     probe_history: list[VoltageProbeOutcome] = field(default_factory=list)
     events: list[LowerVoltageSweepEvent] = field(default_factory=list)
+    # A pass the sweep set aside (floor caution); callers drop it from the
+    # histories final selection draws on.
+    excluded_candidate: VfCurveCandidate | None = None

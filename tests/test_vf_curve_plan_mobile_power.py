@@ -42,13 +42,11 @@ class _FakeReader:
         self.applied = control
 
 
-def _mobile_capabilities():
-    # A fixed-power-limit mobile GPU: identity name carries the mobile token,
-    # so fixed_power_limit_excluded_by_identity gates power-limit backup off.
+def _capabilities():
     return SimpleNamespace(
         identity=SimpleNamespace(
-            name="NVIDIA GeForce RTX 5060 Laptop GPU",
-            pci_device_id="0x2D1910DE",
+            name="NVIDIA GeForce RTX 2050",
+            pci_device_id="0x25B810DE",
         ),
         power=SimpleNamespace(
             current_w=43.0,
@@ -60,22 +58,26 @@ def _mobile_capabilities():
     )
 
 
-class _MobilePolicyController:
-    def __init__(self) -> None:
+class _PolicyController:
+    def __init__(self, *, power_limit_supported: bool = False) -> None:
+        self.power_limit_supported = bool(power_limit_supported)
         self.clock_offset_calls = []
 
     def capabilities(self):
-        return _mobile_capabilities()
+        return _capabilities()
+
+    def power_limit_set_supported(self) -> bool:
+        return self.power_limit_supported
 
     def apply_power_limit_w(self, _watts):
-        raise AssertionError("mobile fixed power-limit setter must not run")
+        raise AssertionError("unsupported fixed power-limit setter must not run")
 
     def apply_clock_offsets(self, **kwargs):
         self.clock_offset_calls.append(kwargs)
         return dict(kwargs)
 
 
-def test_backup_current_offsets_skips_mobile_power_limit(
+def test_backup_current_offsets_skips_driver_unsupported_power_limit(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -88,7 +90,7 @@ def test_backup_current_offsets_skips_mobile_power_limit(
     path = vf_curve_plan.backup_current_offsets(
         _FakeReader(),
         tmp_path / "backup.json",
-        policy_controller=_MobilePolicyController(),
+        policy_controller=_PolicyController(),
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -98,7 +100,28 @@ def test_backup_current_offsets_skips_mobile_power_limit(
     assert payload["gpu_policy"]["mem_clk_vf_offset_mhz"] == 500
 
 
-def test_restore_offsets_skips_mobile_power_limit_apply(
+def test_backup_current_offsets_keeps_driver_supported_power_limit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        vf_curve_plan,
+        "claim_desktop_user_ownership",
+        lambda *_a, **_k: None,
+    )
+
+    path = vf_curve_plan.backup_current_offsets(
+        _FakeReader(),
+        tmp_path / "backup.json",
+        policy_controller=_PolicyController(power_limit_supported=True),
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["gpu_policy"]["power_limit_w"] == 43
+    assert payload["gpu_policy"]["power_limit_default_w"] == 61
+
+
+def test_restore_offsets_without_power_limit_does_not_apply_power(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -108,9 +131,8 @@ def test_restore_offsets_skips_mobile_power_limit_apply(
         lambda *_a, **_k: None,
     )
     backup = tmp_path / "backup.json"
-    # A backup that (from an old build) still carries a power limit must not
-    # be applied to a mobile GPU — but a mobile backup written today omits it,
-    # so restore only replays the V/F offsets.
+    # A backup created after an unsupported probe omits power, so restore only
+    # replays the V/F offsets.
     backup.write_text(
         json.dumps(
             {
@@ -120,7 +142,7 @@ def test_restore_offsets_skips_mobile_power_limit_apply(
         ),
         encoding="utf-8",
     )
-    controller = _MobilePolicyController()
+    controller = _PolicyController()
 
     restored = vf_curve_plan.restore_offsets(
         _FakeReader(),

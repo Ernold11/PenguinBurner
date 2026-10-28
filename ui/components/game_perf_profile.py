@@ -202,7 +202,7 @@ def perf_profile_pixmap(
         for index, axis in enumerate(axes):
             x, y, angle = _vertex(center, radius, index, count, axis.fraction)
             points.append((x, y))
-            if labels:
+            if metrics is not None:
                 painter.setPen(grid_pen)
                 painter.drawLine(
                     QtCore.QPointF(center, center),

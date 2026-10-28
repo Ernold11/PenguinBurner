@@ -1,169 +1,166 @@
 # Automatic Tuning (Auto-UV)
 
-> Feature guide — see the [README](../../README.md) for the project overview and
-> the [other feature pages](./) for adaptive UV, the overlay, profiles, the curve
-> editors, and the silent fan curve.
-
-Auto-UV is the core PenguinBurner feature. It tests your GPU under real load,
-finds the most efficient stable voltage/frequency curve, and saves it for later
-terminal or daemon use.
+Auto-UV tests your GPU with Q2RTX and CUDA, finds stable voltage/frequency
+settings, and saves verified profiles. Choose one tier or **All tiers** for
+an Efficiency, Balanced, and Performance set.
 
 ![Auto-UV candidate sweep](../assets/auto-uv-scan.png)
 
-The Auto-UV tab shows the live V/F scatter (base vs accepted candidate curve), a
-streaming event log, and the per-step **Undervolting runs** table (mV, clocks,
-FPS, power, temp, fan, FPS/W).
-
-> ⚠️ Auto-UV makes real hardware changes. A bad voltage point can hang the GPU,
-> crash the driver, or force a reboot. Auto-UV records each risky voltage before
-> probing it and marks it unsafe after a crash, so later runs avoid it.
+> GPU tuning can crash the driver or freeze the system. Auto-UV records
+> interrupted probes so later scans avoid the same voltage/clock region.
 
 ## Run a scan
 
+1. Close games and other demanding GPU workloads.
+2. Click **Setup Auto Undervolt**, select the NVIDIA GPU and tier, then start.
+3. Review the live curve, measurements, and log. The GUI applies the verified
+   result when the scan finishes.
+
+The GUI offers to install the root hardware service once. Scans then run as
+your regular user, with GPU writes handled by `penguin-burnerd`.
+
+From the CLI:
+
 ```bash
-./penguin_burner.sh --auto-uv-voltage-scan   # start a scan explicitly
-./penguin_burner.sh --fresh-auto-uv-scan     # forget previous results, start clean
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive  # All tiers
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode efficiency
 ```
 
-The scan runs as your regular user; its privileged GPU writes go through the
-root hardware service (`penguin-burnerd`), which must be installed and running.
-The GUI offers that one-time setup automatically; from the CLI install it with
-`sudo ./penguin_burner.sh --migrate-to-daemon-service`.
+See the [CLI reference](../../readme-cli.md#auto-uv-scan) for per-tier overrides.
+
+### CLI-only boost and freeze recovery
+
+GUI scans use **Standard Boost** and normal freeze recovery. The CLI exposes
+two independent controls:
+
+- `--auto-uv-boost standard` (default): a 2-bin rising tail, +30 MHz nominal.
+- `--auto-uv-boost aggressive`: **Aggressive Boost**, a 4-bin rising tail,
+  up to +60 MHz nominal above the selected anchor (30 MHz more than Standard).
+  Applies to every tier of a full scan and is tested and saved
+  with the curve. Extra headroom can increase power use and instability;
+  actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze` (off by default): on an explicit resume after
+  reboot, allow the interrupted clock climb to retry at higher voltage.
+  Further freezes may require further reboots.
+
+Boost does not enable freeze retries. Both recovery settings preserve the
+failed-point blacklist, predicted stability margins, floor caution, and the
+six-bin Performance voltage headroom above Balanced. Neither option adds a
+profile tier: Efficiency, Balanced, and Performance keep their usual roles.
+
+For a custom tail, use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost`.
+Resume with the same options so the checkpoint matches.
+
+The tail count describes requested headroom, not a guaranteed measured clock
+increase. See [the exact curve shape and monitoring evidence](auto-uv-search.md#monitoring-the-requested-and-observed-boost)
+for driver-applied limits, workload telemetry, and what a passing scan proves.
 
 ## What happens
 
-- Resets clocks, offsets, power policy, and fan control before measuring.
-- Runs **Q2RTX** (PenguinBurner's headless Quake II RTX benchmark) plus a
-  **CUDA** companion load for a real, GPU-bound workload. Q2RTX is downloaded
-  automatically if missing.
-- Walks voltage down step by step, verifying each candidate before accepting it.
-- Stops before unsafe points, excessive clock loss, crashes, or NVIDIA Xid errors.
-- Saves stable checkpoints as it goes, then runs a longer final verification
-  (default `300s`) before publishing the curve.
-- If you stop the scan after stable checkpoints exist, PenguinBurner offers those
-  previously stable candidates for final verification instead of throwing the
-  work away.
+1. Apply and read back the tier's power limit and measure its baseline.
+2. Lower voltage in steps, testing each candidate with Q2RTX and CUDA.
+3. Adjust clocks for the selected tier or custom target.
+4. Run final verification on the exact selected curve, then save it.
 
-By default Q2RTX runs through PenguinBurner's managed
-[headless benchmark binary](https://github.com/jpietek/Q2RTX-headless), so no
-desktop display server or compositor wrapper is needed. Render resolution is
-selected from the chosen GPU's NVML VRAM total: `2560x1440` for GPUs with
-`<=8 GiB`, otherwise `3840x2160` when VRAM is larger or unavailable.
+Failures fall back to safer settings where possible. Final verification can
+retry another tested curve; a failed later tier preserves completed profiles.
+Stopping the scan remains a user-controlled action.
 
-## Stop, choose, or resume
+By default, all tiers use a smooth ramp and **two rising tail bins** (+30 MHz nominal).
+The CLI Aggressive Boost option uses four bins (+60 MHz nominal).
+The voltage target is a curve anchor: GPU boost can use higher voltage bins.
+Power limits can also reduce the loaded clock below the requested target.
+There is no fixed percentage cutoff for measured clock loss; workload stability,
+load, and FPS checks still apply.
 
-You can stop Auto-UV from the GUI while it is scanning. After at least one stable
-candidate exists, the stop request is handled as a controlled stop: PenguinBurner
-opens the final-choice dialog with the already-passed candidates, and you can
-choose which voltage/clock target should receive final verification. This does
-not mark the current voltage unsafe. It only turns the completed checkpoints
-into final-verification options.
-
-If you stop before any stable checkpoint exists, there is no candidate to
-verify, so the scan just stops.
-
-Auto-UV writes an active-probe marker before each risky candidate or final
-verification run. Normal exits, Ctrl-C, and SIGTERM remove that marker. If the
-machine hangs, reboots, loses power, or the process is killed during a probe,
-the next Auto-UV run consumes the stale marker, records that voltage/clock band
-in `uv-result/auto-uv-unsafe-voltages.json`, and avoids repeating it.
-
-When stable checkpoints exist for the same requested tier, the GUI shows a
-previous-crash recovery dialog before starting discovery again. The default
-choice is the next safer saved candidate above the failed voltage. Accepting a
-candidate resumes from the saved baseline and candidate metrics, skips the
-completed lower-voltage sweep, and goes straight to any remaining Performance
-Auto-OC work plus final verification. Choosing **Start From Scratch** runs a new
-scan instead, but the unsafe-voltage cache still applies.
-
-Use `--fresh-auto-uv-scan` only when you deliberately want to forget the saved
-Auto-UV state, including unsafe-voltage history and recovery candidates.
+See [search and verification details](auto-uv-search.md),
+[stop and recovery behavior](auto-uv-recovery.md), or the
+[illustrated algorithm and RTX 5080 report](https://jpietek.github.io/PenguinBurner/auto-uv-cookbook/).
+The [RTX 5070 Ti report](https://jpietek.github.io/PenguinBurner/pr72-curve-comparison/)
+compares curve shapes before and after smoothing.
 
 ## Presets / tiers
 
-![Auto-UV setup: GPU, preset, and Auto-OC targets](../assets/auto-uv-setup.png)
+| Tier | Goal |
+| --- | --- |
+| Efficiency | Best measured FPS per watt, with a lower default power budget. |
+| Balanced | Balance measured performance and power savings. |
+| Performance | Undervolt, then raise voltage and clock toward the Auto-OC targets. |
 
-The performance-bias preset sets how much clock tail the curve keeps. These map
-directly to [adaptive UV tiers](./adaptive-uv.md):
+Two tiers can legitimately select the same point. All tiers reuses scan work
+only when power, memory, curve shape, and measurement evidence are compatible.
 
-| Preset | Tail-rise bins | Extra |
+## Custom tier targets
+
+![Auto-UV setup with Advanced controls for every tier](../assets/auto-uv-setup.png)
+
+Every tier has the same controls: **voltage target (mV), core clock target
+(MHz), memory offset (MHz), and power limit (W)**.
+
+**Defaults suit most GPUs. Change them only if you understand voltage/frequency
+tuning and the risk of instability.** Allowed clock ranges use the GPU table's
+defaults, independently of edits to other tiers:
+
+| Tier | Minimum clock | Maximum clock |
 | --- | --- | --- |
-| Efficiency | `0` (flat) | lowest power |
-| Balanced | `4` | moderate clock tail |
-| Performance | `6` | adds an Auto-OC ladder (raises V+clock to targets) |
+| Efficiency | Default Efficiency minus 15% | Default Balanced |
+| Balanced | Default Efficiency | Default Performance |
+| Performance | Default Balanced | Default Performance plus 5%, rounded to the nearest MHz |
+
+For an RTX 5080 these ranges are 2380–2800, 2800–2950, and 2800–3098 MHz.
+They are input limits, not guaranteed stable settings. Voltage inputs use the
+editable live curve's range.
+
+A lower custom clock is tested **after voltage descent**, at the stable voltage
+already found. There is no second voltage-down sweep. If descent stopped above
+the requested voltage, Auto-UV reports the retained stable voltage. Higher
+clock targets use the tested clock climb toward the configured targets.
+
+GPUs without table entries show **Auto**. Custom ranges use driver-reported
+clocks and editable voltage bins where available; missing ranges remain Auto.
+A box left at its table default is also automatic: the scan receives only
+edited targets, so the defaults never act as hard bounds on the search.
+No other GPU's preset is substituted. Fixed-power laptop GPUs use the stock
+limit with the power control disabled.
 
 ## GPU selection and telemetry
 
-PenguinBurner reads GPU identity, PCI bus id, driver version, and VRAM directly
-through NVML (`libnvidia-ml.so.1`). It does not shell out to `nvidia-smi` for the
-GPU picker or Q2RTX resolution choice.
+Select the card in the setup dialog or pass `--gpu-index N`. The same card is
+used for tuning, telemetry, Q2RTX, CUDA, and verification. The picker lists
+NVIDIA GPUs only; with none detected, Start is disabled.
 
-The selected `--gpu-index` is used consistently for NVML/NVAPI control,
-telemetry, Q2RTX, CUDA, profile verification, and runtime profile application.
-On multi-GPU systems, pick the card in the tuning dialog or pass `--gpu-index N`
-so the benchmark and the curve writer target the same physical GPU.
+The scan table shows requested and measured clocks separately, alongside
+voltage, FPS, power, temperature, fan speed, and FPS/W.
 
-## Useful flags
+## Stop, choose, or resume
 
-| Flag | Purpose |
-| --- | --- |
-| `--auto-uv-voltage-scan` | start the Auto-UV scan explicitly |
-| `--auto-uv-mode efficiency\|balanced\|performance` | select the same preset family as the GUI |
-| `--gpu-index N` | select one NVIDIA GPU on multi-GPU systems |
-| `--auto-uv-min-voltage-mv N` | explicit lowest voltage bin |
-| `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (preset-aware GPU table default, else `12.5`) |
-| `--auto-uv-memory-offset-mhz N` | memory clock V/F offset saved with the profile |
-| `--auto-uv-power-limit-w N` | power limit applied during the scan and saved with the profile |
-| `--auto-uv-tail-rise-bins N` | bins above lock point that may rise (`0` = flat) |
-| `--auto-oc-target-voltage-mv N` / `--auto-oc-target-clock-mhz N` | Performance Auto-OC ceilings |
-| `--auto-uv-<tier>-max-clock-drop-pct N` | full-scan per-tier clock-drop override (`<tier>` = `efficiency`/`balanced`/`performance`) |
-| `--auto-uv-<tier>-power-limit-w N` | full-scan per-tier power limit |
-| `--auto-uv-<tier>-memory-offset-mhz N` | full-scan per-tier memory offset |
-
-The CLI Auto-UV scan flags mirror the options exposed by the GUI tuning modal.
+During an interactive single-tier voltage sweep, stopping can offer passing
+candidates for final verification. Stopping All tiers, a clock search, or final
+verification ends that operation. See [recovery details](auto-uv-recovery.md)
+for crash recovery, saved checkpoints, and deliberate resets.
 
 ## After the scan
 
-Runtime and daemon mode prefer the saved curve automatically:
+Use **Profiles → Apply** to select a saved curve. Enable **Apply on startup**
+before applying to save it for boot; enable **Silent fan curve** for quieter
+cooling. See [profile management](profile-management.md) for verification,
+export, and multi-GPU behavior.
+
+Apply the latest profile from the CLI:
 
 ```bash
-./penguin_burner.sh --daemonize --auto-uv-profile latest
-./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
-```
-
-After the daemon's one-time installation, persist the latest verified profile
-for boot through its socket API:
-
-```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
-```
-
-Export a saved curve to [LACT](https://github.com/ilya-zlobintsev/LACT) from the
-GUI Profiles view. Add the silent fan curve in the export dialog when you want
-LACT to manage fan settings too. Review the generated file, then:
-
-```bash
-sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
-sudo systemctl restart lactd
+pburn-cli --daemonize --auto-uv-profile latest
+pburn-cli --daemonize --auto-uv-profile latest --silent-fan-curve
 ```
 
 ## State and logs
 
 Under the PenguinBurner user config directory:
 
-- `debug-logs/` — per-scan stdout/stderr
-- `uv-result/` — scan results and the unsafe-voltage crash cache
-- `auto-uv-profiles/` — final profiles shown in the GUI
+- `debug-logs/` — scan logs.
+- `uv-result/` — checkpoints and results.
+- `auto-uv-unsafe-voltages.json` — unsafe-point history; kept across scans.
+- `auto-uv-profiles/` — saved profiles shown in the GUI.
 
-## Troubleshooting
-
-If a scan stops early, read the latest log in `debug-logs/` first — common
-causes are an unsafe-voltage history entry, a clock guardrail, a Q2RTX/CUDA
-failure, or interrupted final verification. To wipe history and rerun clean:
-
-```bash
-./penguin_burner.sh --fresh-auto-uv-scan
-```
-
-This keeps Afterburner imports and the Q2RTX download intact.
+If a scan cannot finish, read its latest log and follow the
+[troubleshooting guide](troubleshooting.md#the-scan-stops-early).

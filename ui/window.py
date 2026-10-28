@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
+from pathlib import Path
 
 from cli.runtime_config_file import (
-    persist_on_startup_from_runtime_config,
-    persist_on_startup_to_runtime_config,
     silent_fan_curve_from_runtime_config,
     silent_fan_curve_to_runtime_config,
 )
 from common.penguin_burner_paths import default_user_config_dir
-
-from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from ui.assets import asset_image_path
 from ui.commands import scan_command
 from ui.components.auto_uv_tier_progress import AutoUvTierProgress
 from ui.components.curve_plot import CurvePlot
+from ui.components.game_library_panel import GameLibraryPanel
 from ui.components.game_perf_profile import PerfProfileAxis, perf_profile_pixmap
 from ui.components.game_perf_profile_panel import GamePerfProfilePanel
 from ui.components.log_view import LogView
@@ -24,35 +22,44 @@ from ui.components.profile_list import ProfileList
 from ui.components.runs_table import RunsTable
 from ui.components.scan_controls import ScanControls
 from ui.components.status_header import StatusHeader
-from ui.components.steam_panel import SteamPanel
-from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.constants import APP_DISPLAY_NAME
-from .controllers.command import CommandController
-from .controllers.scan import ScanController
-from .controllers.verify import VerifyController
-from ui.features.curves.curve_tabs import CurveTabs
+from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.dialogs.about import show_about_dialog
 from ui.dialogs.final_choice import select_final_candidate
 from ui.dialogs.scan_tuning import select_scan_tuning
-from .error_reporting import ErrorReporter
-from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
-from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
-from ui.features.tuning.final_choice_controller import handle_final_choice_request
-from . import theme
-from .models import candidate_id_from_payload
-from .models import event_base_points
-from .models import event_points
-from .models import stage_title
-from .models import status_value
-from .models import top_status_text
-from ui.features.profiles.profiles import load_profile_summaries
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from ui.features.profiles.profiles import penguin_burner_runtime_is_active
-from ui.features.profiles.profiles import runner_status_text
-from ui.features.profiles.profiles import running_auto_uv_profile_info
-from ui.features.profiles.profiles import systemd_autostart_profile_info
-from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
+from ui.features.curves.curve_tabs import CurveTabs
+from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
 from ui.features.profiles.profile_actions import ProfileActionsMixin
+from ui.features.profiles.profiles import (
+    adaptive_profile_tier_labels,
+    load_profile_summaries,
+    penguin_burner_runtime_is_active,
+    runner_status_parts,
+    running_auto_uv_profile_info,
+    systemd_autostart_profile_info,
+)
+from ui.features.tuning.final_choice_controller import handle_final_choice_request
+from ui.features.tuning.gpu_selection import (
+    detected_gpu_choices,
+    gpu_choices_with_fallback,
+    persist_runtime_gpu_index,
+)
+from ui.features.tuning.scan_resume import restore_scan_presentation
+from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
+
+from . import theme
+from .controllers.command import CommandController
+from .controllers.scan import ScanController
+from .controllers.verify import VerifyController
+from .error_reporting import ErrorReporter
+from .models import (
+    candidate_id_from_payload,
+    event_base_points,
+    event_points,
+    stage_title,
+    status_value,
+    top_status_text,
+)
 from .styles import STYLESHEET
 
 
@@ -75,6 +82,7 @@ class MainWindow(ProfileActionsMixin):
         self._defaults_restored = False
         self._delete_restore_stock = False
         self._delete_switch_systemd_profile_id = ""
+        self._boot_apply_by_gpu: dict[str, bool] = {}
 
         self.window = self.QtWidgets.QMainWindow()
         self.window.setWindowTitle(APP_DISPLAY_NAME)
@@ -101,6 +109,7 @@ class MainWindow(ProfileActionsMixin):
             stop_request_path=verify_stop_request_path(),
         )
         self.verify_controller.on_output = self.log_view.append
+        self.verify_controller.on_telemetry = self.vf_plot.set_live_load_marker
         self.verify_controller.on_progress = self.controls.set_verify_progress
         self.verify_controller.on_finished = self._verify_finished
         self._load_profiles()
@@ -139,6 +148,7 @@ class MainWindow(ProfileActionsMixin):
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
         )
+        self.profile_list.on_target_gpu_changed = self._profile_target_gpu_changed
         self.log_view = LogView(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -150,14 +160,38 @@ class MainWindow(ProfileActionsMixin):
         auto_uv_view.addWidget(self.log_view.widget)
         auto_uv_view.setSizes([760, 440])
 
-        self.steam_panel = SteamPanel(
+        self.table_panel = self.QtWidgets.QGroupBox("Undervolting runs")
+        table_layout = self.QtWidgets.QVBoxLayout(self.table_panel)
+        table_layout.setContentsMargins(10, 18, 10, 10)
+        table_layout.addWidget(self.auto_uv_tier_progress.widget)
+        table_layout.addWidget(self.runs_table.widget)
+
+        # Keep the entire scan layout inside its tab. Hiding an outer runs
+        # panel on tab changes briefly enlarged the plot before shrinking it
+        # again on return. Only the plot side grows when the window resizes;
+        # the table retains its content-derived minimum and draggable split.
+        self.auto_uv_split = self.QtWidgets.QSplitter(self.QtCore.Qt.Vertical)
+        self.auto_uv_split.setObjectName("autoUvVerticalSplit")
+        self.auto_uv_split.addWidget(auto_uv_view)
+        self.auto_uv_split.addWidget(self.table_panel)
+        self.auto_uv_split.setStretchFactor(0, 1)
+        self.auto_uv_split.setStretchFactor(1, 0)
+        self.auto_uv_split.setCollapsible(0, False)
+        self.auto_uv_split.setCollapsible(1, False)
+
+        self.game_library_panel = GameLibraryPanel(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
-            adaptive_available=lambda: len(
-                adaptive_profile_tier_labels(self.profile_summaries)
+            adaptive_available=lambda gpu_uuid="", include_legacy_profiles=False: len(
+                adaptive_profile_tier_labels(
+                    self.profile_summaries,
+                    gpu_uuid=gpu_uuid,
+                    include_legacy_profiles=include_legacy_profiles,
+                )
             )
             >= 1,
+            gpu_choices=detected_gpu_choices,
         )
         self.game_perf_profile_panel = GamePerfProfilePanel(
             QtCore=self.QtCore,
@@ -165,7 +199,7 @@ class MainWindow(ProfileActionsMixin):
             QtWidgets=self.QtWidgets,
             pg=self.pg,
         )
-        self.steam_panel.on_open_game_perf_profile = self.show_game_perf_profile
+        self.game_library_panel.perf_profile_badge.on_open = self.show_game_perf_profile
 
         self.tabs = self.QtWidgets.QTabWidget()
         self.tabs.setIconSize(self.QtCore.QSize(18, 18))
@@ -174,7 +208,7 @@ class MainWindow(ProfileActionsMixin):
             return self.QtGui.QIcon(str(asset_image_path(filename)))
 
         self.auto_uv_tab_index = self.tabs.addTab(
-            auto_uv_view,
+            self.auto_uv_split,
             tab_icon("tab-auto-uv.png"),
             "Auto-UV",
         )
@@ -183,10 +217,10 @@ class MainWindow(ProfileActionsMixin):
             tab_icon("tab-profiles.png"),
             "Profiles",
         )
-        self.steam_tab_index = self.tabs.addTab(
-            self.steam_panel.widget,
-            tab_icon("tab-steam.png"),
-            "Steam",
+        self.game_library_tab_index = self.tabs.addTab(
+            self.game_library_panel.widget,
+            tab_icon("tab-game-library.png"),
+            "Game Library",
         )
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
@@ -231,36 +265,9 @@ class MainWindow(ProfileActionsMixin):
             show_error=self.errors.show,
         )
 
-        self.table_panel = self.QtWidgets.QGroupBox("Undervolting runs")
-        table_layout = self.QtWidgets.QVBoxLayout(self.table_panel)
-        table_layout.setContentsMargins(10, 18, 10, 10)
-        table_layout.addWidget(self.auto_uv_tier_progress.widget)
-        table_layout.addWidget(self.runs_table.widget)
-
-        # The plot/tabs area and the runs table share a draggable vertical
-        # splitter; window resizes grow only the plot side. No pixel
-        # constants: the table side floors at the runs table's own
-        # MIN_VISIBLE_ROWS content minimum, and the tab side floors at the
-        # tab bar plus the Auto-UV page's content minimum. An explicit tab
-        # minimum is required because the splitter would otherwise honor the
-        # LARGEST page's minimum-size hint (overlay/Steam), pinning the tab
-        # area tall; the table panel only shows on the Auto-UV tab.
-        self.auto_uv_split = self.QtWidgets.QSplitter(self.QtCore.Qt.Vertical)
-        self.auto_uv_split.setObjectName("autoUvVerticalSplit")
-        self.tabs.setMinimumHeight(
-            self.tabs.tabBar().sizeHint().height()
-            + auto_uv_view.minimumSizeHint().height()
-        )
-        self.auto_uv_split.addWidget(self.tabs)
-        self.auto_uv_split.addWidget(self.table_panel)
-        self.auto_uv_split.setStretchFactor(0, 1)
-        self.auto_uv_split.setStretchFactor(1, 0)
-        self.auto_uv_split.setCollapsible(0, False)
-        self.auto_uv_split.setCollapsible(1, False)
-
         layout.addWidget(self.header.widget)
         layout.addWidget(self.controls.widget)
-        layout.addWidget(self.auto_uv_split, 1)
+        layout.addWidget(self.tabs, 1)
 
         self.controls.start_button.clicked.connect(self.start_scan)
         self.controls.stop_button.clicked.connect(self.stop_scan)
@@ -271,17 +278,16 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.silent_fan_checkbox.toggled.connect(
             self._persist_silent_fan_preference
         )
-        self._boot_apply_toggle_initialized = False
         self.profile_list.boot_apply_checkbox.toggled.connect(
             self._persist_boot_apply_preference
+        )
+        self.profile_list.main_gpu_checkbox.toggled.connect(
+            self._persist_main_gpu_preference
         )
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
         )
-        context_menu_policy = getattr(
-            getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt),
-            "CustomContextMenu",
-        )
+        context_menu_policy = getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt).CustomContextMenu
         self.profile_list.table.setContextMenuPolicy(context_menu_policy)
         self.profile_list.table.customContextMenuRequested.connect(
             self._show_profile_context_menu
@@ -326,7 +332,7 @@ class MainWindow(ProfileActionsMixin):
     def show_game_perf_profile(
         self, app_id: str, game_name: str = "", target_fps: float | None = None
     ) -> None:
-        """Open the Game Perf Profile tab for a game (the Steam badge's click path)."""
+        """Open the Game Perf Profile tab for a game (the library badge's click path)."""
         self.game_perf_profile_panel.select_app(
             app_id, game_name=game_name, target_fps=target_fps
         )
@@ -358,30 +364,30 @@ class MainWindow(ProfileActionsMixin):
         )
 
     def _check_daemon_upgrade_on_startup(self) -> None:
-        """If a running daemon is an incompatible older version, offer to update
-        it now — the seamless post-0.6.x-upgrade path.
+        """Offer to update a running daemon from another incompatible release.
 
-        Only fires when a daemon is actually running AND speaks an incompatible
-        protocol (a stale 0.6.x daemon on the same socket). A brand-new user
-        with no daemon installed is left alone: the install prompt appears when
-        they first do something privileged, not on launch.
+        Only fires when a daemon is actually running and its protocol or release
+        differs from this application. A brand-new user with no daemon installed
+        is left alone: the install prompt appears when they first do something
+        privileged, not on launch.
         """
         from runtime.daemon_client import (
             DaemonCompatibilityError,
             daemon_status,
             require_daemon_capabilities,
         )
+        from ui.assets import application_version
 
         try:
             daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return  # not running / not installed — do not nag a new user
         try:
-            require_daemon_capabilities()
+            require_daemon_capabilities(expected_version=application_version())
             return  # running and compatible — nothing to do
         except DaemonCompatibilityError:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         ensure_daemon_ready_for_privileged_action(
             QtWidgets=self.QtWidgets,
@@ -392,8 +398,11 @@ class MainWindow(ProfileActionsMixin):
         self._load_profiles()
 
     def _sync_selected_tab_layout(self, index: int) -> None:
-        # The undervolting-runs table belongs to the Auto-UV workflow only.
-        self.table_panel.setVisible(index == self.auto_uv_tab_index)
+        if index == self.game_library_tab_index:
+            # Scanned on first entry, not while the window is being built: a
+            # library read is filesystem work nobody has asked for until the
+            # tab is looked at. Idempotent, so switching back costs nothing.
+            self.game_library_panel.ensure_scanned()
 
     def show_about(self) -> None:
         show_about_dialog(
@@ -432,7 +441,7 @@ class MainWindow(ProfileActionsMixin):
             return
         try:
             self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show(
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",
@@ -508,6 +517,8 @@ class MainWindow(ProfileActionsMixin):
         event = str(payload.get("event", ""))
         if event == "auto_uv_start":
             self.header.set_stage("Scanning")
+        elif event == "scan_resumed":
+            restore_scan_presentation(self, payload)
         elif event == "dependency_progress":
             self._handle_dependency_progress(payload)
         elif event == "probe_start":
@@ -584,6 +595,10 @@ class MainWindow(ProfileActionsMixin):
                     color=tier_color,
                     alpha=220,
                     width=2,
+                    # The final tier is also the live candidate. Keep the
+                    # persistent tier-colored trace above that identical
+                    # green curve so Performance remains visibly red.
+                    z_value=5,
                 )
         elif event == "tier_completed":
             tier_name = str(payload.get("tier", ""))
@@ -748,23 +763,24 @@ class MainWindow(ProfileActionsMixin):
                     exit_code=exit_code,
                     exit_status=exit_status,
                 )
+        # The live GPU-position marker only means something while this
+        # profile's own verification is running; leaving it up afterward
+        # would misleadingly suggest it still reflects the current state.
+        self.vf_plot.clear_load_markers()
+        # The header's candidate label is only ever set by a running scan or
+        # verify; clear it here too, or it keeps showing the just-verified
+        # profile's name indefinitely, including through unrelated later
+        # Apply actions that never touch this label themselves.
+        self.header.set_candidate("")
         self.controls.set_running(False)
         self._load_profiles()
 
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
+        gpu_choices, _selected_gpu_index = gpu_choices_with_fallback(
+            selected_index=self.gpu_index
+        )
         autostart_info = systemd_autostart_profile_info()
-        if not self._boot_apply_toggle_initialized:
-            self._boot_apply_toggle_initialized = True
-            # One-time init: the persisted config value is authoritative. Only
-            # when the key has never been written does an existing boot entry
-            # seed the default, so 0.7.4 upgrades keep their boot profile
-            # until the user unticks the toggle. Reloads never touch the box.
-            self.profile_list.set_boot_apply_checked(
-                persist_on_startup_from_runtime_config(
-                    default=bool(autostart_info["selector"])
-                )
-            )
         running_info = (
             running_auto_uv_profile_info()
             if penguin_burner_runtime_is_active()
@@ -772,6 +788,10 @@ class MainWindow(ProfileActionsMixin):
         )
         self.profile_list.set_profiles(
             self.profile_summaries,
+            default_power_limits_w={
+                choice.uuid: choice.power_limit_default_w for choice in gpu_choices
+                if choice.uuid
+            },
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
             # The silent-fan tick is sticky: the user's persisted choice is
@@ -785,8 +805,30 @@ class MainWindow(ProfileActionsMixin):
                 or bool(autostart_info["silent_fan_curve"])
             ),
         )
+        self.profile_list.configure_gpu_targets(
+            self.profile_summaries,
+            gpu_choices,
+            preferred_index=self.gpu_index,
+        )
+        self._sync_boot_apply_for_target(self.profile_list.target_gpu_uuid())
         self._set_profile_actions_enabled(not self._workflow_running())
         self._refresh_running_status(running_info, autostart_info)
+
+    def _profile_target_gpu_changed(
+        self,
+        gpu_index: int | None,
+        _gpu_uuid: str,
+    ) -> None:
+        self._sync_boot_apply_for_target(_gpu_uuid)
+        if gpu_index is None:
+            return
+        try:
+            self.gpu_index = persist_runtime_gpu_index(int(gpu_index))
+        except Exception as exc:  # noqa: BLE001
+            self.errors.show(
+                "GPU selection",
+                f"Could not save selected GPU index: {exc}",
+            )
 
     def _poll_running_status(self) -> None:
         """Gather live daemon/systemd status OFF the GUI thread, then render.
@@ -856,44 +898,25 @@ class MainWindow(ProfileActionsMixin):
             # A real profile is live -> the restore flag is stale; clear it. The
             # stock sentinel is NOT a real profile, so it keeps "Default".
             self._defaults_restored = False
-        self.controls.set_status_text(
-            runner_status_text(
-                self.profile_summaries,
-                running_selector=str(running_info["selector"]),
-                running_adaptive=bool(running_info["adaptive_auto_uv"]),
-                autostart_selector=str(autostart_info["selector"]),
-                running_silent_fan=bool(running_info["silent_fan_curve"]),
-                autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
-                defaults_restored=self._defaults_restored,
-                game_override=bool(running_info.get("game_override")),
-                standing_selector=str(running_info.get("standing_selector") or ""),
-                standing_adaptive=bool(running_info.get("standing_adaptive")),
-            )
+        head, detail = runner_status_parts(
+            self.profile_summaries,
+            running_selector=str(running_info["selector"]),
+            running_adaptive=bool(running_info["adaptive_auto_uv"]),
+            autostart_selector=str(autostart_info["selector"]),
+            running_silent_fan=bool(running_info["silent_fan_curve"]),
+            autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
+            defaults_restored=self._defaults_restored,
+            game_override=bool(running_info.get("game_override")),
+            standing_selector=str(running_info.get("standing_selector") or ""),
+            standing_adaptive=bool(running_info.get("standing_adaptive")),
         )
+        # Middle dots, not semicolons: these are separate facts, not clauses.
+        self.controls.set_status_text(" · ".join(head), " · ".join(detail))
 
     def _persist_silent_fan_preference(self, checked: bool) -> None:
         # Remember the silent-fan choice durably so the "latest profile setup"
         # restores it after an aborted Auto-UV run, profile reload, or restart.
         silent_fan_curve_to_runtime_config(bool(checked))
-
-    def _persist_boot_apply_preference(self, checked: bool) -> None:
-        # Every click lands in the home-dir config immediately: the key is the
-        # single source of truth for the toggle, survives reinstalls, and no
-        # reload path resyncs the checkbox against runtime state.
-        persist_on_startup_to_runtime_config(bool(checked))
-        if not checked:
-            # Unticking means "nothing applies at boot": clear any saved boot
-            # profile right away so the toggle and the real boot state cannot
-            # diverge while the user never clicks Apply again. Best-effort —
-            # the startup seed uses blocked signals and never lands here.
-            from runtime.daemon_client import clear_boot_runtime_spec
-
-            try:
-                clear_boot_runtime_spec()
-            except Exception as exc:
-                self.log_view.append(
-                    f"\nCould not clear the saved boot profile: {exc}\n"
-                )
 
     def _workflow_running(self) -> bool:
         return (

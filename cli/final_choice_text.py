@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Any, cast
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
 from auto_uv.scan_mode.auto_uv_mode import (
@@ -17,7 +18,6 @@ from ui.features.auto_uv.final_choice_ranking import (
     final_choice_shows_oc_column,
     sort_candidates_for_final_choice,
 )
-
 
 InputFn = Callable[[str], str]
 LogFn = Callable[[str], None]
@@ -128,7 +128,9 @@ def _display_default_candidate_id(payload: dict, candidates: list[dict]) -> str:
         str(candidate.get("candidate_id") or "").strip() for candidate in candidates
     }
     request_reason = str(payload.get("request_reason") or "").strip().lower()
-    if request_reason == "previous-crash" and requested_default in candidate_ids:
+    if (
+        request_reason == "previous-crash" or request_reason.startswith("adaptive-")
+    ) and requested_default in candidate_ids:
         return requested_default
     best_id = best_final_choice_candidate_id(
         candidates,
@@ -168,7 +170,7 @@ def _candidate_table_lines(
         row.extend(
             [
                 _number(candidate.get("avg_core_clock_mhz"), precision=2),
-                _metric_text(candidate, "efficiency_fps_per_w", precision=2),
+                _metric_text(candidate, "efficiency_fps_per_w", precision=4),
                 _metric_text(candidate, "avg_fps", precision=2),
                 _metric_text(
                     candidate,
@@ -320,11 +322,13 @@ def _status_text(
             parts.append("Resume from here")
         elif request_reason == "final-verification-failed":
             parts.append("Next safer pick")
+        elif request_reason.startswith("adaptive-"):
+            parts.append("Tier suggestion")
         else:
             parts.append(
                 "Highest FPS"
                 if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
-                else "Best FPS/W"
+                else ("Recommended" if normalize_auto_uv_mode(auto_uv_mode) == "efficiency" else "Best FPS/W")
             )
     parts.append(
         "Final stability verified"
@@ -388,7 +392,10 @@ def _recovery_decision_text(recovery_decision: object) -> str:
 
 def _duration_s(payload: dict) -> int:
     try:
-        return max(1, int(round(float(payload.get("final_verification_duration_s")))))
+        return max(
+            1,
+            round(float(cast(Any, payload.get("final_verification_duration_s")))),
+        )
     except (TypeError, ValueError):
         return 1
 
@@ -411,8 +418,8 @@ def _number(value, *, precision: int) -> str:
         number = float(value)
     except (TypeError, ValueError):
         return ""
-    precision = max(0, min(int(precision), 2))
-    return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
+    precision = max(0, min(int(precision), 4))
+    return str(round(number)) if precision <= 0 else f"{number:.{precision}f}"
 
 
 def _float_or_none(value) -> float | None:

@@ -13,9 +13,10 @@ from auto_uv.gpu.memory_clock_offset_user_option import (
 )
 from common.penguin_burner_errors import NvmlError
 from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from profiles.gpu_identity import profile_gpu_identity
 
-from .profile_tiers import profile_tier_summary_fields
 from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
+from .profile_tiers import profile_tier_summary_fields
 
 
 def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = False):
@@ -102,6 +103,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
     tier_fields = profile_tier_summary_fields(payload)
     return {
         "path": path,
+        "gpu_identity": profile_gpu_identity(profile_payload),
         "profile_id": str(
             payload.get("profile_id") or profile_payload.get("profile_id") or ""
         ),
@@ -114,6 +116,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
         "candidate_voltage_mv": int(candidate_voltage_mv),
         "memory_offset_mhz": memory_offset_mhz,
         "power_limit_w": power_limit_w,
+        "q2rtx_resolution": payload.get("q2rtx_resolution"),
         # Scan-measured load power (profile vs stock baseline): the runtime
         # spec forwards these so the daemon can account energy saved.
         "avg_power_w": payload.get("avg_power_w"),
@@ -135,7 +138,7 @@ def profile_memory_offset_mhz(
         if value in (None, ""):
             continue
         try:
-            offset = max(0, int(round(float(value))))
+            offset = max(0, round(float(value)))
         except (TypeError, ValueError):
             return None
         if limit_mhz is not None:
@@ -149,7 +152,7 @@ def profile_power_limit_w(payload):
     if value in (None, ""):
         return None
     try:
-        power_limit = int(round(float(value)))
+        power_limit = round(float(value))
     except (TypeError, ValueError):
         return None
     return power_limit if power_limit > 0 else None

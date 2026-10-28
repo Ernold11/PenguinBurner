@@ -180,6 +180,10 @@ def test_window_plots_selected_performance_auto_oc_curve(main_window) -> None:
     x_values, y_values = win.vf_plot.comparison_curves[-1].getData()
     assert list(x_values) == [850.0, 925.0]
     assert list(y_values) == [2595.0, 2980.0]
+    assert (
+        win.vf_plot.comparison_curves[-1].zValue()
+        > win.vf_plot.candidate_curve.zValue()
+    )
 
 
 def test_memory_offset_status_text_formats() -> None:
@@ -299,10 +303,51 @@ def test_window_scan_finished_branches(main_window) -> None:
 
 
 def test_window_verify_and_command_finished(main_window) -> None:
+    main_window.header.set_candidate("User edited memory offset +6000 MT/s")
     main_window._verify_finished(0, 0, False)  # success
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, True)  # stopped
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, False)  # failed
+    assert main_window.header.candidate_label.text() == ""
+
     main_window._command_finished("delete", 0, 0)
+
+
+def test_verify_controller_telemetry_plots_the_live_gpu_position(main_window) -> None:
+    win = main_window
+    win.verify_controller.on_telemetry(
+        {
+            "event": "load_telemetry",
+            "voltage_mv": 925,
+            "clock_mhz": 2950,
+            "measured_voltage_mv": 923,
+            "measured_clock_mhz": 2940,
+        }
+    )
+    assert win.vf_plot._last_live_probe_values == (923.0, 2940.0)
+
+
+def test_verify_finished_clears_the_live_gpu_position_marker(main_window) -> None:
+    win = main_window
+    win.verify_controller.on_telemetry(
+        {
+            "event": "load_telemetry",
+            "voltage_mv": 925,
+            "clock_mhz": 2950,
+            "measured_voltage_mv": 923,
+            "measured_clock_mhz": 2940,
+        }
+    )
+    assert win.vf_plot._last_live_probe_values is not None
+
+    win._verify_finished(0, 0, False)
+
+    assert win.vf_plot._last_live_probe_values is None
 
 
 def test_window_simple_helpers(main_window) -> None:
@@ -320,11 +365,15 @@ def test_window_simple_helpers(main_window) -> None:
     win.show_about()
 
 
-def test_window_tab_order_and_bins_visibility(main_window) -> None:
+def test_window_tab_order_and_bins_visibility(main_window, monkeypatch) -> None:
     win = main_window
-    # Fixed tabs, in order (no separate fan-curve tab).
+    monkeypatch.setattr(win.game_library_panel, "ensure_scanned", lambda: None)
+    # Tabs are Auto-UV, Profiles, the one library tab that holds every
+    # launcher, Overlay, then Game Perf Profile (no separate fan-curve tab).
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert labels == ["Auto-UV", "Profiles", "Steam", "In-Game Overlay", "Game Perf Profile"]
+    assert labels == [
+        "Auto-UV", "Profiles", "Game Library", "In-Game Overlay", "Game Perf Profile",
+    ]
     assert win.tabs.iconSize().width() == 18
     assert win.tabs.iconSize().height() == 18
     assert all(not win.tabs.tabIcon(i).isNull() for i in range(win.tabs.count()))
@@ -335,18 +384,56 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
 
     # The undervolting-runs panel shows only on the Auto-UV tab.
     win.tabs.setCurrentIndex(win.auto_uv_tab_index)
-    assert not win.table_panel.isHidden()
+    assert win.table_panel.isVisibleTo(win.window)
     win.tabs.setCurrentIndex(win.profiles_tab_index)
-    assert win.table_panel.isHidden()
+    assert not win.table_panel.isVisibleTo(win.window)
     win.tabs.setCurrentIndex(win.overlay_tab_index)
-    assert win.table_panel.isHidden()
-    win.tabs.setCurrentIndex(win.steam_tab_index)
-    assert win.table_panel.isHidden()
+    assert not win.table_panel.isVisibleTo(win.window)
+    win.tabs.setCurrentIndex(win.game_library_tab_index)
+    assert not win.table_panel.isVisibleTo(win.window)
+
+
+@pytest.mark.parametrize(
+    "other_tab", ["profiles_tab_index", "game_library_tab_index", "overlay_tab_index"]
+)
+def test_returning_to_auto_uv_keeps_plot_geometry(
+    main_window, qapp, monkeypatch, other_tab,
+) -> None:
+    win = main_window
+    win._status_timer.stop()
+    monkeypatch.setattr(win.game_library_panel, "ensure_scanned", lambda: None)
+    win.window.show()
+    qapp.processEvents()
+    # Preserve a user-adjusted plot/table split as well as the settled size.
+    win.auto_uv_split.setSizes([350, 350])
+    qapp.processEvents()
+    plot = win.vf_plot.widget
+    expected_size = plot.size()
+    expected_split = win.auto_uv_split.sizes()
+    observed_sizes = []
+
+    class ResizeWatcher(win.QtCore.QObject):
+        def eventFilter(self, watched, event):
+            if event.type() == win.QtCore.QEvent.Type.Resize:
+                observed_sizes.append(event.size())
+            return False
+
+    watcher = ResizeWatcher()
+    plot.installEventFilter(watcher)
+    for _ in range(3):
+        win.tabs.setCurrentIndex(getattr(win, other_tab))
+        qapp.processEvents()
+        win.tabs.setCurrentIndex(win.auto_uv_tab_index)
+        qapp.processEvents()
+        assert plot.size() == expected_size
+        assert win.auto_uv_split.sizes() == expected_split
+    # Checking only the final size misses the oversized frame on tab entry.
+    assert all(size == expected_size for size in observed_sizes), observed_sizes
 
 
 def test_show_game_perf_profile_switches_tab_and_selects_the_game(main_window) -> None:
     win = main_window
-    assert win.steam_panel.on_open_game_perf_profile == win.show_game_perf_profile
+    assert win.game_library_panel.perf_profile_badge.on_open == win.show_game_perf_profile
     win.show_game_perf_profile("3764200", game_name="Resident Evil 9", target_fps=120.0)
     assert win.tabs.currentIndex() == win.game_perf_profile_tab_index
     # No ring exists in the test environment: the tab shows its empty state
@@ -356,13 +443,13 @@ def test_show_game_perf_profile_switches_tab_and_selects_the_game(main_window) -
 
 
 def test_runs_table_splitter_is_draggable_with_content_derived_floors(
-    main_window,
+    main_window, qapp,
 ) -> None:
     win = main_window
-    qt_widgets = win.QtWidgets
+    win._status_timer.stop()
     split = win.auto_uv_split
     assert split.orientation() == win.QtCore.Qt.Vertical
-    assert split.widget(0) is win.tabs
+    assert split.widget(0).widget(0) is win.vf_plot.widget
     assert split.widget(1) is win.table_panel
     assert not split.childrenCollapsible() or (
         not split.isCollapsible(0) and not split.isCollapsible(1)
@@ -377,11 +464,25 @@ def test_runs_table_splitter_is_draggable_with_content_derived_floors(
     assert table.minimumHeight() >= (
         header_height + row_height * win.runs_table.MIN_VISIBLE_ROWS
     )
-    # The tab side floors at its own content (tab bar + Auto-UV page), NOT at
-    # the largest other page's hint, so the splitter default can actually
-    # trade plot height for table rows.
-    assert win.tabs.minimumHeight() < win.tabs.minimumSizeHint().height()
-    _ = qt_widgets
+    win.window.show()
+    qapp.processEvents()
+    split.setSizes([300, 400])
+    qapp.processEvents()
+    plot_height, table_height = split.sizes()
+    split.moveSplitter(plot_height + 40, 1)
+    qapp.processEvents()
+    assert split.sizes() == [plot_height + 40, table_height - 40]
+
+    # Extra window height goes to the plot, including a resize on another tab.
+    win.window.resize(win.window.width(), win.window.height() + 80)
+    qapp.processEvents()
+    assert split.sizes() == [plot_height + 120, table_height - 40]
+    win.tabs.setCurrentIndex(win.profiles_tab_index)
+    win.window.resize(win.window.width(), win.window.height() + 80)
+    qapp.processEvents()
+    win.tabs.setCurrentIndex(win.auto_uv_tab_index)
+    qapp.processEvents()
+    assert split.sizes() == [plot_height + 200, table_height - 40]
 
 
 def test_runs_table_follows_newest_pending_row_unless_user_scrolled_up(
@@ -440,8 +541,11 @@ def test_startup_daemon_check_only_prompts_for_incompatible_running_daemon(
 ) -> None:
     win = main_window
     from runtime import daemon_client
+    from ui import assets
 
     prompts = []
+    compatibility_checks = []
+    monkeypatch.setattr(assets, "application_version", lambda: "0.7.9")
     monkeypatch.setattr(
         window_mod,
         "ensure_daemon_ready_for_privileged_action",
@@ -459,10 +563,14 @@ def test_startup_daemon_check_only_prompts_for_incompatible_running_daemon(
     # Running and compatible -> no prompt.
     monkeypatch.setattr(daemon_client, "daemon_status", lambda **kwargs: {"state": "idle"})
     monkeypatch.setattr(
-        daemon_client, "require_daemon_capabilities", lambda *a, **k: {"state": "idle"}
+        daemon_client,
+        "require_daemon_capabilities",
+        lambda *args, **kwargs: compatibility_checks.append((args, kwargs))
+        or {"state": "idle"},
     )
     win._check_daemon_upgrade_on_startup()
     assert prompts == []
+    assert compatibility_checks == [((), {"expected_version": "0.7.9"})]
 
     # Running but incompatible (stale 0.6.x) -> prompt to update.
     def _incompatible(*a, **k):

@@ -21,7 +21,7 @@ def long_stability_workload_durations(
     total_s = max(2, int(total_duration_s))
     cuda_s = max(
         1,
-        int(round(float(total_s) * float(LONG_STABILITY_CUDA_FRACTION))),
+        round(float(total_s) * float(LONG_STABILITY_CUDA_FRACTION)),
     )
     return max(1, int(total_s) - int(cuda_s)), int(cuda_s)
 

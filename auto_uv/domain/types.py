@@ -15,6 +15,14 @@ class AutoUvError(RuntimeError):
     pass
 
 
+class AutoUvCriticalProbeError(AutoUvError):
+    """Setup or observation failed; stop probing and retain completed profiles."""
+
+
+class AutoUvPowerLimitApplyError(AutoUvError):
+    """The requested scan power regime could not be established reliably."""
+
+
 class AutoUvFinalChoiceDiscarded(RuntimeError):
     pass
 
@@ -54,8 +62,16 @@ class AutoUvProbeSummary:
     loaded_qualified_sample_count: int = 0
     observed_vdroop_mv: float | None = None
     perf_cap_reason: str | None = None
+    # Samples where the board's power-delivery protection (EDPp/OCP) braked
+    # the clock. Distinct from the configured power limit: it is reported so
+    # a brake-heavy run is visible rather than reading as an ordinary cap.
+    hw_power_brake_samples: int = 0
+    telemetry_sample_count: int = 0
     fps_stddev: float | None = None
     fps_variance_pct: float | None = None
+    # Exact applied geometry belonging to these measurements. Selection must
+    # not reconstruct another curve from the voltage/clock label.
+    tested_plan: list[dict] | None = None
 
 
 @dataclass(slots=True)
@@ -84,10 +100,8 @@ class AutoUvVoltageScanResult:
 
 class FailureKind(str, Enum):
     NONE = "none"
-    LOW_CLOCK = "low-clock"
     FPS_REGRESSION = "fps-regression"
     LOAD_LOST = "load-lost"
-    TIMED_OUT = "timed-out"
     FATAL_OUTPUT = "fatal-output"
     CUDA_FAILED = "cuda-failed"
     Q2RTX_FAILED = "q2rtx-failed"
@@ -96,6 +110,7 @@ class FailureKind(str, Enum):
     METRICS_MISSING = "metrics-missing"
     METRICS_INVALID = "metrics-invalid"
     USER_STOP = "user-stop"
+    CACHED_UNSAFE = "cached-unsafe"
 
 
 class FailureSeverity(str, Enum):

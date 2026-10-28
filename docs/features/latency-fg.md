@@ -11,16 +11,53 @@ path.
 
 ## Launch Paths
 
-Wrap the game and enable the overlay:
+### Steam
+
+Add this to the game's launch options:
 
 ```text
 PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
+### Lutris, Heroic, Faugus and other Wine launchers
+
+In Lutris, open **Game → Configure → System options** and set
+**Command prefix** to:
+
+```text
+PENGUIN_BURNER --pb-overlay=1
+```
+
+In Heroic, the equivalent field is **Settings → Advanced → Wrapper commands**.
+In Faugus, use **Launch arguments**, or enable wrapping in
+[Game Library](faugus.md).
+
+The `PENGUIN_BURNER` command must be installed and available on the launcher's
+`PATH`. This path also works for other launchers that expose the active prefix
+through `WINEPREFIX`; it does not depend on Steam game identity.
+
 In-game latency turns on with the overlay — no extra flag. The NVAPI shim is
-deployed into the Proton prefix automatically and streams Reflex markers to the
-wrapper's FIFO; native and prefix-less games fall back to the Vulkan layer's own
-marker tap. Opt out with `PB_INGAME_LATENCY=0`.
+deployed into the Wine or Proton prefix automatically and streams Reflex markers
+to the wrapper's FIFO; native and prefix-less games fall back to the Vulkan
+layer's own marker tap. Opt out with `PB_INGAME_LATENCY=0`.
+
+#### Markers without the overlay
+
+For launcher-managed games, selecting **Adaptive** keeps marker capture enabled
+automatically even when the overlay is off. The overlay switch controls the HUD;
+it does not take Adaptive's base-frame pacing signal away. Fixed tiers and Stock
+do not capture hidden markers when their overlay is off.
+
+For a wrapper command managed by hand, request the same headless marker mode
+explicitly:
+
+```text
+env PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0
+```
+
+The leading `env` is required. Lutris execs the command prefix directly rather
+than through a shell, so a bare `PB_INGAME_LATENCY=1` would be treated as the
+program to run instead of an assignment.
 
 ## What PenguinBurner Can Force
 
@@ -40,7 +77,7 @@ marker stream at all.
 
 ## Latency Sources
 
-### NVAPI Shim (default, Proton games)
+### NVAPI Shim (default, Wine and Proton games)
 
 The default source is the drop-in NVAPI shim. It taps the Reflex markers above
 vkd3d's owner-gate — so it still works under frame generation — and streams them
@@ -50,8 +87,8 @@ involved.
 
 ### Native Vulkan Markers (fallback)
 
-Games without a Proton prefix (and the single-swapchain / non-FG case) fall back
-to PenguinBurner's native Vulkan implicit layer, which observes
+Games without a Wine or Proton prefix (and the single-swapchain / non-FG case)
+fall back to PenguinBurner's native Vulkan implicit layer, which observes
 `vkSetLatencyMarkerNV` / `vkGetLatencyTimingsNV` inside the game process and
 publishes samples such as:
 
@@ -75,10 +112,9 @@ The render latency and display tail are kept separate internally.
 The overlay sums those two values into the single `LAT` number. If the display
 tail is unavailable, `LAT` falls back to render/game latency alone. For
 non-Reflex games there is no render/game latency at all — no markers ever
-exist to measure it — so `LAT` shows the present-to-scanout display tail on
-its own rather than nothing. That number is display timing, not
-input-to-photon latency: the simulate/render/queue portion of the frame is
-invisible without markers.
+exist to measure it — so `LAT` stays hidden. The display tail on its own is
+present-to-scanout timing, not input-to-photon latency: the
+simulate/render/queue portion of the frame is invisible without markers.
 
 Set this to hide the display tail:
 
@@ -168,6 +204,17 @@ This distinction matters:
   40 FPS from p95 frametime.
 - `raw-present-fps-avg=120` means the output present stream averaged about
   120 FPS, which can include generated frames.
+
+Adaptive uses the same slowdown protection for base-frame markers and ordinary
+present pacing. Before immediately jumping to Performance, it checks that the
+median frame time also exceeds the target and at least half the measured frames
+miss the badly-slow deadline. A short slow tail, such as during a desktop switch,
+instead goes through the normal sustained-slowdown confirmation. Returning to a
+lower tier still requires sustained headroom.
+
+Generated output is not a base-frame sample set. When only an inferred base FPS
+is available, the controller keeps its existing fallback; it does not use the
+faster displayed-frame median or miss ratio to veto a needed promotion.
 
 ## Frame-Generation Detection
 

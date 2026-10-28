@@ -14,9 +14,12 @@ demanding a game is, where its bottleneck lives, and how fluent its
 
 ## Where it appears
 
-- **Steam tab** — a small fingerprint badge sits next to the **Play** button
-  for the selected game. **Hover** it for a quick peek (median and 1%-low
+- **Game Library tab** — a small fingerprint badge sits in the header of the
+  selected Steam game. **Hover** it for a quick peek (median and 1%-low
   frametimes, power, bottleneck); **click** it to open the full detail.
+  Recording covers Steam games only for now; other launchers show no badge.
+  Each Steam game has a **Capture game telemetry** switch (on by default);
+  turning it off stops new capture from the next launch.
 - **Game Perf Profile tab** — the full view: the large fingerprint, a stat row, and a
   MangoHUD-style **frametime graph** in milliseconds (30-minute overview with
   red stutter needles, or a **LIVE 10 s** zoom at per-frame resolution).

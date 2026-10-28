@@ -518,6 +518,20 @@ bool init_overlay_resources(
         destroy_overlay_resources(device_context, swapchain_context);
         return false;
     }
+    // A command buffer is dispatchable, and the one the layer below us
+    // returned carries its dispatch table, not the one a layer above us reads.
+    // The loader's callback restores that before the handle travels back up.
+    if (device_context.set_device_loader_data) {
+        for (VkCommandBuffer command_buffer : overlay.command_buffers) {
+            result = device_context.set_device_loader_data(
+                device_context.device,
+                command_buffer);
+            if (result != VK_SUCCESS) {
+                destroy_overlay_resources(device_context, swapchain_context);
+                return false;
+            }
+        }
+    }
 
     overlay.signal_semaphores.resize(image_count, VK_NULL_HANDLE);
     VkSemaphoreCreateInfo semaphore_info{};

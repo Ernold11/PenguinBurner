@@ -5,10 +5,12 @@ This module formats messages only; scan decisions stay in the rule modules.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from auto_uv.domain.types import AutoUvProbeSummary
-from auto_uv.scan_mode.efficiency_fps_per_w_policy import compare_temperature_normalized_fps_per_w
+from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
+    compare_temperature_normalized_fps_per_w,
+)
 
 
 def log_phase(log: Callable[[str], None], phase: str, message: str) -> None:
@@ -42,6 +44,26 @@ def log_benchmark(
     if reference_probe is not None:
         parts.extend(benchmark_delta_parts(probe, reference_probe, reference_label))
     log_phase(log, phase, "benchmark " + " ".join(parts))
+    brake_note = hw_power_brake_note(probe)
+    if brake_note is not None:
+        log_phase(log, phase, brake_note)
+
+
+def hw_power_brake_note(probe: AutoUvProbeSummary) -> str | None:
+    """Report power-delivery brake events, which a capped run alone hides.
+
+    A stable candidate can still trip the board's protection brake. Report
+    that event next to the probe even when other power-cap reasons occur.
+    """
+    brake_samples = int(getattr(probe, "hw_power_brake_samples", 0) or 0)
+    if brake_samples <= 0:
+        return None
+    total = int(getattr(probe, "telemetry_sample_count", 0) or 0)
+    coverage = f"{brake_samples}/{total}" if total > 0 else str(brake_samples)
+    return (
+        f"hw-power-brake asserted on {coverage} telemetry samples: the board's "
+        "power delivery limited the clock, not the configured power limit"
+    )
 
 
 def benchmark_delta_parts(

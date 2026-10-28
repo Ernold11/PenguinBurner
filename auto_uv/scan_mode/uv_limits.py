@@ -4,25 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 AUTO_UV_PERFORMANCE_OC_PROFILE_ID = "performance"
-
-# Balanced blends the efficiency and performance clock-drop limits, weighted
-# toward efficiency so the preset leans into power savings (0.6 efficiency /
-# 0.4 performance) rather than sitting at the dead-center midpoint.
-_BALANCED_EFFICIENCY_WEIGHT = 0.6
 
 # Per-tier power-cap defaults. Undervolting alone still lets the card chase
 # transient boost bins that cost disproportionate watts for a few MHz, so the
-# savings-biased presets pair the V/F floor with a board-power cap while the
-# performance preset keeps the stock board power budget. Only the efficiency cap
-# varies by silicon (a weaker cut caps sooner); balanced sits halfway between
-# the family's efficiency cap and full power, so one number per family fully
-# describes the ladder. Unlike the clock-drop blend below, a plain midpoint is
-# fine here: the cap is a linear mix of one stored number against a fixed 100,
-# so it cannot collapse toward a neighbour the way clock geometry can.
-# Percentages apply to the card's DEFAULT power limit (stock TGP), not the
-# raised OC maximum.
+# efficiency preset pairs its V/F floor with a board-power cap. Balanced and
+# performance both keep the stock board power budget by default: identical
+# power regimes keep the balanced descent donatable to the performance tier in
+# a full scan (the descent-reuse gate requires matching limits), and measured
+# balanced curves are voltage-limited under gaming-class load anyway — the cap
+# only bound their baseline probes. Users can still cap any tier per run from
+# the scan dialog or the per-tier CLI flags. Only the efficiency cap varies by
+# silicon (a weaker cut caps sooner). Percentages apply to the card's DEFAULT
+# power limit (stock TGP), not the raised OC maximum.
 _FULL_POWER_LIMIT_PCT = 100.0
 
 # A fixed extra reduction applied to EVERY family's efficiency power cap. The
@@ -45,14 +39,18 @@ class UvTierTarget:
     clock_mhz: int
 
 
+# Performance targets retain the ~1% reduction from the borrowed reference
+# table (two 15 MHz clock bins on the RTX 5080). The two-bin default tail adds
+# 30 MHz nominal headroom above these anchors. Selected RTX 30-series
+# Efficiency/Balanced targets include another fixed 5 or 10 MHz reduction;
+# all table clocks use 5 MHz increments.
 _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
     {
         "family": "RTX 5090",
         "patterns": ("5090",),
         "efficiency": (900, 2700),
         "balanced": (950, 2900),
-        "performance": (975, 3000),
-        "clock_drop_ceiling_mhz": 3100,
+        "performance": (975, 2970),
         "efficiency_power_limit_pct": 85,
     },
     {
@@ -60,8 +58,8 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5080",),
         "efficiency": (850, 2800),
         "balanced": (900, 2800),
-        "performance": (925, 2980),
-        "clock_drop_ceiling_mhz": 3150,
+        # 2950 + (2 * 15) = 2980 MHz nominal with the default rising tail.
+        "performance": (925, 2950),
         "efficiency_power_limit_pct": 88,
     },
     {
@@ -69,8 +67,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5070 TI", "5070TI"),
         "efficiency": (850, 2500),
         "balanced": (900, 2800),
-        "performance": (925, 2950),
-        "clock_drop_ceiling_mhz": 3000,
+        "performance": (925, 2920),
         "efficiency_power_limit_pct": 83,
     },
     {
@@ -78,8 +75,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5070",),
         "efficiency": (850, 2600),
         "balanced": (900, 2750),
-        "performance": (940, 3000),
-        "clock_drop_ceiling_mhz": 3150,
+        "performance": (940, 2970),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -87,8 +83,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5060 TI", "5060TI"),
         "efficiency": (800, 2500),
         "balanced": (875, 2700),
-        "performance": (925, 2900),
-        "clock_drop_ceiling_mhz": 3000,
+        "performance": (925, 2870),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -100,8 +95,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5060",),
         "efficiency": (800, 2500),
         "balanced": (875, 2700),
-        "performance": (925, 2900),
-        "clock_drop_ceiling_mhz": 3000,
+        "performance": (925, 2870),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -109,8 +103,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4070 TI SUPER", "4070TI SUPER"),
         "efficiency": (925, 2550),
         "balanced": (940, 2640),
-        "performance": (950, 2730),
-        "clock_drop_ceiling_mhz": 2820,
+        "performance": (950, 2705),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -118,8 +111,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4070 TI", "4070TI"),
         "efficiency": (925, 2550),
         "balanced": (940, 2640),
-        "performance": (950, 2685),
-        "clock_drop_ceiling_mhz": 2820,
+        "performance": (950, 2660),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -127,8 +119,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4070 SUPER",),
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
-        "performance": (940, 2670),
-        "clock_drop_ceiling_mhz": 2790,
+        "performance": (940, 2645),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -136,8 +127,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4070",),
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
-        "performance": (940, 2670),
-        "clock_drop_ceiling_mhz": 2790,
+        "performance": (940, 2645),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -145,8 +135,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4060 TI", "4060TI"),
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
-        "performance": (950, 2650),
-        "clock_drop_ceiling_mhz": 2750,
+        "performance": (950, 2625),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -154,8 +143,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4060",),
         "efficiency": (875, 2300),
         "balanced": (900, 2450),
-        "performance": (925, 2600),
-        "clock_drop_ceiling_mhz": 2730,
+        "performance": (925, 2575),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -163,8 +151,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4090",),
         "efficiency": (875, 2400),
         "balanced": (900, 2550),
-        "performance": (925, 2670),
-        "clock_drop_ceiling_mhz": 2745,
+        "performance": (925, 2645),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -172,8 +159,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4080",),
         "efficiency": (875, 2400),
         "balanced": (900, 2520),
-        "performance": (925, 2640),
-        "clock_drop_ceiling_mhz": 2700,
+        "performance": (925, 2615),
         "efficiency_power_limit_pct": 100,
     },
     {
@@ -181,17 +167,15 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3090 TI", "3090TI"),
         "efficiency": (825, 1700),
         "balanced": (875, 1830),
-        "performance": (925, 1950),
-        "clock_drop_ceiling_mhz": 2025,
+        "performance": (925, 1930),
         "efficiency_power_limit_pct": 80,
     },
     {
         "family": "RTX 3090",
         "patterns": ("3090",),
-        "efficiency": (800, 1700),
+        "efficiency": (800, 1690),
         "balanced": (875, 1830),
-        "performance": (900, 1900),
-        "clock_drop_ceiling_mhz": 1965,
+        "performance": (900, 1880),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -199,8 +183,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3080 TI", "3080TI"),
         "efficiency": (800, 1710),
         "balanced": (875, 1870),
-        "performance": (900, 1920),
-        "clock_drop_ceiling_mhz": 1980,
+        "performance": (900, 1900),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -208,17 +191,15 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3080 12GB", "3080 12 GB", "3080-12"),
         "efficiency": (800, 1700),
         "balanced": (875, 1860),
-        "performance": (900, 1920),
-        "clock_drop_ceiling_mhz": 2000,
+        "performance": (900, 1900),
         "efficiency_power_limit_pct": 80,
     },
     {
         "family": "RTX 3080",
         "patterns": ("3080",),
         "efficiency": (800, 1750),
-        "balanced": (875, 1890),
-        "performance": (900, 1950),
-        "clock_drop_ceiling_mhz": 2010,
+        "balanced": (875, 1885),
+        "performance": (900, 1930),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -226,8 +207,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3070 TI", "3070TI"),
         "efficiency": (825, 1770),
         "balanced": (875, 1905),
-        "performance": (900, 1950),
-        "clock_drop_ceiling_mhz": 1995,
+        "performance": (900, 1930),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -235,8 +215,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3070",),
         "efficiency": (775, 1700),
         "balanced": (875, 1900),
-        "performance": (925, 1950),
-        "clock_drop_ceiling_mhz": 2010,
+        "performance": (925, 1930),
         "efficiency_power_limit_pct": 80,
     },
     {
@@ -244,17 +223,15 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("3060 TI", "3060TI"),
         "efficiency": (800, 1750),
         "balanced": (875, 1875),
-        "performance": (925, 1935),
-        "clock_drop_ceiling_mhz": 1980,
+        "performance": (925, 1915),
         "efficiency_power_limit_pct": 80,
     },
     {
         "family": "RTX 3060",
         "patterns": ("3060",),
-        "efficiency": (800, 1750),
-        "balanced": (850, 1840),
-        "performance": (900, 1900),
-        "clock_drop_ceiling_mhz": 1950,
+        "efficiency": (800, 1555),
+        "balanced": (850, 1680),
+        "performance": (900, 1780),
         "efficiency_power_limit_pct": 80,
     },
 )
@@ -268,44 +245,15 @@ def uv_limit_voltage_floor_target_for_gpu(
     return uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
 
 
-def uv_limit_clock_drop_pct_for_gpu(
-    gpu_name: object | None,
-    profile_id: object | None = "efficiency",
-) -> float | None:
-    entry = _uv_limit_entry_for_gpu(gpu_name)
-    if entry is None:
-        return None
-    profile = str(profile_id or "efficiency").strip().lower()
-    if profile == "balanced":
-        # Balanced is a savings-biased blend of the efficiency and performance
-        # clock-drop limits. Deriving it from a single clock ratio
-        # (efficiency.clock / performance.clock) collapsed balanced toward
-        # whichever neighbour the table's clock geometry sat closest to - the
-        # RTX 5080 fell to ~6% (almost identical to performance) while the
-        # RTX 5070 Ti rose to ~15% (almost identical to efficiency). Weighting it
-        # toward efficiency keeps balanced centered-but-deeper on every GPU so it
-        # actually saves power while staying short of the full efficiency drop.
-        efficiency_pct = _derived_clock_drop_pct(entry, "efficiency")
-        performance_pct = _derived_clock_drop_pct(entry, "performance")
-        if efficiency_pct is None or performance_pct is None:
-            return _derived_clock_drop_pct(entry, "balanced")
-        return (
-            efficiency_pct * _BALANCED_EFFICIENCY_WEIGHT
-            + performance_pct * (1.0 - _BALANCED_EFFICIENCY_WEIGHT)
-        )
-    return _derived_clock_drop_pct(entry, profile)
-
-
 def uv_limit_power_limit_pct_for_gpu(
     gpu_name: object | None,
     profile_id: object | None = "efficiency",
 ) -> float | None:
     """Return the default board-power cap (percent of the card's stock TGP) for a tier.
 
-    The performance tier always keeps the full stock power budget. The efficiency
-    cap is the per-family stored value; balanced sits halfway between the family's
-    efficiency cap and full power (so a family whose efficiency runs uncapped keeps
-    every tier at full power).
+    Balanced and performance keep the full stock power budget so a full scan's
+    balanced descent stays donatable to the performance tier. The efficiency
+    cap is the per-family stored value less the fixed extra reduction.
     """
     entry = _uv_limit_entry_for_gpu(gpu_name)
     if entry is None:
@@ -324,10 +272,9 @@ def _derived_power_limit_pct(
         return None
     efficiency_pct = float(stored)
     # Families that already cap efficiency get the same fixed extra reduction so
-    # the default undercuts stock TGP by a real margin; balanced inherits it
-    # through the halfway blend below. A family left at full power is
-    # deliberately uncapped, so it stays uncapped (you cannot lower a limit that
-    # is not there).
+    # the default undercuts stock TGP by a real margin. A family left at full
+    # power is deliberately uncapped, so it stays uncapped (you cannot lower a
+    # limit that is not there).
     if efficiency_pct < _FULL_POWER_LIMIT_PCT:
         efficiency_pct = max(
             0.0,
@@ -335,25 +282,9 @@ def _derived_power_limit_pct(
             * (1.0 - _EFFICIENCY_POWER_LIMIT_EXTRA_REDUCTION_PCT / 100.0),
         )
     profile = str(profile_id or "efficiency").strip().lower()
-    if profile == "performance":
+    if profile in ("performance", "balanced"):
         return _FULL_POWER_LIMIT_PCT
-    if profile == "balanced":
-        return (efficiency_pct + _FULL_POWER_LIMIT_PCT) / 2.0
     return efficiency_pct
-
-
-def _derived_clock_drop_pct(
-    entry: dict[str, object],
-    profile_id: str,
-) -> float | None:
-    lower_clock_mhz, upper_clock_mhz = _uv_limit_clock_drop_bounds_mhz_from_entry(
-        entry,
-        profile_id,
-    )
-    if int(lower_clock_mhz) <= 0 or int(upper_clock_mhz) <= 0:
-        return None
-    drop_pct = 1.0 - (float(lower_clock_mhz) / float(upper_clock_mhz))
-    return max(0.0, drop_pct * 100.0)
 
 
 def uv_limit_profile_target_for_gpu(
@@ -364,6 +295,27 @@ def uv_limit_profile_target_for_gpu(
     if entry is None:
         return None
     return _uv_limit_profile_target_from_entry(entry, profile_id)
+
+
+def uv_limit_clock_target_range_for_gpu(
+    gpu_name: object | None,
+    profile_id: str,
+) -> tuple[int, int] | None:
+    """Editable anchor-clock bounds, derived from the GPU's default tiers."""
+    efficiency = uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
+    balanced = uv_limit_profile_target_for_gpu(gpu_name, "balanced")
+    performance = uv_limit_profile_target_for_gpu(gpu_name, "performance")
+    if efficiency is None or balanced is None or performance is None:
+        return None
+    profile = str(profile_id).strip().lower()
+    if profile == "efficiency":
+        return (efficiency.clock_mhz * 17 + 19) // 20, balanced.clock_mhz
+    if profile == "balanced":
+        return efficiency.clock_mhz, performance.clock_mhz
+    if profile == "performance":
+        # Round the +5% ceiling to the nearest MHz (2950 -> 3098 MHz).
+        return balanced.clock_mhz, (performance.clock_mhz * 21 + 10) // 20
+    return None
 
 
 def _uv_limit_entry_for_gpu(gpu_name: object | None) -> dict[str, object] | None:
@@ -396,35 +348,6 @@ def _uv_limit_profile_target_from_entry(
         voltage_mv=int(voltage_mv),
         clock_mhz=int(clock_mhz),
     )
-
-
-def _uv_limit_clock_drop_ceiling_mhz_from_entry(entry: dict[str, object]) -> int:
-    value = entry.get("clock_drop_ceiling_mhz")
-    if value is not None:
-        if not isinstance(value, (int, float, str)):
-            return 0
-        return int(value)
-    performance = _uv_limit_profile_target_from_entry(entry, "performance")
-    if performance is None:
-        return 0
-    return int(performance.clock_mhz)
-
-
-def _uv_limit_clock_drop_bounds_mhz_from_entry(
-    entry: dict[str, object],
-    profile_id: object | None,
-) -> tuple[int, int]:
-    profile = str(profile_id or "efficiency").strip().lower()
-    efficiency = _uv_limit_profile_target_from_entry(entry, "efficiency")
-    performance = _uv_limit_profile_target_from_entry(entry, "performance")
-    ceiling_clock_mhz = _uv_limit_clock_drop_ceiling_mhz_from_entry(entry)
-    if efficiency is None:
-        return 0, 0
-    if profile == "performance" and performance is not None:
-        return int(performance.clock_mhz), int(ceiling_clock_mhz)
-    if profile == "balanced" and performance is not None:
-        return int(efficiency.clock_mhz), int(performance.clock_mhz)
-    return int(efficiency.clock_mhz), int(ceiling_clock_mhz)
 
 
 def voltage_drop_pct(*, start_voltage_mv: int, floor_voltage_mv: int) -> float:

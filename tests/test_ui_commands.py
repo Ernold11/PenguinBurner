@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -40,20 +41,15 @@ from ui.features.tuning.tuning import (
     AUTO_UV_PRESET_BALANCED,
     AUTO_UV_PRESET_EFFICIENCY,
     AUTO_UV_PRESET_PERFORMANCE,
-    AUTO_UV_DROP_REFERENCE_VOLTAGE_MV,
     DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS,
-    DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
-    DEFAULT_AUTO_UV_MAX_DROP_PCT,
     DEFAULT_AUTO_UV_PRESET,
     GPU_UNDERVOLTING_PURPOSE_TEXT,
     DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
     DEFAULT_AUTO_UV_TAIL_RISE_BINS,
     auto_uv_preset as _auto_uv_preset,
-    auto_uv_clock_drop_default as _auto_uv_clock_drop_default,
     auto_uv_performance_preset_label as _auto_uv_performance_preset_label,
-    auto_uv_performance_target_default as _auto_uv_performance_target_default,
+    auto_uv_target_default as _auto_uv_target_default,
     auto_uv_performance_preset_tooltip as _auto_uv_performance_preset_tooltip,
-    auto_uv_voltage_drop_default as _auto_uv_voltage_drop_default,
 )
 from ui.components.runs_table import (
     RunsTable,
@@ -104,7 +100,9 @@ def _assert_flatpak_daemon_script_waits_for_api(
     state_clear = 'rm -f "/var/lib/penguin-burner/last-runtime.json"'
     if clears_last_runtime:
         assert state_clear in script
-        assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
+        assert script.rindex("restart_penguin_burnerd") < script.rindex(
+            state_clear
+        ) < script.rindex("commit_daemon_install")
     else:
         # Migration consumes the legacy 0.6.x state via
         # migrate-legacy-boot-intent instead of deleting it up front.
@@ -128,15 +126,45 @@ def _assert_flatpak_daemon_binary_installed_atomically(script: str) -> None:
     assert "nonblock" in script
     assert "oflag=nofollow" in script
     assert "conv=fsync" in script
+    assert '[ ! -f "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
+    assert '[ -L "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
     assert "7f454c46" in script
     assert 'chown root:root "$daemon_tmp"' in script
     assert 'chmod 0755 "$daemon_tmp"' in script
     assert commit in script
     assert "install -Dm0755" not in script
-    assert "trap cleanup_install_temps EXIT" in script
+    assert "trap finish_daemon_install EXIT" in script
     assert "trap 'exit 1' HUP INT TERM" in script
+    # The staged binary must prove it can execute on this host (the Flatpak
+    # daemon links against the freedesktop runtime's glibc floor) before any
+    # installed state is touched.
+    preflight = '"$daemon_tmp" --version'
+    assert preflight in script
+    assert "cannot run on this host" in script
+    assert (
+        script.index('chmod 0755 "$daemon_tmp"')
+        < script.index(preflight)
+        < script.index(commit)
+    )
+    # Rollback must tolerate units that do not exist: a bare `systemctl
+    # disable` of the usually-absent legacy unit reported every rollback as
+    # failed.
+    assert 'systemctl cat -- "$1"' in script
+    assert "disable_present_service penguin-burnerd.service || rollback_failed=1" in script
+    assert "disable_present_service PenguinBurner.service || rollback_failed=1" in script
     assert script.index(stage) < script.index(copy) < script.index(commit)
-    assert script.index(commit) < script.index(legacy_mutation)
+    assert script.index(commit) < script.rindex(legacy_mutation)
+
+
+def test_flatpak_systemd_transaction_is_owned_by_runtime_support() -> None:
+    ui_source = Path("ui/commands.py").read_text(encoding="utf-8")
+    runtime_source = Path(
+        "runtime/support/flatpak_daemon_install.py"
+    ).read_text(encoding="utf-8")
+
+    assert "rollback_daemon_install" not in ui_source
+    assert "def build_flatpak_daemon_install_script" in runtime_source
+    assert "rollback_daemon_install" in runtime_source
 
 
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
@@ -197,7 +225,14 @@ def test_ui_scan_command_uses_flatpak_host_privilege(
 
 
 def _flatpak_daemon_install_env(monkeypatch, tmp_path) -> None:
-    """Environment for building the elevated flatpak daemon-install command."""
+    """Environment for building the elevated flatpak daemon-install command.
+
+    The host home this command carries is meant to resolve from USER through
+    the getpwnam stub below. PENGUIN_BURNER_HOME outranks both, so the helper
+    clears it and states the environment under test outright, instead of
+    depending on whichever home the run happened to inherit.
+    """
+    monkeypatch.delenv("PENGUIN_BURNER_HOME", raising=False)
     flatpak_info = tmp_path / ".flatpak-info"
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
@@ -233,9 +268,8 @@ def _command_env_value(command: list[str], name: str) -> str:
 def test_daemon_migration_command_installs_flatpak_daemon(
     monkeypatch, tmp_path
 ) -> None:
-    # B4b: the sandbox-built /app/libexec binary is copied onto the host's
-    # root-owned /usr/libexec by the one pkexec elevation; the repair flow clears
-    # stale last-runtime state from old deployments before restarting.
+    # The sandbox-built /app/libexec source is copied to the one canonical host
+    # runtime path by the explicit pkexec repair transaction.
     _flatpak_daemon_install_env(monkeypatch, tmp_path)
 
     command = commands.daemon_migration_command()
@@ -250,6 +284,14 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         f"{FLATPAK_APP_PATH}/libexec/penguin-burnerd"
     )
     script = command[command.index("-c") + 1]
+    syntax = subprocess.run(
+        ["/bin/sh", "-n"],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
     assert "/usr/bin/flatpak" not in command
     assert command[-5:] == [
         "/bin/sh",
@@ -258,7 +300,7 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         command[-2],
         "penguin-burner-daemon-install",
     ]
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl is-active --quiet penguin-burnerd.service" in command[-2]
     assert "systemctl enable penguin-burnerd.service" in command[-2]
     assert "systemctl restart penguin-burnerd.service" in command[-2]
     assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
@@ -268,6 +310,22 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         clears_last_runtime=False,
     )
     _assert_flatpak_daemon_binary_installed_atomically(script)
+    assert "daemon_dir=/var/opt/penguin-burner/libexec" in script
+    assert (
+        'daemon_target="/var/opt/penguin-burner/libexec/penguin-burnerd"'
+        in script
+    )
+    assert "PENGUIN_BURNER_DAEMON_BINARY_TARGET" not in " ".join(command)
+    assert "findmnt" in script and "noexec" in script
+    assert "selinuxenabled" in script and "restorecon" in script
+    assert "rollback_daemon_install" in script
+    # Rollback disables only units that exist; a bare `systemctl disable` of
+    # the usually-absent legacy unit reported every rollback as failed.
+    assert "disable_present_service penguin-burnerd.service || rollback_failed=1" in script
+    assert "disable_present_service PenguinBurner.service || rollback_failed=1" in script
+    assert script.index("restart_penguin_burnerd\n") < script.rindex(
+        "commit_daemon_install"
+    )
     assert "systemctl enable penguin-burnerd.service" in script
     # Migration replays a 0.6.x boot profile host-side after the new daemon
     # is up; it passes no client-built intent of its own.
@@ -282,7 +340,8 @@ def test_daemon_migration_command_installs_flatpak_daemon(
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
-        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+        "ExecStart=/var/opt/penguin-burner/libexec/penguin-burnerd "
+        "--socket /run/penguin-burnerd.sock"
         in unit
     )
 
@@ -366,6 +425,7 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(commands, "env_command_prefix", lambda: ["/usr/bin/env"])
 
     def fake_which(name: str) -> str | None:
         return {
@@ -379,6 +439,24 @@ def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
 
     assert command[:2] == ["/usr/bin/pkexec", "/usr/bin/env"]
     assert "--migrate-to-daemon-service" in command
+
+
+def test_daemon_migration_command_dispatches_uutils_env(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        commands,
+        "env_command_prefix",
+        lambda: ["/usr/bin/uu-coreutils", "env"],
+    )
+    monkeypatch.setattr(
+        commands.shutil,
+        "which",
+        lambda name: "/usr/bin/pkexec" if name == "pkexec" else None,
+    )
+
+    command = commands.daemon_migration_command()
+
+    assert command[:3] == ["/usr/bin/pkexec", "/usr/bin/uu-coreutils", "env"]
 
 
 def test_desktop_session_env_infers_xauthority_for_x11_forwarding(
@@ -423,7 +501,7 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert options["gpu_index"] == 2
     assert options["auto_uv_mode"] == "performance"
     assert options["auto_uv_min_voltage_mv"] == 850
-    assert options["auto_uv_max_clock_drop_pct"] == 10.0
+    assert "auto_uv_max_clock_drop_pct" not in options
     assert options["auto_oc_target_voltage_mv"] == 925
     assert options["auto_oc_target_clock_mhz"] == 2670
     assert "--power-limit-override-w" not in command
@@ -433,6 +511,17 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
     assert options["auto_uv_memory_offset_mhz"] == 500
     assert options["auto_uv_tail_rise_bins"] == 2
+
+
+def test_ui_scan_command_does_not_forward_cli_only_recovery_options(monkeypatch) -> None:
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
+    options = _scan_daemon_options(commands.scan_command({
+        "auto_uv_mode": "adaptive",
+        "auto_uv_tuning_mode": "aggressive",
+        "auto_uv_retry_after_freeze": True,
+    }))
+    assert "auto_uv_tuning_mode" not in options
+    assert "auto_uv_retry_after_freeze" not in options
 
 
 def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:
@@ -459,13 +548,13 @@ def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:
     options = _scan_daemon_options(command)
 
     assert options["auto_uv_mode"] == "adaptive"
-    assert options["auto_uv_efficiency_max_clock_drop_pct"] == 15.0
+    assert "auto_uv_efficiency_max_clock_drop_pct" not in options
     assert options["auto_uv_efficiency_power_limit_w"] == 250
     assert options["auto_uv_efficiency_memory_offset_mhz"] == 500
-    assert options["auto_uv_balanced_max_clock_drop_pct"] == 6.0
+    assert "auto_uv_balanced_max_clock_drop_pct" not in options
     assert options["auto_uv_balanced_power_limit_w"] == 300
     assert options["auto_uv_balanced_memory_offset_mhz"] == 0
-    assert options["auto_uv_performance_max_clock_drop_pct"] == 5.4
+    assert "auto_uv_performance_max_clock_drop_pct" not in options
     assert options["auto_uv_performance_power_limit_w"] == 360
     assert options["auto_uv_performance_memory_offset_mhz"] == 1000
     # The full scan carries no scan-wide tuning keys.
@@ -641,7 +730,7 @@ def test_runs_table_compacts_metric_delta_columns() -> None:
     assert table.widget.item(1, table.FPS_COLUMN).text() == "160.00 (+6.67%)"
     assert table.widget.item(1, table.POWER_COLUMN).text() == "270.00 (-10.00%)"
     assert table.widget.item(1, table.PERF_CAP_COLUMN).text() == ("sw-power+hw-thermal")
-    assert table.widget.item(1, table.FPSW_COLUMN).text() == "0.75 (+50.00%)"
+    assert table.widget.item(1, table.FPSW_COLUMN).text() == "0.7500 (+50.00%)"
     assert (
         table.widget.item(1, table.POWER_COLUMN)
         .toolTip()
@@ -1017,7 +1106,7 @@ def _run_backend_final_choice(tmp_path, monkeypatch, *, request_reason: str):
         log=lambda _message: None,
         event_callback=None,
         auto_uv_mode="efficiency",
-        base_probe=None,
+        base_probe=_final_choice_probe(1000, 3150, fps=150.0, fpsw=0.5),
         stable_plan=curve,
         stable_voltage_mv=850,
         stable_lock_clock_mhz=2430,
@@ -1368,10 +1457,10 @@ def test_final_choice_table_uses_profile_delta_rendering_for_fps_columns() -> No
     regressed_fps = item_for("regressed", FINAL_CHOICE_FPS_SORT_COLUMN)
     regressed_power = item_for("regressed", 6)
 
-    assert efficient_fpsw.text() == "0.75 (+50.00%)"
+    assert efficient_fpsw.text() == "0.7500 (+50.00%)"
     assert efficient_fps.text() == "160.00 (+6.67%)"
     assert efficient_power.text() == "200.00 (-20.00%)"
-    assert regressed_fpsw.text() == "0.45 (-10.00%)"
+    assert regressed_fpsw.text() == "0.4500 (-10.00%)"
     assert regressed_fps.text() == "140.00 (-6.67%)"
     assert regressed_power.text() == "270.00 (+8.00%)"
     assert efficient_fpsw.foreground().color().name() == "#55d27a"
@@ -1394,6 +1483,19 @@ def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> No
     assert "QToolButton#deleteProfilesButton" in STYLESHEET
     assert "background: #7f2525" in STYLESHEET
     assert "border-color: #d45d5d" in STYLESHEET
+
+
+def test_single_gpu_profile_target_uses_disabled_colors() -> None:
+    label_style = STYLESHEET.split(
+        "QLabel#profileTargetGpuLabel:disabled {", 1
+    )[1].split("}", 1)[0]
+    combo_style = STYLESHEET.split(
+        "QComboBox#profileTargetGpu:disabled {", 1
+    )[1].split("}", 1)[0]
+
+    assert "color: #7f8794" in label_style
+    assert "color: #7f8794" in combo_style
+    assert "background: #252b34" in combo_style
 
 
 def _verify_daemon_options(command: list[str]) -> dict:
@@ -1478,101 +1580,44 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
 def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
     # One click, three profiles: the adaptive all-tiers scan is the default.
     assert DEFAULT_AUTO_UV_PRESET == "adaptive"
-    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 10.0
-    assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
-    assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 12.5
-    assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 0
-    assert DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS == 4
-    assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 4
+    assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 2
+    assert DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS == 2
+    assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 2
     efficiency = _auto_uv_preset(AUTO_UV_PRESET_EFFICIENCY)
     balanced = _auto_uv_preset(AUTO_UV_PRESET_BALANCED)
     performance = _auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE)
     assert (efficiency.auto_uv_mode, efficiency.tail_rise_bins) == (
         "efficiency",
-        0,
+        2,
     )
     assert (balanced.auto_uv_mode, balanced.tail_rise_bins) == (
         "balanced",
-        4,
+        2,
     )
     assert (performance.auto_uv_mode, performance.tail_rise_bins) == (
         "performance",
-        4,
+        2,
     )
 
 
 def test_auto_uv_performance_preset_describes_auto_oc() -> None:
     assert _auto_uv_performance_preset_label() == "Performance"
     tooltip = _auto_uv_performance_preset_tooltip()
-    assert "4-bin tail curve" in tooltip
+    assert "2-bin tail curve" in tooltip
     assert "Performance Auto-OC ladder" in tooltip
 
 
-def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:
-    target = _auto_uv_performance_target_default(
+def test_auto_uv_target_default_uses_gpu_table_target() -> None:
+    target = _auto_uv_target_default(
         gpu_name="NVIDIA GeForce RTX 4090",
     )
 
     assert target.preset_matched is True
     assert target.gpu_family == "RTX 4090"
     assert target.voltage_mv == 925
-    assert target.clock_mhz == 2670
+    assert target.clock_mhz == 2645
 
 
-def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
-    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 5080")
-
-    assert preview.preset_matched is True
-    assert preview.gpu_family == "RTX 5080"
-    assert preview.floor_voltage_mv == 850
-    assert preview.value_pct == pytest.approx(15.0)
-
-
-def test_auto_uv_clock_drop_default_uses_preset_aware_gpu_table_ratio() -> None:
-    efficiency = _auto_uv_clock_drop_default(
-        gpu_name="NVIDIA GeForce RTX 5080",
-        preset_id=AUTO_UV_PRESET_EFFICIENCY,
-    )
-    balanced = _auto_uv_clock_drop_default(
-        gpu_name="NVIDIA GeForce RTX 5080",
-        preset_id=AUTO_UV_PRESET_BALANCED,
-    )
-    performance = _auto_uv_clock_drop_default(
-        gpu_name="NVIDIA GeForce RTX 5080",
-        preset_id=AUTO_UV_PRESET_PERFORMANCE,
-    )
-
-    assert efficiency.preset_matched is True
-    assert efficiency.gpu_family == "RTX 5080"
-    assert efficiency.value_pct == pytest.approx(11.111111111111116)
-    assert balanced.value_pct == pytest.approx(
-        efficiency.value_pct * 0.6 + performance.value_pct * 0.4
-    )
-    assert performance.value_pct == pytest.approx(5.3968253968254)
-
-
-def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
-    preview = _auto_uv_clock_drop_default(gpu_name="NVIDIA GeForce GTX 1080")
-
-    assert preview.preset_matched is False
-    assert preview.value_pct == pytest.approx(12.5)
-
-
-def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> None:
-    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce GTX 1080")
-
-    assert preview.preset_matched is False
-    assert preview.value_pct == pytest.approx(10.0)
-    assert preview.floor_voltage_mv == 900
-
-
-def test_auto_uv_voltage_drop_default_uses_ampere_table_for_3080() -> None:
-    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
-
-    assert preview.preset_matched is True
-    assert preview.gpu_family == "RTX 3080"
-    assert preview.floor_voltage_mv == 800
-    assert preview.value_pct == pytest.approx(20.0)
 
 
 def test_progress_text_stays_light_until_bar_is_full() -> None:
@@ -1634,9 +1679,9 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     qt_modules = (QtCore, QtGui, QtWidgets, pytest.importorskip("pyqtgraph"))
     window = MainWindow(qt_modules)
 
-    assert not window.table_panel.isHidden()
+    assert window.table_panel.isVisibleTo(window.window)
     window.tabs.setCurrentIndex(window.overlay_tab_index)
-    assert window.table_panel.isHidden()
+    assert not window.table_panel.isVisibleTo(window.window)
     assert (
         window.overlay_config.widget.findChild(
             QtWidgets.QCheckBox,
@@ -1644,10 +1689,13 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
         )
         is None
     )
+    # The overlay tab lost its global checkbox, but the per-game switch in the
+    # library tab is a different control and must survive. It is a toggle
+    # switch, not a checkbox: a QAbstractButton painted from the theme.
     assert (
-        window.steam_panel.widget.findChild(
-            QtWidgets.QCheckBox,
-            "steamOverlayToggle",
+        window.game_library_panel.widget.findChild(
+            QtWidgets.QAbstractButton,
+            "gameOverlay",
         )
         is not None
     )
@@ -1701,11 +1749,11 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     )
 
     window.tabs.setCurrentIndex(window.auto_uv_tab_index)
-    assert not window.table_panel.isHidden()
+    assert window.table_panel.isVisibleTo(window.window)
     window.window.close()
 
 
-def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
+def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1722,6 +1770,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     # The adaptive target FPS moved to the Steam tab's per-game settings.
     assert panel.widget.layout().contentsMargins().top() >= 16
@@ -1731,7 +1780,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
     )
 
 
-def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
+def test_overlay_panel_saves_manual_scale(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1750,6 +1799,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=config_path,
     )
+    qtbot.addWidget(panel.widget)
 
     # Defaults to the adaptive 1x option.
     assert panel.scale_combo.currentText() == "1x"
@@ -1761,7 +1811,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
 
-def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
+def test_overlay_panel_has_no_steam_launch_controls(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1778,6 +1828,7 @@ def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
     assert panel.widget.findChild(QtWidgets.QLineEdit, "overlaySteamLaunchLine") is None
@@ -2233,14 +2284,12 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     # hardcoding a duration that silently goes stale.
     assert 'f"Full scan (~{full_minimum}-{full_maximum} min)"' in source
     assert "Full scan (up to" not in source
-    assert "auto_uv_voltage_drop_default" in source
+    assert "uv_limit_clock_target_range_for_gpu" in source
     assert "auto-filled for" not in source
     assert "efficiency floor" not in source
     assert "Max voltage drop" not in source
     assert "Base verification length" not in source
     assert '"auto_uv_short_seconds"' not in source
-    assert "preset-aware from the GPU table" in source
-    assert "Min voltage" in source
     assert "sync_voltage_floor_from_drop" not in source
     assert "sync_voltage_drop_from_floor" not in source
     assert "Try to maintain baseline clock" in source
@@ -2248,18 +2297,17 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "QStackedWidget" in source
     assert "preset_advanced_stack.setMinimumHeight" in source
     assert "buttonClicked.connect" in source
-    assert "Auto-OC voltage target" in source
-    assert "Auto-OC clock target" in source
-    assert "auto_uv_performance_target_default" in source
+    assert "Voltage target" in source
+    assert "Core clock target" in source
+    assert "auto_uv_target_default" in source
     assert "Auto-OC table target" not in source
     assert "autoOcTargetPreview" not in source
     assert "auto_uv_performance_target_text" not in source
-    assert '"auto_oc_target_voltage_mv"' in source
-    assert '"auto_oc_target_clock_mhz"' in source
+    assert 'f"target_{field}"' in source
     assert '"power_limit_override_w"' not in source
     assert '"auto_uv_power_limit_w"' in source
     assert "powerLimitSlider" in source
-    assert '"auto_uv_min_voltage_mv"' in source
+    assert '"auto_uv_min_voltage_mv"' not in source
     assert 'options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)' in source
     assert "Core ceiling MHz" not in source
     assert "Voltage ceiling mV" not in source
@@ -2278,13 +2326,16 @@ def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "layout.setSpacing(8)" in source
     assert "preset_layout.setContentsMargins(14, 18, 14, 12)" in source
     assert "advanced_layout.setContentsMargins(18, 28, 18, 16)" in source
-    assert "form.setHorizontalSpacing(24)" in source
-    assert "form.setVerticalSpacing(10)" in source
     assert "dialog.setMinimumWidth(860)" in source
     assert "dialog.resize(860, dialog.sizeHint().height())" in source
     assert "dialog.adjustSize()" not in source
     assert "dialog.setFixedSize" not in source
-    assert "label_layout.setContentsMargins(0, 2, 12, 2)" in source
+    # Row metrics moved into the shared helpers so every settings dialog gets
+    # the same spacing rather than each dialog re-deciding it.
+    rows = Path("ui/dialogs/form_rows.py").read_text(encoding="utf-8")
+    assert "form.setHorizontalSpacing(24)" in rows
+    assert "form.setVerticalSpacing(10)" in rows
+    assert "label_layout.setContentsMargins(0, 2, 12, 2)" in rows
 
 
 def test_scan_tuning_power_limit_controls_disabled_when_power_management_disabled():
@@ -2386,20 +2437,6 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
     _ = app
     monkeypatch.setattr(
         scan_tuning,
-        "auto_uv_voltage_drop_default",
-        lambda gpu_name=None, **_kwargs: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5060 Laptop GPU",
-            value_pct=15.0,
-            floor_voltage_mv=850,
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_clock_drop_default",
-        lambda gpu_index=None, preset_id=None, **_kwargs: SimpleNamespace(value_pct=12.5),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
         "auto_uv_power_limit_default",
         lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
             watts=43,
@@ -2409,8 +2446,8 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
     )
     monkeypatch.setattr(
         scan_tuning,
-        "auto_uv_performance_target_default",
-        lambda gpu_name=None, **_kwargs: SimpleNamespace(voltage_mv=900, clock_mhz=2400),
+        "auto_uv_target_default",
+        lambda gpu_name=None, **_kwargs: SimpleNamespace(voltage_mv=None, clock_mhz=None),
     )
     monkeypatch.setattr(
         scan_tuning,
@@ -2427,8 +2464,8 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             [
                 SimpleNamespace(
                     index=0,
-                    name="NVIDIA GeForce RTX 5060 Laptop GPU",
-                    label="GPU 0 - NVIDIA GeForce RTX 5060 Laptop GPU",
+                    name="NVIDIA GeForce RTX 2050 Laptop GPU",
+                    label="GPU 0 - NVIDIA GeForce RTX 2050 Laptop GPU",
                 )
             ],
             0,
@@ -2465,15 +2502,21 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             QtWidgets.QSpinBox,
             "performanceClockSpin",
         )
+        voltage_floor = dialog.findChild(QtWidgets.QSpinBox, "efficiencyVoltageSpin")
         assert power_slider is not None and power_spin is not None
-        assert memory_spin is not None and max_drop_spin is not None
+        assert memory_spin is not None
+        assert max_drop_spin is None
         assert performance_voltage is not None and performance_clock is not None
+        assert voltage_floor is not None
         # The mobile fixed power limit grays the power control out entirely,
         # while the other scan controls stay usable.
         assert not power_slider.isEnabled()
         assert not power_spin.isEnabled()
         assert memory_spin.isEnabled()
-        assert max_drop_spin.isEnabled()
+        # An unknown GPU leaves the floor automatic. The loaded baseline probe
+        # will turn this into a 10% drop from its actual starting voltage.
+        assert voltage_floor.specialValueText() == "Auto"
+        assert voltage_floor.value() == voltage_floor.minimum()
         memory_spin.setValue(500)
         return QtWidgets.QDialog.DialogCode.Accepted
 
@@ -2491,6 +2534,7 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
     # stock limit.
     assert options is not None
     assert "auto_uv_power_limit_w" not in options
+    assert "auto_uv_min_voltage_mv" not in options
 
 
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
@@ -2505,25 +2549,6 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
     dialogs = []
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_voltage_drop_default",
-        lambda gpu_name=None: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5080",
-            value_pct=15.0,
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_clock_drop_default",
-        lambda gpu_name=None, preset_id=None: SimpleNamespace(
-            value_pct={
-                AUTO_UV_PRESET_EFFICIENCY: 11.1,
-                AUTO_UV_PRESET_BALANCED: 6.0,
-                AUTO_UV_PRESET_PERFORMANCE: 5.4,
-            }.get(preset_id, 11.1)
-        ),
-    )
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
@@ -2612,7 +2637,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert preset_group is not None
     assert power_limit_slider is not None
     assert power_limit_spin is not None
-    assert max_clock_drop_spin is not None
+    assert max_clock_drop_spin is None
     assert stack is not None
     # One Advanced page per profile — no shared adaptive page.
     assert stack.count() == 3
@@ -2626,12 +2651,10 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         return control
 
     # Every profile page carries its own preset-aware defaults.
-    for index, (expected_drop, expected_watts) in enumerate(
-        ((11.1, 383), (6.0, 405), (5.4, 450))
-    ):
-        assert page_control(
-            index, "maxClockDropSpin", QtWidgets.QDoubleSpinBox
-        ).value() == pytest.approx(expected_drop, abs=0.05)
+    for index, expected_watts in enumerate((383, 405, 450)):
+        assert stack.widget(index).findChild(
+            QtWidgets.QDoubleSpinBox, "maxClockDropSpin"
+        ) is None
         power_spin_for_page = page_control(index, "powerLimitSpin", QtWidgets.QSpinBox)
         assert power_spin_for_page.minimum() == 200
         assert power_spin_for_page.maximum() == 450
@@ -2639,8 +2662,14 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
-    assert "Max loaded clock drop" in advanced_labels
-    assert "Memory Offset" in advanced_labels
+    assert "Max loaded clock drop" not in advanced_labels
+    assert "Voltage target" in advanced_labels
+    assert "Core clock target" in advanced_labels
+    caution = dialog.findChild(QtWidgets.QLabel, "autoUvTargetCaution")
+    assert caution is not None and caution.wordWrap()
+    assert "optimized for most GPUs" in caution.text()
+    assert "only if you understand" in caution.text()
+    assert "Memory offset" in advanced_labels
     assert "Power limit" in advanced_labels
     initial_size = dialog.size()
     buttons = {
@@ -2745,26 +2774,6 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     monkeypatch.setattr(
         scan_tuning,
-        "auto_uv_voltage_drop_default",
-        lambda gpu_name=None: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5080",
-            value_pct=15.0,
-            floor_voltage_mv=850,
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_clock_drop_default",
-        lambda gpu_name=None, preset_id=None: SimpleNamespace(
-            value_pct={
-                AUTO_UV_PRESET_EFFICIENCY: 11.1,
-                AUTO_UV_PRESET_BALANCED: 6.0,
-                AUTO_UV_PRESET_PERFORMANCE: 5.4,
-            }.get(preset_id, 6.0)
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
             [
@@ -2861,20 +2870,6 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     _ = app
     monkeypatch.setattr(
         scan_tuning,
-        "auto_uv_voltage_drop_default",
-        lambda gpu_name=None: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5080",
-            value_pct=15.0,
-            floor_voltage_mv=850,
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_clock_drop_default",
-        lambda gpu_name=None, preset_id=None: SimpleNamespace(value_pct=6.0),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
         "auto_uv_power_limit_default",
         lambda max_w=None, min_w=None, default_w=None, gpu_name=None, preset_id=None: (
             SimpleNamespace(
@@ -2916,6 +2911,10 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
         ),
     )
 
+    monkeypatch.setattr(
+        scan_tuning, "auto_uv_voltage_floor_range_mv", lambda **_: (800, 1100)
+    )
+
     def accept_with_power_limit(dialog):
         stack = dialog.findChild(QtWidgets.QStackedWidget)
         assert stack is not None
@@ -2950,14 +2949,16 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     assert options["auto_uv_efficiency_power_limit_w"] == 351
     assert options["auto_uv_balanced_power_limit_w"] == 390
     assert options["auto_uv_performance_power_limit_w"] == 351
-    assert options["auto_uv_efficiency_max_clock_drop_pct"] == pytest.approx(6.0)
-    assert options["auto_uv_balanced_max_clock_drop_pct"] == pytest.approx(6.0)
-    assert options["auto_uv_performance_max_clock_drop_pct"] == pytest.approx(6.0)
+    assert "auto_uv_efficiency_max_clock_drop_pct" not in options
+    assert "auto_uv_balanced_max_clock_drop_pct" not in options
+    assert "auto_uv_performance_max_clock_drop_pct" not in options
     assert options["auto_uv_efficiency_memory_offset_mhz"] == 0
     assert "auto_uv_max_clock_drop_pct" not in options
     assert "auto_uv_memory_offset_mhz" not in options
     assert "auto_uv_tail_rise_bins" not in options
-    assert options["auto_uv_min_voltage_mv"] == 850
+    # Unedited table defaults (850/900/925 mV on the 5080) stay automatic:
+    # sent as explicit targets they became hard Auto-OC bounds (issue #109).
+    assert not any("_target_" in key for key in options)
 
 
 def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
@@ -2973,18 +2974,6 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_voltage_drop_default",
-        lambda gpu_name=None: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5080", value_pct=15.0, floor_voltage_mv=850
-        ),
-    )
-    monkeypatch.setattr(
-        scan_tuning,
-        "auto_uv_clock_drop_default",
-        lambda gpu_name=None, preset_id=None: SimpleNamespace(value_pct=6.0),
-    )
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
@@ -3189,3 +3178,77 @@ def test_curve_plot_nearest_point_uses_view_scaled_distance() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize("gpu_name,hardware_ranges", [
+    ("NVIDIA GeForce RTX 5080", True), ("Unknown GPU", True), ("Unknown GPU", False),
+])
+def test_tier_target_controls_validate_ranges_and_auto(monkeypatch, gpu_name, hardware_ranges):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+    import ui.dialogs.scan_tuning as tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    monkeypatch.setattr(tuning, "DaemonGpuClient", lambda index: SimpleNamespace(
+        capabilities=lambda: SimpleNamespace(identity=SimpleNamespace(name=gpu_name))))
+    monkeypatch.setattr(tuning, "gpu_choices_with_fallback", lambda **_: (
+        [SimpleNamespace(index=0, label=gpu_name, name=gpu_name)], 0))
+    monkeypatch.setattr(tuning, "auto_uv_voltage_floor_range_mv", lambda **_: (
+        (800, 1250) if hardware_ranges else None))
+    monkeypatch.setattr(tuning, "memory_offset_mhz_range", lambda **_: (0, 2000))
+    monkeypatch.setattr(tuning, "read_auto_uv_nvml_info", lambda *_, **__: SimpleNamespace(
+        power_management_enabled=False, power_limit_set_supported=False,
+        power_draw_w=None, graphics_clock_mhz=None, memory_clock_mhz=None,
+        power_limit_w=None, power_limit_default_w=None,
+        power_limit_min_w=None, power_limit_max_w=None,
+        supported_memory_clocks_mhz=(),
+        supported_graphics_clock_steps_mhz=(210, 3200) if hardware_ranges else (),
+    ))
+    expected = {"efficiency": (2380, 2800, 850), "balanced": (2800, 2950, 900),
+                "performance": (2800, 3098, 925)}
+    def accept(dialog):
+        dialog.show()
+        app.processEvents()
+        assert dialog.findChild(QtWidgets.QDoubleSpinBox, "maxClockDropSpin") is None
+        for tier, (low, high, voltage) in expected.items():
+            clock = dialog.findChild(QtWidgets.QSpinBox, f"{tier}ClockSpin")
+            volts = dialog.findChild(QtWidgets.QSpinBox, f"{tier}VoltageSpin")
+            assert clock.suffix() == " MHz" and volts.suffix() == " mV"
+            form = clock.parentWidget().layout()
+            labels = []
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QtWidgets.QFormLayout.LabelRole)
+                if item is not None:
+                    labels.append(item.widget().findChild(QtWidgets.QLabel).text())
+            assert labels == ["Voltage target", "Core clock target", "Memory offset", "Power limit"]
+            if gpu_name.startswith("NVIDIA"):
+                assert (clock.minimum(), clock.maximum()) == (low, high)
+                assert volts.value() == voltage
+                clock.setValue(low - 500)
+                assert clock.value() == low
+            else:
+                for spin in (clock, volts):
+                    assert spin.specialValueText() == "Auto"
+                    assert spin.value() == spin.minimum()
+                    assert spin.isEnabled() is hardware_ranges
+        dialog.hide()
+        return QtWidgets.QDialog.DialogCode.Accepted
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", accept)
+    options = tuning.select_scan_tuning(QtCore=QtCore, QtGui=QtGui,
+                                       QtWidgets=QtWidgets, parent=None, gpu_index=0)
+    assert options is not None
+    if gpu_name.startswith("NVIDIA"):
+        # The clock boxes were edited down to their minimum; the voltage boxes
+        # still hold the table default, which is not an override. Balanced and
+        # Performance minimums equal their table clocks, so those stay automatic.
+        defaults = {"efficiency": 2800, "balanced": 2800, "performance": 2950}
+        for tier, (low, _, _voltage) in expected.items():
+            if low != defaults[tier]:
+                assert options[f"auto_uv_{tier}_target_clock_mhz"] == low
+            else:
+                assert f"auto_uv_{tier}_target_clock_mhz" not in options
+            assert f"auto_uv_{tier}_target_voltage_mv" not in options
+    else:
+        assert not any("target_" in key for key in options)

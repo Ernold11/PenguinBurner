@@ -9,9 +9,10 @@ import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode.auto_uv_mode import ADAPTIVE_TIER_MODES, AUTO_UV_MODES
-from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
+from stability.q2rtx.resolution import Q2RTX_SCAN_RESOLUTIONS
 
 DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s
 
@@ -24,7 +25,12 @@ def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         prog="penguin_burner.py",
         usage="penguin_burner.py [options]",
-        description=("PenguinBurner Auto-UV scan and runtime profile utility."),
+        description=(
+            "PenguinBurner: automatic NVIDIA GPU undervolting and overclocking.\n"
+            "Run Auto-UV scans, manage the saved Efficiency/Balanced/Performance\n"
+            "profiles, drive the adaptive daemon runtime, and set up the Steam\n"
+            "launch wrapper and in-game overlay."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -40,7 +46,8 @@ def parse_arguments(argv):
         help=(
             "Discover a stable fixed-clock undervolt from the live/default "
             "NVIDIA V/F curve, step the lock voltage down through real editable "
-            "VF bins, and verify candidates with Q2RTX plus CUDA load"
+            "VF bins, and verify candidates with Q2RTX plus CUDA load. "
+            "Resume an unfinished scan automatically when the GPU and settings match"
         ),
     )
     auto_uv_group.add_argument(
@@ -89,25 +96,36 @@ def parse_arguments(argv):
         help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
-        "--auto-uv-max-clock-drop-pct",
-        type=float,
-        default=None,
-        metavar="N",
-        help=(
-            "Maximum loaded GPU core clock drop allowed during Auto-UV; "
-            "default is preset-aware from the GPU table when detected, otherwise "
-            "12.5. Example: 12 allows up to a 12%% clock drop."
-        ),
-    )
-    auto_uv_group.add_argument(
         "--auto-uv-mode",
         choices=AUTO_UV_MODES,
         default=None,
         metavar="MODE",
         help=(
-            "Auto-UV preset path. efficiency uses a flat base sweep plus a "
-            "low-voltage tail-tune pass; balanced uses the 4-bin tail sweep; "
-            "performance uses the 6-bin tail sweep plus Auto-OC."
+            "Auto-UV preset path. efficiency uses one 2-bin tail sweep to the "
+            "voltage floor; balanced uses the 2-bin tail sweep; "
+            "performance uses the 2-bin tail sweep plus Auto-OC."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-q2rtx-resolution",
+        choices=tuple(Q2RTX_SCAN_RESOLUTIONS),
+        default=None,
+        help=(
+            "Q2RTX resolution for the complete Auto-UV scan and final verification. "
+            "Default: auto (4K on desktop RTX 4080/Super, 4090, 5070 Ti, "
+            "5080 and 5090, plus RTX 4090/5090 Laptop; "
+            "1080p on all others, including unknown GPUs). "
+            "Use 1080p to compare a lighter rendering workload. CUDA is unchanged."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-retry-after-freeze",
+        action="store_true",
+        help=(
+            "CLI only; off by default. On an explicit scan resume after a hard "
+            "freeze, allow retrying the interrupted clock climb at higher voltage. "
+            "May require further reboots. Keeps the failed-point blacklist, "
+            "predicted stability margins, floor caution and voltage headroom."
         ),
     )
     auto_uv_group.add_argument(
@@ -116,8 +134,9 @@ def parse_arguments(argv):
         default=None,
         metavar="mV",
         help=(
-            "Lowest voltage bin Auto-UV may try. Overrides the detected GPU "
-            "table floor and the percentage-drop fallback."
+            "Lowest voltage for the selected undervolt point. Overrides the detected GPU "
+            "table floor and the percentage-drop fallback. Lower-voltage curve "
+            "transitions are checked separately at their lower clocks."
         ),
     )
     auto_uv_group.add_argument(
@@ -144,14 +163,25 @@ def parse_arguments(argv):
             "minimum and maximum power-limit range."
         ),
     )
-    auto_uv_group.add_argument(
+    boost_group = auto_uv_group.add_mutually_exclusive_group()
+    boost_group.add_argument(
+        "--auto-uv-boost",
+        choices=("standard", "aggressive"),
+        default=None,
+        help=(
+            "CLI-only boost headroom for every scanned tier: Standard Boost "
+            "(default) uses 2 rising tail bins (+30 MHz nominal); Aggressive "
+            "Boost uses 4 (+60 MHz nominal). Does not enable freeze retries."
+        ),
+    )
+    boost_group.add_argument(
         "--auto-uv-tail-rise-bins",
         type=int,
         default=None,
         metavar="N",
         help=(
             "How many voltage bins can the voltage curve rise above the locked "
-            "undervolt point."
+            "undervolt point. Defaults to 2 for every tier; 0 makes the tail flat."
         ),
     )
     auto_uv_group.add_argument(
@@ -177,26 +207,15 @@ def parse_arguments(argv):
     for tier in ADAPTIVE_TIER_MODES:
         tier_label = tier.capitalize()
         auto_uv_group.add_argument(
-            f"--auto-uv-{tier}-max-clock-drop-pct",
-            type=float,
-            default=None,
-            metavar="N",
-            help=(
-                f"Full-scan override: the {tier_label} tier's maximum loaded "
-                "clock drop. Only meaningful with --auto-uv-mode adaptive; "
-                "absent tiers fall back to --auto-uv-max-clock-drop-pct, then "
-                "the GPU table."
-            ),
-        )
-        auto_uv_group.add_argument(
             f"--auto-uv-{tier}-power-limit-w",
             type=int,
             default=None,
             metavar="W",
             help=(
                 f"Full-scan override: the {tier_label} tier's power limit in "
-                "watts, applied at that tier's final verification and saved "
-                "with its profile. Only meaningful with --auto-uv-mode adaptive."
+                "watts, applied for that tier's baseline, descent, final "
+                "verification, and saved profile. Only meaningful with "
+                "--auto-uv-mode adaptive."
             ),
         )
         auto_uv_group.add_argument(
@@ -212,6 +231,18 @@ def parse_arguments(argv):
                 "--auto-uv-mode adaptive."
             ),
         )
+        for field, unit in (("voltage", "mV"), ("clock", "MHz")):
+            suffix = "voltage_mv" if field == "voltage" else "clock_mhz"
+            auto_uv_group.add_argument(
+                f"--auto-uv-{tier}-target-{suffix.replace('_', '-')}",
+                type=int, default=None, metavar=unit,
+                help=(
+                    f"Custom {tier_label} {field} target for a single-tier or full scan. "
+                    "Defaults use the GPU table. Clock ranges: Efficiency -15%% to Balanced; "
+                    "Balanced from Efficiency to Performance; Performance from Balanced "
+                    "to Performance +5%%. Change only if you understand GPU tuning."
+                ),
+            )
     auto_uv_group.add_argument(
         "--auto-oc-target-voltage-mv",
         type=int,
@@ -219,7 +250,8 @@ def parse_arguments(argv):
         metavar="mV",
         help=(
             "Performance-mode Auto-OC voltage cap in mV. Overrides the detected "
-            "GPU table target."
+            "GPU table target. Defaults are optimized for most GPUs; change only "
+            "if you understand voltage/frequency tuning and instability risks."
         ),
     )
     auto_uv_group.add_argument(
@@ -229,7 +261,8 @@ def parse_arguments(argv):
         metavar="MHz",
         help=(
             "Performance-mode Auto-OC core clock cap in MHz. Overrides the detected "
-            "GPU table target."
+            "GPU table target. Defaults are optimized for most GPUs; change only "
+            "if you understand voltage/frequency tuning and instability risks."
         ),
     )
     daemon_group.add_argument(
@@ -254,8 +287,12 @@ def parse_arguments(argv):
         "--install-systemd-service",
         action="store_true",
         help=(
-            "Install the PenguinBurner daemon service when absent, or update "
-            "its persistent boot profile through the running daemon."
+            "Install or update the PenguinBurner daemon service: refresh the "
+            "daemon binary at /var/opt/penguin-burner/libexec, rewrite the "
+            "unit, and restart it. With profile options, also set the "
+            "persistent boot profile; without them, an existing boot profile "
+            "is kept. Asks for authorization (pkexec/sudo) when not run as "
+            "root."
         ),
     )
     daemon_group.add_argument(
@@ -263,20 +300,38 @@ def parse_arguments(argv):
         "--deinstall-systemd-service",
         dest="uninstall_systemd_service",
         action="store_true",
-        help="Stop and remove the persistent PenguinBurner systemd service.",
+        help=(
+            "Stop and remove the persistent PenguinBurner systemd service. "
+            "Asks for authorization (pkexec/sudo) when not run as root."
+        ),
     )
     daemon_group.add_argument(
         "--migrate-to-daemon-service",
         action="store_true",
         help=(
             "Install penguin-burnerd.service and migrate an existing "
-            "legacy PenguinBurner.service when possible."
+            "legacy PenguinBurner.service when possible. Asks for "
+            "authorization (pkexec/sudo) when not run as root."
         ),
     )
     daemon_group.add_argument(
         "--daemon-status",
         action="store_true",
         help="Print PenguinBurner hardware daemon status and exit.",
+    )
+    daemon_group.add_argument(
+        "--set-main-gpu",
+        metavar="GPU-UUID",
+        default="",
+        help=(
+            "On a multi-NVIDIA-GPU system, make a saved startup GPU the "
+            "daemon's main monitored GPU after boot."
+        ),
+    )
+    daemon_group.add_argument(
+        "--clear-main-gpu",
+        action="store_true",
+        help="Clear the explicit Main GPU and restore last-saved-GPU behavior.",
     )
     daemon_group.add_argument(
         "--restore-stock",

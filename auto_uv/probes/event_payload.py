@@ -46,7 +46,10 @@ def probe_summary_event_payload(
         "temp_c": _rounded(read_field(probe, "avg_temperature_c")),
         "fan_pct": _rounded(read_field(probe, "avg_fan_speed_pct")),
         "perf_cap_reason": _string_or_empty(read_field(probe, "perf_cap_reason")),
-        "efficiency_fps_per_w": _rounded(read_field(probe, "efficiency_fps_per_w")),
+        "hw_power_brake_samples": int(
+            read_field(probe, "hw_power_brake_samples") or 0
+        ),
+        "efficiency_fps_per_w": _rounded(read_field(probe, "efficiency_fps_per_w"), precision=4),
         "efficiency_mhz_per_w": _rounded(read_field(probe, "efficiency_mhz_per_w")),
         "decision": str(decision),
         "reason": str(reason),
@@ -54,10 +57,10 @@ def probe_summary_event_payload(
     }
 
 
-def _rounded(value: float | int | None) -> float | None:
+def _rounded(value: float | None, *, precision: int = 2) -> float | None:
     if value is None:
         return None
-    return round(float(value), 2)
+    return round(float(value), precision)
 
 
 def _string_or_empty(value) -> str:

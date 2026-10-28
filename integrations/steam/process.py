@@ -1,114 +1,35 @@
-"""Steam client process control for the fallback write path and init flow."""
+"""Steam client process control for the fallback write path and init flow.
+
+Reaching the host from inside a Flatpak is the same problem for every
+launcher, and is solved once in integrations/launchers/host_process.py.
+"""
 
 from __future__ import annotations
 
+import json
 import os
-from pathlib import Path
 import re
-import shutil
-import subprocess
-import time
+import sys
+from pathlib import Path
 
+from integrations.launchers.host_process import (
+    HOST_PGREP,
+    host_pgrep,
+    run_on_host,
+    running_in_flatpak,
+    start_on_host,
+)
+
+from .users import steam_installation
 
 _STEAM_LAUNCH_APPID_RE = re.compile(r"SteamLaunch AppId=(\d+)")
-
-
-FLATPAK_INFO_PATH = Path("/.flatpak-info")
-HOST_PGREP = "/usr/bin/pgrep"
-HOST_SHELL = "/usr/bin/sh"
-HOST_WORKING_DIRECTORY = "/tmp"
-
-
-def running_in_flatpak() -> bool:
-    return bool(os.environ.get("FLATPAK_ID", "").strip()) or FLATPAK_INFO_PATH.is_file()
-
-
-def _flatpak_host_command(command: list[str]) -> list[str] | None:
-    flatpak_spawn = shutil.which("flatpak-spawn")
-    if not flatpak_spawn:
-        return None
-    # flatpak-spawn otherwise mirrors the sandbox cwd. App-only paths such as
-    # /app do not exist on the host, so the portal rejects the command before
-    # Steam ever sees it. A neutral host directory makes every caller
-    # independent of how the Flatpak itself was launched.
-    return [
-        flatpak_spawn,
-        "--host",
-        f"--directory={HOST_WORKING_DIRECTORY}",
-        *command,
-    ]
-
-
-def _steam_executable() -> str | None:
-    if not running_in_flatpak():
-        return shutil.which("steam")
-    command = _flatpak_host_command([HOST_SHELL, "-c", "command -v steam"])
-    if command is None:
-        return None
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=3.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    candidate = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-    return candidate if candidate.startswith("/") else None
-
-
-def _steam_command(*args: str) -> list[str] | None:
-    executable = _steam_executable()
-    if executable is None:
-        return None
-    command = [executable, *args]
-    return _flatpak_host_command(command) if running_in_flatpak() else command
-
-
-def _pgrep(*args: str) -> bool:
-    # Flatpak has its own PID namespace, so query the unprivileged host
-    # session through flatpak-spawn instead of looking inside the sandbox.
-    command = [HOST_PGREP, *args]
-    if running_in_flatpak():
-        command = _flatpak_host_command(command) or []
-    if not command:
-        return False
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
 
 
 def steam_running() -> bool:
     # ~/.steam/steam.pid goes stale after exit; a live process check is the
     # only reliable signal.
-    return _pgrep("-x", "steam")
-
-
-def steam_game_running(app_id: str) -> bool:
-    """A Steam game session for this app is alive right now.
-
-    Steam launches every game (native and Proton) under its reaper process,
-    whose command line carries ``SteamLaunch AppId=<id>`` for the whole
-    session lifetime — the one stable signal for "this game is running".
-    The ``[S]`` class keeps the regex from matching a command line that
-    carries the pattern itself (our own flatpak-spawn helper, a sibling
-    checker): the pattern text never matches the pattern.
-    """
-    if not str(app_id).isdigit():
-        return False
-    return _pgrep("-f", rf"[S]teamLaunch AppId={app_id}([^0-9]|$)")
+    result = run_on_host([HOST_PGREP, "-x", "steam"])
+    return result is not None and result.returncode == 0
 
 
 def running_steam_game_ids() -> frozenset[str] | None:
@@ -124,98 +45,139 @@ def running_steam_game_ids() -> frozenset[str] | None:
     "no games running" from "couldn't tell" instead of misreading a stalled
     probe as every game having exited.
     """
-    command = [HOST_PGREP, "-af", r"[S]teamLaunch AppId="]
-    if running_in_flatpak():
-        command = _flatpak_host_command(command) or []
-    if not command:
-        return None
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=3.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    # returncode 1 = ran fine, no matches (empty set); anything but 0/1 = the
-    # check failed and the result is not trustworthy.
-    if result.returncode not in (0, 1):
+    matches = host_pgrep(r"[S]teamLaunch AppId=")
+    if matches is None:
         return None
     ids: set[str] = set()
-    for line in result.stdout.splitlines():
+    for _pid, line in matches:
         match = _STEAM_LAUNCH_APPID_RE.search(line)
         if match:
             ids.add(match.group(1))
     return frozenset(ids)
 
 
-def steam_available() -> bool:
-    return _steam_executable() is not None
+def running_steam_processes() -> dict[str, tuple[int, ...]] | None:
+    """Recovery discovery only; kernel process events own the lifetime."""
+    matches = host_pgrep(r"[S]teamLaunch AppId=")
+    if matches is None:
+        return None
+    games: dict[str, tuple[int, ...]] = {}
+    for pid, line in matches:
+        match = _STEAM_LAUNCH_APPID_RE.search(line)
+        if match:
+            app_id = match.group(1)
+            games[app_id] = (*games.get(app_id, ()), pid)
+    return games
 
 
-def shutdown_steam(*, timeout_s: float = 30.0) -> bool:
-    """Ask Steam to exit cleanly and wait until the process is gone."""
+# Read only launcher identity, never export the rest of a process environment.
+_STEAM_INSTALLATIONS = """
+import os
+from pathlib import Path
+kinds = set()
+for proc in Path('/proc').iterdir():
+    try:
+        if not proc.name.isdigit() or proc.stat().st_uid != os.getuid():
+            continue
+        if (proc / 'comm').read_text().strip() != 'steam':
+            continue
+        env = (proc / 'environ').read_bytes().split(b'\\0')
+        kinds.add('flatpak' if b'FLATPAK_ID=com.valvesoftware.Steam' in env else 'native')
+    except FileNotFoundError:
+        continue
+    except (OSError, ValueError):
+        kinds.add('unknown')
+print(' '.join(sorted(kinds)))
+"""
+
+
+def steam_matches_installation(home: Path | None = None) -> bool:
+    """Do not send global CDP/IPC commands to another Steam installation."""
+    result = run_on_host(['/usr/bin/python3', '-c', _STEAM_INSTALLATIONS], capture=True)
+    if result is None or result.returncode:
+        return False
+    expected = 'flatpak' if steam_installation(home).flatpak else 'native'
+    return set((result.stdout or '').split()) <= {expected}
+
+
+def steam_available(home: Path | None = None) -> bool:
+    return steam_installation(home).command() is not None
+
+
+# Open identity-bound handles BEFORE requesting shutdown. An operation timeout
+# bounds the settings workflow; it is never evidence that a game failed/exited.
+_STEAM_SHUTDOWN = r'''
+import os, selectors, subprocess, sys, json, time
+from pathlib import Path
+handles = []
+try:
+    with selectors.DefaultSelector() as selector:
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fd = os.pidfd_open(int(entry.name))
+            except ProcessLookupError:
+                continue
+            try:
+                if entry.stat().st_uid == os.getuid() and (entry / 'comm').read_text().strip() == 'steam':
+                    selector.register(fd, selectors.EVENT_READ)
+                    handles.append(fd)
+                else:
+                    os.close(fd)
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                os.close(fd)
+        if selector.get_map():
+            subprocess.run(json.loads(sys.argv[1]), timeout=10, check=True)
+        deadline = time.monotonic() + float(sys.argv[2])
+        while selector.get_map():
+            events = selector.select(max(0, deadline - time.monotonic()))
+            if not events:
+                raise RuntimeError('Steam shutdown was not confirmed')
+            for key, _ in events:
+                selector.unregister(key.fd)
+finally:
+    for fd in handles:
+        os.close(fd)
+'''
+
+
+def shutdown_steam(*, timeout_s: float = 30.0, home: Path | None = None) -> bool:
+    """Ask Steam to exit and wait for kernel process-exit notifications."""
     if not steam_running():
         return True
-    command = _steam_command("-shutdown")
+    if not steam_matches_installation(home):
+        return False
+    command = steam_installation(home).command("-shutdown")
     if command is None:
         return False
-    try:
-        subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    python = (os.environ.get("PENGUIN_BURNER_HOST_PYTHON") or "/usr/bin/python3"
+              if running_in_flatpak() else sys.executable)
+    result = run_on_host(
+        [python, "-c", _STEAM_SHUTDOWN, json.dumps(command), str(timeout_s)],
+        timeout=timeout_s + 13.0,
+    )
+    return result is not None and result.returncode == 0 and not steam_running()
+
+
+def launch_steam(*, silent: bool = True, home: Path | None = None) -> bool:
+    if not steam_matches_installation(home):
         return False
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not steam_running():
-            return True
-        time.sleep(0.5)
-    return not steam_running()
+    command = steam_installation(home).command(*(["-silent"] if silent else []))
+    return command is not None and start_on_host(command)
 
 
-def launch_steam(*, silent: bool = True) -> bool:
-    command = _steam_command(*(["-silent"] if silent else []))
-    if command is None:
+def restart_steam(*, shutdown_timeout_s: float = 30.0, silent: bool = True, home: Path | None = None) -> bool:
+    if not shutdown_steam(timeout_s=shutdown_timeout_s, home=home):
         return False
-    try:
-        subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError:
-        return False
-    return True
+    return launch_steam(silent=silent, home=home)
 
 
-def restart_steam(*, shutdown_timeout_s: float = 30.0, silent: bool = True) -> bool:
-    if not shutdown_steam(timeout_s=shutdown_timeout_s):
-        return False
-    return launch_steam(silent=silent)
-
-
-def launch_steam_game(app_id: str) -> bool:
+def launch_steam_game(app_id: str, *, home: Path | None = None) -> bool:
     """Ask the running Steam client to launch a game (detached)."""
     if not str(app_id).isdigit():
         return False
-    command = _steam_command("-applaunch", str(app_id))
-    if command is None:
+    if not steam_matches_installation(home):
         return False
-    try:
-        subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError:
-        return False
-    return True
+    command = steam_installation(home).command("-applaunch", str(app_id))
+    return command is not None and start_on_host(command)

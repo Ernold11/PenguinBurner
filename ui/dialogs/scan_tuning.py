@@ -1,31 +1,36 @@
 from __future__ import annotations
 
-import html
-
 from auto_uv.scan_mode.auto_uv_mode import adaptive_tier_option_key
+from auto_uv.scan_mode.uv_limits import uv_limit_clock_target_range_for_gpu
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from ..assets import asset_image_path
 from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
-from ui.features.tuning.tuning import AUTO_UV_PRESET_ADAPTIVE
-from ui.features.tuning.tuning import AUTO_UV_PRESET_BALANCED
-from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
-from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
-from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from ui.features.tuning.tuning import auto_uv_clock_drop_default
-from ui.features.tuning.tuning import auto_uv_voltage_floor_range_mv
-from ui.features.tuning.tuning import auto_uv_nvml_info_text
-from ui.features.tuning.tuning import auto_uv_performance_preset_label
-from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
-from ui.features.tuning.tuning import auto_uv_performance_target_default
-from ui.features.tuning.tuning import auto_uv_power_limit_default
-from ui.features.tuning.tuning import auto_uv_preset
-from ui.features.tuning.tuning import auto_uv_scan_estimate_minutes
-from ui.features.tuning.tuning import auto_uv_scan_estimate_text
-from ui.features.tuning.tuning import auto_uv_voltage_drop_default
-from ui.features.tuning.tuning import memory_offset_mhz_range
-from ui.features.tuning.tuning import read_auto_uv_nvml_info
-from .error_details import qt_flags
+from ui.features.tuning.tuning import (
+    AUTO_UV_PRESET_ADAPTIVE,
+    AUTO_UV_PRESET_BALANCED,
+    AUTO_UV_PRESET_EFFICIENCY,
+    AUTO_UV_PRESET_PERFORMANCE,
+    GPU_UNDERVOLTING_PURPOSE_TEXT,
+    auto_uv_nvml_info_text,
+    auto_uv_performance_preset_label,
+    auto_uv_performance_preset_tooltip,
+    auto_uv_power_limit_default,
+    auto_uv_preset,
+    auto_uv_scan_estimate_minutes,
+    auto_uv_scan_estimate_text,
+    auto_uv_target_default,
+    auto_uv_voltage_floor_range_mv,
+    memory_offset_mhz_range,
+    read_auto_uv_nvml_info,
+)
 
+from ..assets import asset_image_path
+from .error_details import qt_flags
+from .form_rows import (
+    add_form_row,
+    dialog_form_layout,
+    install_spinbox_enter_commit_filter,
+    wrapped_tooltip,
+)
 
 SCAN_SCOPE_FULL = "full"
 SCAN_SCOPE_SELECTED_PROFILE = "selected-profile"
@@ -71,30 +76,28 @@ def select_scan_tuning(
     def gpu_name_for(index: int) -> str | None:
         try:
             name = gpu_client_for(index).capabilities().identity.name.strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return name or None
 
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
     gpu_combo.setMinimumWidth(360)
-    size_adjust_policy = getattr(
-        getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox),
-        "AdjustToContents",
-    )
+    size_adjust_policy = getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox).AdjustToContents
     gpu_combo.setSizeAdjustPolicy(size_adjust_policy)
     for choice in gpu_choices:
         gpu_combo.addItem(choice.label, int(choice.index))
+    gpu_combo.setEnabled(len(gpu_choices) > 1)
     selected_combo_index = _gpu_combo_index(gpu_combo, selected_gpu_index)
     if selected_combo_index >= 0:
         gpu_combo.setCurrentIndex(selected_combo_index)
 
     gpu_group = QtWidgets.QGroupBox("GPU")
     gpu_group.setObjectName("gpuSelectionGroup")
-    gpu_layout = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    gpu_layout = dialog_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
     gpu_layout.setContentsMargins(14, 18, 14, 12)
     gpu_group.setLayout(gpu_layout)
-    _add_form_row(
+    add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=gpu_layout,
@@ -113,7 +116,7 @@ def select_scan_tuning(
         qt_flags(QtCore.Qt, "TextInteractionFlag", "TextSelectableByMouse")
     )
     gpu_nvml_info.setMinimumWidth(360)
-    _add_form_row(
+    add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=gpu_layout,
@@ -142,7 +145,7 @@ def select_scan_tuning(
     full_scan_button.setCheckable(True)
     full_scan_button.setProperty("scopeId", SCAN_SCOPE_FULL)
     full_scan_button.setToolTip(
-        _wrapped_tooltip(
+        wrapped_tooltip(
             "Scan Efficiency, Balanced, and Performance in one run. The "
             f"scan-only estimate is {auto_uv_scan_estimate_text(AUTO_UV_PRESET_ADAPTIVE)}. "
             "Each profile keeps its own Advanced settings: click a profile "
@@ -156,7 +159,7 @@ def select_scan_tuning(
         "scopeId", SCAN_SCOPE_SELECTED_PROFILE
     )
     selected_profile_button.setToolTip(
-        _wrapped_tooltip(
+        wrapped_tooltip(
             "Scan only the Efficiency, Balanced, or Performance preset selected below."
         )
     )
@@ -197,13 +200,13 @@ def select_scan_tuning(
     preset_buttons = {}
     preset_tooltips = {
         "efficiency": (
-            "Deepest undervolt: accepts the largest loaded clock drop and "
-            "prefers the best FPS per watt. The exact clock-drop allowance is "
-            "editable under Advanced."
+            "Deepest undervolt: selects the highest measured FPS per watt "
+            "among stable candidates, with "
+            "2 rising tail bins."
         ),
         "balanced": (
             "Try to maintain baseline clock while lowering the voltage; "
-            "the tail of the curve goes 4 V/F bins up."
+            "the tail of the curve goes 2 V/F bins up."
         ),
         "performance": auto_uv_performance_preset_tooltip(),
     }
@@ -226,7 +229,7 @@ def select_scan_tuning(
         button.setDefault(False)
         button.setProperty("presetId", preset.preset_id)
         button.setProperty("scanIncluded", "false")
-        button.setToolTip(_wrapped_tooltip(preset_tooltips[preset.preset_id]))
+        button.setToolTip(wrapped_tooltip(preset_tooltips[preset.preset_id]))
         button.setToolTipDuration(20000)
         preset_button_group.addButton(button)
         preset_buttons[preset.preset_id] = button
@@ -266,8 +269,7 @@ def select_scan_tuning(
     advanced_layout.setContentsMargins(18, 28, 18, 16)
     advanced_layout.setSpacing(10)
 
-    # Every profile owns a full Advanced page (clock drop, memory offset,
-    # power limit, plus its preset-specific fields). The pages stay editable
+    # Every profile owns the same Advanced controls. The pages stay editable
     # in both scopes: a full scan runs all three profiles, each with the
     # values tuned on its page.
     preset_advanced_stack = QtWidgets.QStackedWidget()
@@ -292,86 +294,57 @@ def select_scan_tuning(
     tier_controls: dict[str, dict] = {}
     for preset_id in _PRESET_ORDER:
         page = QtWidgets.QWidget()
-        form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+        form = dialog_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
         page.setLayout(form)
         controls: dict = {"page": page}
         tier_controls[preset_id] = controls
 
-        if preset_id == AUTO_UV_PRESET_EFFICIENCY:
-            floor_spin = QtWidgets.QSpinBox()
-            floor_spin.setObjectName("voltageFloorSpin")
-            floor_spin.setSuffix(" mV")
-            floor_spin.setSingleStep(5)
-            floor_spin.setFixedWidth(136)
-            controls["floor"] = floor_spin
-            _latched(floor_spin, controls, "floor")
-            _add_form_row(
-                QtCore=QtCore,
-                QtWidgets=QtWidgets,
-                form_layout=form,
-                text="Min voltage",
-                widget=floor_spin,
-                tooltip=(
-                    "Lowest V/F voltage bin Auto-UV may try in Efficiency. The "
-                    "default comes from PenguinBurner's GPU table when detected; "
-                    "unknown GPUs use a 10% fallback from the reference voltage."
-                ),
-            )
-
-        if preset_id == AUTO_UV_PRESET_PERFORMANCE:
-            oc_voltage_spin = QtWidgets.QSpinBox()
-            oc_voltage_spin.setObjectName("performanceVoltageSpin")
-            oc_voltage_spin.setRange(700, 1250)
-            oc_voltage_spin.setSuffix(" mV")
-            oc_voltage_spin.setSingleStep(5)
-            oc_voltage_spin.setFixedWidth(136)
-            oc_clock_spin = QtWidgets.QSpinBox()
-            oc_clock_spin.setObjectName("performanceClockSpin")
-            oc_clock_spin.setRange(1000, 4000)
-            oc_clock_spin.setSuffix(" MHz")
-            oc_clock_spin.setSingleStep(15)
-            oc_clock_spin.setFixedWidth(136)
-            controls["oc_voltage"] = oc_voltage_spin
-            controls["oc_clock"] = oc_clock_spin
-            _latched(oc_voltage_spin, controls, "oc_voltage")
-            _latched(oc_clock_spin, controls, "oc_clock")
-            _add_form_row(
-                QtCore=QtCore,
-                QtWidgets=QtWidgets,
-                form_layout=form,
-                text="Auto-OC voltage target",
-                widget=oc_voltage_spin,
-                tooltip=(
-                    "Editable voltage cap for the internal Performance Auto-OC pass."
-                ),
-            )
-            _add_form_row(
-                QtCore=QtCore,
-                QtWidgets=QtWidgets,
-                form_layout=form,
-                text="Auto-OC clock target",
-                widget=oc_clock_spin,
-                tooltip=(
-                    "Editable core clock cap for the internal Performance Auto-OC pass."
-                ),
-            )
-
-        clock_drop_spin = _double_spin(QtWidgets, 1.0, 30.0, 10.0, "%")
-        clock_drop_spin.setObjectName("maxClockDropSpin")
-        controls["clock_drop"] = clock_drop_spin
-        _latched(clock_drop_spin, controls, "clock_drop")
-        _add_form_row(
-            QtCore=QtCore,
-            QtWidgets=QtWidgets,
-            form_layout=form,
-            text="Max loaded clock drop",
-            widget=clock_drop_spin,
-            tooltip=(
-                "How much loaded core-clock degradation this profile may "
-                "accept. The default is preset-aware from the GPU table when "
-                "detected; unknown GPUs use a generic fallback."
+        for field, label, unit, step, tooltip in (
+            (
+                "voltage",
+                "Voltage target",
+                "mV",
+                5,
+                ("Voltage target for this tier after the normal voltage sweep. The rising "
+                "tail can operate above this anchor; it is not a strict voltage limit."),
             ),
+            (
+                "clock",
+                "Core clock target",
+                "MHz",
+                15,
+                ("Clock target for this tier. A lower custom target is tested after the "
+                "voltage sweep; the two-bin tail adds nominal boost headroom. "
+                "The scan may choose a lower tested clock if the target is unsafe."),
+            ),
+        ):
+            spin = QtWidgets.QSpinBox()
+            spin.setObjectName(f"{preset_id}{field.title()}Spin")
+            spin.setSuffix(f" {unit}")
+            spin.setSingleStep(step)
+            spin.setFixedWidth(136)
+            controls[f"target_{field}"] = spin
+            _latched(spin, controls, f"target_{field}")
+            add_form_row(
+                QtCore=QtCore,
+                QtWidgets=QtWidgets,
+                form_layout=form,
+                text=label,
+                widget=spin,
+                tooltip=tooltip,
+            )
+
+        target_caution = QtWidgets.QLabel(
+            "Default targets are optimized for most GPUs. Change them only "
+            "if you understand GPU voltage/frequency tuning and the risks "
+            "of instability or crashes."
         )
+        target_caution.setObjectName("autoUvTargetCaution")
+        target_caution.setWordWrap(True)
+        target_caution.setAlignment(
+            qt_flags(QtCore.Qt, "AlignmentFlag", "AlignCenter")
+        )
+        form.addRow(target_caution)
 
         memory_spin = QtWidgets.QSpinBox()
         memory_spin.setObjectName("memoryOffsetSpin")
@@ -418,11 +391,11 @@ def select_scan_tuning(
                 "so Performance can reuse the Balanced downsweep instead of "
                 "re-running it."
             )
-        _add_form_row(
+        add_form_row(
             QtCore=QtCore,
             QtWidgets=QtWidgets,
             form_layout=form,
-            text="Memory Offset",
+            text="Memory offset",
             widget=memory_widget,
             tooltip=memory_tooltip,
         )
@@ -448,18 +421,18 @@ def select_scan_tuning(
         controls["power_slider"] = power_slider
         controls["power_spin"] = power_spin
         _latched(power_spin, controls, "power")
-        _add_form_row(
+        add_form_row(
             QtCore=QtCore,
             QtWidgets=QtWidgets,
             form_layout=form,
             text="Power limit",
             widget=power_widget,
             tooltip=(
-                "Power limit in watts applied at this profile's final "
-                "verification and saved with its profile. The range comes "
-                "from NVML for the selected GPU; the default position is "
-                "preset-aware (savings-biased presets cap below stock, "
-                "Performance keeps the stock budget)."
+                "Power limit in watts applied to this profile's stock "
+                "baseline, descent, final verification, and saved profile. "
+                "The range comes from NVML for the selected GPU; the "
+                "default position is preset-aware (Efficiency caps below "
+                "stock, Balanced and Performance keep the stock budget)."
             ),
         )
 
@@ -498,6 +471,12 @@ def select_scan_tuning(
         the user already edited (per-profile latches) keep their value; only
         their ranges are refreshed (Qt clamps out-of-range values).
         """
+        if not gpu_choices:
+            gpu_nvml_info.setText(
+                "No NVIDIA GPU detected. Close this dialog, check the GPU driver "
+                "and PenguinBurner hardware service, then open Setup Auto Undervolt again."
+            )
+            return
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
         client = gpu_client_for(selected)
         info = read_auto_uv_nvml_info(selected, gpu_client=client)
@@ -514,14 +493,7 @@ def select_scan_tuning(
             ),
             None,
         )
-        drop_default = auto_uv_voltage_drop_default(gpu_name=gpu_name)
-        floor_default_mv = int(
-            getattr(drop_default, "floor_voltage_mv", None) or 850
-        )
-        oc_target = auto_uv_performance_target_default(
-            gpu_name=getattr(drop_default, "gpu_name", None) or gpu_name,
-        )
-        floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(
+        voltage_bounds = auto_uv_voltage_floor_range_mv(
             gpu_index=selected,
             gpu_client=client,
         )
@@ -533,35 +505,46 @@ def select_scan_tuning(
         try:
             for preset_id in _PRESET_ORDER:
                 controls = tier_controls[preset_id]
-                floor_spin = controls.get("floor")
-                if floor_spin is not None:
-                    floor_spin.setRange(floor_lo, floor_hi)
-                    if not bool(controls["floor_touched"]["value"]):
-                        floor_spin.setValue(
-                            max(floor_lo, min(floor_default_mv, floor_hi))
-                        )
-                oc_voltage_spin = controls.get("oc_voltage")
-                if oc_voltage_spin is not None and not bool(
-                    controls["oc_voltage_touched"]["value"]
+                target = auto_uv_target_default(gpu_name=gpu_name, profile_id=preset_id)
+                clock_bounds = uv_limit_clock_target_range_for_gpu(gpu_name, preset_id)
+                supported_clocks = tuple(
+                    getattr(info, "supported_graphics_clock_steps_mhz", ()) or ()
+                )
+                if clock_bounds is None and supported_clocks:
+                    clock_bounds = (min(supported_clocks), max(supported_clocks))
+                for key, default, bounds, step in (
+                    ("target_voltage", target.voltage_mv, voltage_bounds, 5),
+                    ("target_clock", target.clock_mhz, clock_bounds, 15),
                 ):
-                    oc_voltage_spin.setValue(
-                        int(getattr(oc_target, "voltage_mv", None) or 950)
+                    spin = controls[key]
+                    touched = bool(controls[f"{key}_touched"]["value"])
+                    previous = (
+                        _configured_target_value(controls, key) if touched else None
                     )
-                oc_clock_spin = controls.get("oc_clock")
-                if oc_clock_spin is not None and not bool(
-                    controls["oc_clock_touched"]["value"]
-                ):
-                    oc_clock_spin.setValue(
-                        int(getattr(oc_target, "clock_mhz", None) or 3000)
+                    if bounds is None:
+                        controls[f"{key}_auto_value"] = 0
+                        spin.setRange(0, 0)
+                        spin.setSpecialValueText("Auto")
+                        spin.setEnabled(False)
+                        continue
+                    low, high = bounds
+                    auto_value = max(0, int(low) - step) if default is None else None
+                    controls[f"{key}_auto_value"] = auto_value
+                    # An unedited table default is "automatic": the scan must
+                    # not receive it as an explicit, hard target.
+                    controls[f"{key}_default_value"] = default
+                    spin.setEnabled(True)
+                    spin.setSpecialValueText("Auto" if auto_value is not None else "")
+                    spin.setRange(
+                        auto_value if auto_value is not None else int(low), int(high)
                     )
-                if not bool(controls["clock_drop_touched"]["value"]):
-                    controls["clock_drop"].setValue(
-                        float(
-                            auto_uv_clock_drop_default(
-                                gpu_name=gpu_name,
-                                preset_id=preset_id,
-                            ).value_pct
-                        )
+                    value = previous if touched and previous is not None else default
+                    spin.setValue(
+                        max(int(low), min(int(high), int(value)))
+                        if value is not None
+                        else auto_value
+                        if auto_value is not None
+                        else int(low)
                     )
                 controls["memory"].setRange(
                     int(memory_min_mt_s) // 2,
@@ -612,9 +595,9 @@ def select_scan_tuning(
     # A full scan reuses the Balanced downsweep for Performance only when
     # both tiers descend at the same memory clock, so in that scope the two
     # memory boxes mirror each other. Efficiency stays independent, and the
-    # power limit and clock drop stay per-tier: descents run at stock power,
-    # and the engine gate validates the donated endpoint against
-    # Performance's clock floor itself, falling back to a full descent.
+    # power limits stay per-tier. A Balanced descent may be
+    # donated only when Performance uses the same power and memory policy;
+    # otherwise Performance runs its own capped baseline and descent.
     balanced_memory_spin = tier_controls[AUTO_UV_PRESET_BALANCED]["memory"]
     performance_memory_spin = tier_controls[AUTO_UV_PRESET_PERFORMANCE]["memory"]
 
@@ -680,23 +663,26 @@ def select_scan_tuning(
     )
     start_button = buttons.addButton(
         "Start Auto Undervolt",
-        getattr(role_enum, "AcceptRole"),
+        role_enum.AcceptRole,
     )
-    buttons.addButton(getattr(standard_enum, "Cancel"))
+    buttons.addButton(standard_enum.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
+    start_button.setToolTip(
+        "Resume an unfinished scan when the GPU and settings match; otherwise start a new scan."
+    )
     start_button.setDefault(True)
+    start_button.setEnabled(bool(gpu_choices))
+    for group in (scope_group, preset_group, advanced_group):
+        group.setEnabled(bool(gpu_choices))
     commit_spinboxes = []
     for preset_id in _PRESET_ORDER:
         controls = tier_controls[preset_id]
         commit_spinboxes.extend(
             controls[key]
-            for key in ("clock_drop", "memory", "power_spin")
+            for key in ("target_voltage", "target_clock", "memory", "power_spin")
         )
-        for key in ("floor", "oc_voltage", "oc_clock"):
-            if key in controls:
-                commit_spinboxes.append(controls[key])
-    _install_spinbox_enter_commit_filter(
+    install_spinbox_enter_commit_filter(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         parent=dialog,
@@ -711,7 +697,7 @@ def select_scan_tuning(
     layout.addWidget(buttons)
     dialog.setMinimumWidth(860)
     dialog.resize(860, dialog.sizeHint().height())
-    if dialog.exec() != QtWidgets.QDialog.Accepted:
+    if dialog.exec() != QtWidgets.QDialog.Accepted or not gpu_choices:
         return None
 
     preset = auto_uv_preset(scan_preset_id())
@@ -719,25 +705,10 @@ def select_scan_tuning(
         "gpu_index": _selected_gpu_index(gpu_combo, selected_gpu_index),
         "auto_uv_mode": preset.auto_uv_mode,
     }
-    efficiency_controls = tier_controls[AUTO_UV_PRESET_EFFICIENCY]
-    performance_controls = tier_controls[AUTO_UV_PRESET_PERFORMANCE]
     if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
-        # Full scan: every profile carries its own Advanced values, so the
-        # scan-wide keys stay unset and each tier gets its own option triple.
-        options["auto_uv_min_voltage_mv"] = int(
-            efficiency_controls["floor"].value()
-        )
-        options["auto_oc_target_voltage_mv"] = int(
-            performance_controls["oc_voltage"].value()
-        )
-        options["auto_oc_target_clock_mhz"] = int(
-            performance_controls["oc_clock"].value()
-        )
         for preset_id in _PRESET_ORDER:
             controls = tier_controls[preset_id]
-            options[adaptive_tier_option_key(preset_id, "max_clock_drop_pct")] = (
-                float(controls["clock_drop"].value())
-            )
+            _add_target_options(options, controls, preset_id)
             # The box is in memory-clock MHz; the applied NVML offset is
             # transfer rate (MT/s), which is twice the clock delta.
             options[adaptive_tier_option_key(preset_id, "memory_offset_mhz")] = (
@@ -751,7 +722,6 @@ def select_scan_tuning(
         return options
 
     controls = tier_controls[preset.preset_id]
-    options["auto_uv_max_clock_drop_pct"] = float(controls["clock_drop"].value())
     # The box is in memory-clock MHz; the applied NVML offset is transfer
     # rate (MT/s), which is twice the clock delta.
     options["auto_uv_memory_offset_mhz"] = int(controls["memory"].value()) * 2
@@ -760,16 +730,27 @@ def select_scan_tuning(
         options["auto_uv_power_limit_w"] = int(power_spin.value())
     if int(preset.tail_rise_bins) > 0:
         options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)
-    if preset.preset_id == AUTO_UV_PRESET_EFFICIENCY:
-        options["auto_uv_min_voltage_mv"] = int(controls["floor"].value())
-    if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE:
-        options.update(
-            {
-                "auto_oc_target_voltage_mv": int(controls["oc_voltage"].value()),
-                "auto_oc_target_clock_mhz": int(controls["oc_clock"].value()),
-            }
-        )
+    _add_target_options(options, controls, preset.preset_id)
     return options
+
+
+def _configured_target_value(controls: dict, key: str) -> int | None:
+    """The user's explicit target, or None for Auto and the unedited table default."""
+    if not controls[key].isEnabled():
+        return None
+    value = int(controls[key].value())
+    if value == controls.get(f"{key}_auto_value"):
+        return None
+    if value == controls.get(f"{key}_default_value"):
+        return None
+    return value
+
+
+def _add_target_options(options: dict, controls: dict, tier: str) -> None:
+    for key, field in (("target_voltage", "voltage_mv"), ("target_clock", "clock_mhz")):
+        value = _configured_target_value(controls, key)
+        if value is not None:
+            options[adaptive_tier_option_key(tier, f"target_{field}")] = value
 
 
 def _gpu_combo_index(gpu_combo, gpu_index: int) -> int:
@@ -809,67 +790,6 @@ def _bias_icon(*, QtCore, QtGui, QtWidgets, filename: str, tooltip: str):
     return label
 
 
-def _add_form_row(
-    *,
-    QtCore,
-    QtWidgets,
-    form_layout,
-    text: str,
-    widget,
-    tooltip: str = "",
-) -> None:
-    label_widget = QtWidgets.QLabel(text)
-    if not tooltip:
-        form_layout.addRow(label_widget, widget)
-        return
-
-    wrapped = _wrapped_tooltip(tooltip)
-    label_widget.setToolTip(wrapped)
-    widget.setToolTip(wrapped)
-    widget.setToolTipDuration(20000)
-    label_container = QtWidgets.QWidget()
-    label_layout = QtWidgets.QHBoxLayout(label_container)
-    label_layout.setContentsMargins(0, 2, 12, 2)
-    label_layout.setSpacing(8)
-    info_button = QtWidgets.QToolButton()
-    info_button.setObjectName("infoButton")
-    info_button.setText("i")
-    info_button.setToolTip(wrapped)
-    info_button.setToolTipDuration(20000)
-    info_button.setCursor(QtCore.Qt.WhatsThisCursor)
-    info_button.setFocusPolicy(QtCore.Qt.NoFocus)
-    info_button.setFixedSize(18, 18)
-
-    def show_tooltip(_checked=False, *, button=info_button, tip=wrapped):
-        position = button.mapToGlobal(button.rect().bottomLeft())
-        QtWidgets.QToolTip.showText(position, tip, button)
-
-    info_button.clicked.connect(show_tooltip)
-    label_layout.addWidget(label_widget)
-    label_layout.addWidget(info_button)
-    label_layout.addStretch(1)
-    form_layout.addRow(label_container, widget)
-
-
-def _advanced_form_layout(*, QtCore, QtWidgets):
-    form = QtWidgets.QFormLayout()
-    form.setContentsMargins(0, 0, 0, 0)
-    form.setHorizontalSpacing(24)
-    form.setVerticalSpacing(10)
-    form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
-    form.setFormAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignTop"))
-    form.setLabelAlignment(
-        qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter")
-    )
-    return form
-
-
-def _wrapped_tooltip(text: str) -> str:
-    normalized = " ".join(str(text).split())
-    escaped = html.escape(normalized)
-    return f"<qt><table width='680'><tr><td>{escaped}</td></tr></table></qt>"
-
-
 def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None:
     """Show important preset help on every pointer entry.
 
@@ -879,12 +799,12 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
     dependable while leaving the buttons' normal hover and click events alone.
     """
     event_types = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
-    enter_type = getattr(event_types, "Enter")
-    leave_type = getattr(event_types, "Leave")
+    enter_type = event_types.Enter
+    leave_type = event_types.Leave
     targets = tuple(widgets)
 
     class _HoverTooltipFilter(QtCore.QObject):
-        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+        def eventFilter(self, watched, event):
             if watched not in targets:
                 return False
             if event.type() == enter_type:
@@ -910,84 +830,16 @@ def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None
     parent._penguin_burner_hover_tooltip_filter = event_filter
 
 
-def _double_spin(QtWidgets, minimum: float, maximum: float, value: float, suffix: str):
-    spin = QtWidgets.QDoubleSpinBox()
-    spin.setRange(float(minimum), float(maximum))
-    spin.setDecimals(1)
-    spin.setSuffix(str(suffix))
-    spin.setFixedWidth(116)
-    spin.setValue(float(value))
-    return spin
-
-
-def _install_spinbox_enter_commit_filter(
-    *, QtCore, QtWidgets, parent, spinboxes
-) -> None:
-    event_type = getattr(getattr(QtCore.QEvent, "Type", QtCore.QEvent), "KeyPress")
-    key_enum = getattr(QtCore.Qt, "Key", QtCore.Qt)
-    enter_keys = {
-        _qt_enum_value(getattr(key_enum, "Key_Return")),
-        _qt_enum_value(getattr(key_enum, "Key_Enter")),
-    }
-
-    class _SpinBoxEnterFilter(QtCore.QObject):
-        def __init__(self):
-            super().__init__(parent)
-            self._spinboxes_by_target = {}
-            for spinbox in spinboxes:
-                self._spinboxes_by_target[spinbox] = spinbox
-                try:
-                    editor = spinbox.lineEdit()
-                except AttributeError:
-                    editor = None
-                if editor is not None:
-                    self._spinboxes_by_target[editor] = spinbox
-
-        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
-            if watched not in self._spinboxes_by_target:
-                return False
-            if event.type() != event_type:
-                return False
-            try:
-                key = _qt_enum_value(event.key())
-            except AttributeError:
-                return False
-            if key not in enter_keys:
-                return False
-            spinbox = self._spinboxes_by_target[watched]
-            spinbox.interpretText()
-            event.accept()
-            return True
-
-    event_filter = _SpinBoxEnterFilter()
-    for target in event_filter._spinboxes_by_target:
-        target.installEventFilter(event_filter)
-    parent._penguin_burner_spinbox_enter_filter = event_filter
-
-
-def _qt_enum_value(value) -> int:
-    return int(getattr(value, "value", value))
-
-
 def _aspect_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt),
-        "KeepAspectRatio",
-    )
+    return getattr(QtCore.Qt, "AspectRatioMode", QtCore.Qt).KeepAspectRatio
 
 
 def _transform_mode(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "TransformationMode", QtCore.Qt),
-        "SmoothTransformation",
-    )
+    return getattr(QtCore.Qt, "TransformationMode", QtCore.Qt).SmoothTransformation
 
 
 def _horizontal_orientation(QtCore):
-    return getattr(
-        getattr(QtCore.Qt, "Orientation", QtCore.Qt),
-        "Horizontal",
-    )
+    return getattr(QtCore.Qt, "Orientation", QtCore.Qt).Horizontal
 
 
 def _sync_power_limit_controls(controls: dict, info) -> None:
@@ -1011,7 +863,7 @@ def _sync_power_limit_controls(controls: dict, info) -> None:
         return
 
     min_w, max_w, default_w = values
-    page_step = max(1, int(round((max_w - min_w) / 6.0)))
+    page_step = max(1, round((max_w - min_w) / 6.0))
     slider.blockSignals(True)
     spin.blockSignals(True)
     slider.setRange(min_w, max_w)
@@ -1041,7 +893,7 @@ def _power_limit_control_values(info) -> tuple[int, int, int] | None:
     if default_w is None:
         default_w = _positive_rounded_int(getattr(info, "power_limit_w", None))
     if default_w is None:
-        default_w = int(round((min_w + max_w) / 2.0))
+        default_w = round((min_w + max_w) / 2.0)
     default_w = max(min_w, min(max_w, default_w))
     return min_w, max_w, default_w
 
@@ -1050,7 +902,7 @@ def _positive_rounded_int(value) -> int | None:
     if value is None:
         return None
     try:
-        rounded = int(round(float(value)))
+        rounded = round(float(value))
     except (TypeError, ValueError):
         return None
     return rounded if rounded > 0 else None

@@ -8,18 +8,15 @@ use serde_json::Value;
 pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
     ("gpu_index", "--gpu-index"),
     ("auto_uv_mode", "--auto-uv-mode"),
+    ("auto_uv_q2rtx_resolution", "--auto-uv-q2rtx-resolution"),
+    ("auto_uv_retry_after_freeze", "--auto-uv-retry-after-freeze"),
     ("auto_uv_min_voltage_mv", "--auto-uv-min-voltage-mv"),
-    ("auto_uv_max_clock_drop_pct", "--auto-uv-max-clock-drop-pct"),
     ("auto_uv_memory_offset_mhz", "--auto-uv-memory-offset-mhz"),
     ("auto_uv_power_limit_w", "--auto-uv-power-limit-w"),
     ("auto_uv_tail_rise_bins", "--auto-uv-tail-rise-bins"),
     ("auto_oc_target_voltage_mv", "--auto-oc-target-voltage-mv"),
     ("auto_oc_target_clock_mhz", "--auto-oc-target-clock-mhz"),
-    // Per-tier full-scan overrides (adaptive mode only).
-    (
-        "auto_uv_efficiency_max_clock_drop_pct",
-        "--auto-uv-efficiency-max-clock-drop-pct",
-    ),
+    // Per-tier budgets plus targets (targets also apply to single-tier scans).
     (
         "auto_uv_efficiency_power_limit_w",
         "--auto-uv-efficiency-power-limit-w",
@@ -29,8 +26,12 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
         "--auto-uv-efficiency-memory-offset-mhz",
     ),
     (
-        "auto_uv_balanced_max_clock_drop_pct",
-        "--auto-uv-balanced-max-clock-drop-pct",
+        "auto_uv_efficiency_target_voltage_mv",
+        "--auto-uv-efficiency-target-voltage-mv",
+    ),
+    (
+        "auto_uv_efficiency_target_clock_mhz",
+        "--auto-uv-efficiency-target-clock-mhz",
     ),
     (
         "auto_uv_balanced_power_limit_w",
@@ -41,8 +42,12 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
         "--auto-uv-balanced-memory-offset-mhz",
     ),
     (
-        "auto_uv_performance_max_clock_drop_pct",
-        "--auto-uv-performance-max-clock-drop-pct",
+        "auto_uv_balanced_target_voltage_mv",
+        "--auto-uv-balanced-target-voltage-mv",
+    ),
+    (
+        "auto_uv_balanced_target_clock_mhz",
+        "--auto-uv-balanced-target-clock-mhz",
     ),
     (
         "auto_uv_performance_power_limit_w",
@@ -51,6 +56,14 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
     (
         "auto_uv_performance_memory_offset_mhz",
         "--auto-uv-performance-memory-offset-mhz",
+    ),
+    (
+        "auto_uv_performance_target_voltage_mv",
+        "--auto-uv-performance-target-voltage-mv",
+    ),
+    (
+        "auto_uv_performance_target_clock_mhz",
+        "--auto-uv-performance-target-clock-mhz",
     ),
 ];
 
@@ -120,6 +133,14 @@ fn option_args(
             if text.is_empty() {
                 continue;
             }
+        }
+        if *key == "auto_uv_retry_after_freeze" {
+            match value.as_bool() {
+                Some(true) => args.push((*flag).to_string()),
+                Some(false) => (),
+                None => return Err(format!("{label} {key} must be boolean")),
+            }
+            continue;
         }
         let text = match command_value_text(value) {
             Some(text) => text,
@@ -275,17 +296,58 @@ mod tests {
     }
 
     #[test]
+    fn scan_command_forwards_manual_resolution() {
+        let options = json!({"gpu_index": 3, "auto_uv_q2rtx_resolution": "1080p"});
+        assert_eq!(
+            auto_uv_option_args(&options).unwrap(),
+            vec!["--gpu-index", "3", "--auto-uv-q2rtx-resolution", "1080p"]
+        );
+    }
+
+    #[test]
+    fn scan_command_forwards_freeze_retry_as_a_flag_after_resolution() {
+        let options = json!({
+            "gpu_index": 0, "auto_uv_retry_after_freeze": true, "auto_uv_q2rtx_resolution": "auto"
+        });
+        assert_eq!(
+            auto_uv_option_args(&options).unwrap(),
+            vec![
+                "--gpu-index",
+                "0",
+                "--auto-uv-q2rtx-resolution",
+                "auto",
+                "--auto-uv-retry-after-freeze",
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_command_freeze_retry_requires_an_explicit_boolean() {
+        assert!(
+            auto_uv_option_args(&json!({"auto_uv_retry_after_freeze": false}))
+                .unwrap()
+                .is_empty()
+        );
+        for value in [json!("false"), json!("true"), json!(0), json!(1)] {
+            assert_eq!(
+                auto_uv_option_args(&json!({"auto_uv_retry_after_freeze": value})),
+                Err("Auto-UV option auto_uv_retry_after_freeze must be boolean".into())
+            );
+        }
+    }
+
+    #[test]
     fn scan_command_skips_null_and_empty() {
         let options = json!({
             "gpu_index": 1,
             "auto_uv_mode": null,
             "auto_uv_min_voltage_mv": "",
-            "auto_uv_max_clock_drop_pct": 6.5,
+            "auto_oc_target_voltage_mv": 925.0,
         });
         let args = auto_uv_option_args(&options).unwrap();
         assert_eq!(
             args,
-            vec!["--gpu-index", "1", "--auto-uv-max-clock-drop-pct", "6.5"]
+            vec!["--gpu-index", "1", "--auto-oc-target-voltage-mv", "925"]
         );
     }
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 from common.penguin_burner_paths import default_user_config_dir
 from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-
 
 DEFAULT_VERIFY_DURATION_S = DEFAULT_FINAL_VERIFICATION_DURATION_S
 MAX_VERIFY_DURATION_S = 3600
@@ -30,7 +29,7 @@ def progress_percent(elapsed_s, target_s) -> int:
         target = max(1.0, float(target_s))
     except (TypeError, ValueError):
         return 0
-    return max(0, min(100, int(round((elapsed / target) * 100.0))))
+    return max(0, min(100, round((elapsed / target) * 100.0)))
 
 
 def workload_label() -> str:

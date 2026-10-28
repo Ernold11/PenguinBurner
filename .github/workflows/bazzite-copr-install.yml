@@ -1,0 +1,24 @@
+name: Bazzite COPR install
+
+# Channel-health canary: installs the published COPR package inside the
+# Bazzite OCI image (see scripts/check-bazzite-copr-install.sh). Runs weekly
+# and on demand — it tests the released package against the current Bazzite
+# image, so commits do not change its outcome; Bazzite rebases and COPR
+# chroot branching do.
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install published package on Bazzite
+        # The runner's docker rejects Bazzite's many-layered bootc image
+        # ("max depth exceeded"); podman's storage stack handles it.
+        env:
+          PENGUIN_BURNER_CONTAINER_ENGINE: podman
+        run: scripts/check-bazzite-copr-install.sh

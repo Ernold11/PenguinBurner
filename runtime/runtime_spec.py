@@ -7,6 +7,7 @@ or duplicates profile-selection policy.
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,9 @@ from typing import Any
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 from cli.runtime_config_file import default_runtime_config, load_runtime_config
 from common.penguin_burner_errors import NvmlError
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from overlay.config import load_overlay_config
+from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
@@ -35,7 +38,6 @@ from ui.features.curves.fan_profiles import (
     fan_curve_points_from_payload,
     read_json_file,
 )
-
 
 RUNTIME_SPEC_FORMAT_VERSION = 1
 RUNTIME_SPEC_CAPABILITY = "runtime-spec-v1"
@@ -117,7 +119,7 @@ def build_runtime_spec_from_intent(
     socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(intent, dict):
-        raise RuntimeError("runtime intent JSON must be an object")
+        raise TypeError("runtime intent JSON must be an object")
     unknown = sorted(
         set(intent)
         - {
@@ -149,18 +151,6 @@ def build_runtime_spec(
         "gpu-capabilities-v1",
         socket_path=socket_path,
     )
-    config, _config_path = load_runtime_config()
-    configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
-    selected_index = (
-        _nonnegative_int(configured_gpu.get("index"), default=0)
-        if gpu_index is None
-        else max(0, int(gpu_index))
-    )
-    capabilities = gpu_capabilities(selected_index, socket_path=socket_path)
-    identity = capabilities.get("identity")
-    if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
-        raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")
-
     selector = str(profile_selector or "").strip()
     selected_curve = (
         # Static mode keeps the documented "empty selector = latest saved
@@ -170,13 +160,59 @@ def build_runtime_spec(
         if selector == STOCK_PROFILE_SELECTOR or (adaptive_auto_uv and not selector)
         else load_auto_uv_final_curve(selector)
     )
+    config, _config_path = load_runtime_config()
+    configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
+    bound_uuid = profile_gpu_uuid(selected_curve or {})
+    discovered_identities = None
+    selected_index = (
+        _nonnegative_int(configured_gpu.get("index"), default=0)
+        if gpu_index is None
+        else max(0, int(gpu_index))
+    )
+    if bound_uuid:
+        discovered_identities = DaemonGpuClient.discover_identities()
+        bound_index = gpu_index_for_uuid(discovered_identities, bound_uuid)
+        if bound_index is None:
+            raise RuntimeError(f"profile GPU {bound_uuid} is not currently detected")
+        if gpu_index is not None and int(selected_index) != int(bound_index):
+            raise RuntimeError(
+                f"profile is bound to GPU {bound_index} ({bound_uuid}), "
+                f"not requested GPU {selected_index}"
+            )
+        selected_index = int(bound_index)
+    capabilities = gpu_capabilities(selected_index, socket_path=socket_path)
+    identity = capabilities.get("identity")
+    if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
+        raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")
     mode = "stock"
     static_profile = None
     adaptive = None
     if adaptive_auto_uv:
-        adaptive = _adaptive_spec(selected_curve, target_fps_override=adaptive_target_fps)
-        if adaptive is not None:
-            mode = "adaptive"
+        try:
+            if discovered_identities is None:
+                discovered_identities = DaemonGpuClient.discover_identities()
+            include_legacy_profiles = len(discovered_identities) == 1
+        except Exception:  # noqa: BLE001
+            # Peer enumeration is advisory: an explicitly selected profile
+            # still provides one valid tier; failure to enumerate peers must
+            # not make that apply fail.
+            include_legacy_profiles = False
+        adaptive = _adaptive_spec(
+            selected_curve,
+            target_fps_override=adaptive_target_fps,
+            gpu_uuid=str(identity["uuid"]),
+            include_legacy_profiles=include_legacy_profiles,
+        )
+        if adaptive is None:
+            # Silently degrading an explicit adaptive request to stock would
+            # run the GPU at stock without an error — and persist stock as the
+            # boot profile on the install path.
+            raise RuntimeError(
+                "adaptive Auto-UV was requested but no verified tier profiles "
+                f"resolve for GPU {identity['uuid']}; run an Auto-UV scan for "
+                "this GPU or verify its saved profiles first"
+            )
+        mode = "adaptive"
     elif selected_curve is not None:
         mode = "static"
         static_profile = _profile_spec(selected_curve)
@@ -215,8 +251,14 @@ def _adaptive_spec(
     selected_curve: dict | None,
     *,
     target_fps_override: float | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> dict[str, Any] | None:
-    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
+    resolved = resolve_profile_tier_profiles(
+        read_auto_uv_profiles(),
+        gpu_uuid=str(gpu_uuid or ""),
+        include_legacy_profiles=include_legacy_profiles,
+    )
     tier_profiles: dict[str, dict[str, Any]] = {}
     for tier in available_adaptive_tiers(resolved):
         summary = resolved.get(tier)
@@ -248,29 +290,69 @@ def _adaptive_spec(
         else adaptive_target_fps_from_env()
     )
     policy = AdaptiveProfilePolicyConfig.for_target_fps(target_fps)
+    policy_spec: dict[str, Any] = {
+        "target_fps": float(target_fps),
+        "target_slow_windows": int(policy.target_slow_windows),
+        "near_slow_windows": int(policy.near_slow_windows),
+        "comfort_windows": int(policy.comfort_windows),
+        "performance_comfort_windows": int(policy.performance_comfort_windows),
+        "demote_dwell_s": float(policy.demote_dwell_s),
+        "performance_demote_dwell_s": float(
+            policy.performance_demote_dwell_s
+        ),
+        "cpu_bound_gpu_util_max_pct": float(
+            policy.cpu_bound_gpu_util_max_pct
+        ),
+        "cpu_bound_peak_thread_min_pct": float(
+            policy.cpu_bound_peak_thread_min_pct
+        ),
+        "cpu_bound_process_util_min_pct": float(
+            policy.cpu_bound_process_util_min_pct
+        ),
+    }
+    # The frame-cap and desktop-idle knobs are new in 0.8 and the daemon fills
+    # in identical defaults, so a knob the user left alone is omitted: a still
+    # running 0.7.x daemon (deny_unknown_fields) must keep accepting a
+    # default-config runtime until its binary is restarted.
+    defaults = AdaptiveProfilePolicyConfig()
+    for key, value, unchanged in (
+        (
+            "frame_cap_enter_gpu_pct",
+            float(policy.frame_cap_enter_gpu_pct),
+            float(defaults.frame_cap_enter_gpu_pct),
+        ),
+        (
+            "frame_cap_exit_gpu_pct",
+            float(policy.frame_cap_exit_gpu_pct),
+            float(defaults.frame_cap_exit_gpu_pct),
+        ),
+        (
+            "frame_cap_confirm_windows",
+            int(policy.frame_cap_confirm_windows),
+            int(defaults.frame_cap_confirm_windows),
+        ),
+        (
+            "frame_cap_exit_pacing_pct",
+            float(policy.frame_cap_exit_pacing_pct),
+            float(defaults.frame_cap_exit_pacing_pct),
+        ),
+        (
+            "desktop_idle_gpu_pct",
+            float(policy.desktop_idle_gpu_pct),
+            float(defaults.desktop_idle_gpu_pct),
+        ),
+        (
+            "desktop_idle_after_s",
+            float(policy.desktop_idle_after_s),
+            float(defaults.desktop_idle_after_s),
+        ),
+    ):
+        if value != unchanged:
+            policy_spec[key] = value
     return {
         "initial_tier": initial_tier,
         "profiles": tier_profiles,
-        "policy": {
-            "target_fps": float(target_fps),
-            "target_slow_windows": int(policy.target_slow_windows),
-            "near_slow_windows": int(policy.near_slow_windows),
-            "comfort_windows": int(policy.comfort_windows),
-            "performance_comfort_windows": int(policy.performance_comfort_windows),
-            "demote_dwell_s": float(policy.demote_dwell_s),
-            "performance_demote_dwell_s": float(
-                policy.performance_demote_dwell_s
-            ),
-            "cpu_bound_gpu_util_max_pct": float(
-                policy.cpu_bound_gpu_util_max_pct
-            ),
-            "cpu_bound_peak_thread_min_pct": float(
-                policy.cpu_bound_peak_thread_min_pct
-            ),
-            "cpu_bound_process_util_min_pct": float(
-                policy.cpu_bound_process_util_min_pct
-            ),
-        },
+        "policy": policy_spec,
     }
 
 
@@ -410,7 +492,7 @@ def _validate_fan_curve(points: list[tuple[float, float]]) -> str:
 def _fan_speed_for_temp(temp_c: float, points: list[tuple[float, float]]) -> float:
     if temp_c <= points[0][0]:
         return points[0][1]
-    for (left_temp, left_speed), (right_temp, right_speed) in zip(points, points[1:]):
+    for (left_temp, left_speed), (right_temp, right_speed) in itertools.pairwise(points):
         if temp_c <= right_temp:
             position = (temp_c - left_temp) / (right_temp - left_temp)
             return left_speed + ((right_speed - left_speed) * position)
@@ -450,7 +532,7 @@ def _normalized_curve(value: Any, fallback: Any) -> list[list[float]]:
 def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    return int(round(float(value)))
+    return round(float(value))
 
 
 def _optional_float(value: Any) -> float | None:
@@ -472,7 +554,7 @@ def _nonnegative_int(value: Any, *, default: int) -> int:
 
 def _int_or_default(value: Any, default: Any) -> int:
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return int(default)
 

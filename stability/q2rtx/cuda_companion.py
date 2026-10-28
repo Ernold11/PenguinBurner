@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
-import stability.cuda_bruteforce as cuda_bruteforce
+from stability import cuda_bruteforce
 
 
 def cuda_bruteforce_companion_command(

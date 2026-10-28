@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
+from typing import Generic, TypeVar
 
 from ..styles import curve_editor_legend_stylesheet
 
@@ -142,13 +143,16 @@ def install_curve_editor_shortcut_legend(
     return legend_overlay, legend_filter
 
 
-class CurveEditHistory:
+EditT = TypeVar("EditT")
+
+
+class CurveEditHistory(Generic[EditT]):
     def __init__(
         self,
         *,
-        clone: Callable,
-        equals: Callable[[object, object], bool],
-        apply: Callable[[object], None],
+        clone: Callable[[EditT], EditT],
+        equals: Callable[[EditT, EditT], bool],
+        apply: Callable[[EditT], None],
         changed: Callable[[], None] | None = None,
         limit: int = 64,
     ):
@@ -157,9 +161,9 @@ class CurveEditHistory:
         self._apply = apply
         self._changed = changed
         self._limit = max(1, int(limit))
-        self.undo_stack = []
-        self.redo_stack = []
-        self.active_actions = {}
+        self.undo_stack: list[EditT] = []
+        self.redo_stack: list[EditT] = []
+        self.active_actions: dict[str, EditT] = {}
 
     def clear(self) -> None:
         self.undo_stack.clear()
@@ -167,7 +171,7 @@ class CurveEditHistory:
         self.active_actions.clear()
         self._notify_changed()
 
-    def push(self, value, *, clear_redo: bool = True) -> None:
+    def push(self, value: EditT, *, clear_redo: bool = True) -> None:
         snapshot = self._clone(value)
         if self.undo_stack and self._equals(self.undo_stack[-1], snapshot):
             return
@@ -177,7 +181,7 @@ class CurveEditHistory:
             self.redo_stack.clear()
         self._notify_changed()
 
-    def begin_action(self, action_key: str, value) -> None:
+    def begin_action(self, action_key: str, value: EditT) -> None:
         key = str(action_key)
         if key in self.active_actions:
             return
@@ -185,7 +189,7 @@ class CurveEditHistory:
         self.active_actions[key] = snapshot
         self.push(snapshot)
 
-    def finish_action(self, action_key: str, current_value) -> None:
+    def finish_action(self, action_key: str, current_value: EditT) -> None:
         key = str(action_key)
         snapshot = self.active_actions.pop(key, None)
         if snapshot is None:
@@ -194,7 +198,7 @@ class CurveEditHistory:
             self.undo_stack.pop()
         self._notify_changed()
 
-    def undo(self, current_value) -> None:
+    def undo(self, current_value: EditT) -> None:
         if not self.undo_stack:
             return
         self.active_actions.clear()
@@ -204,7 +208,7 @@ class CurveEditHistory:
         self._apply(previous)
         self._notify_changed()
 
-    def redo(self, current_value) -> None:
+    def redo(self, current_value: EditT) -> None:
         if not self.redo_stack:
             return
         self.active_actions.clear()

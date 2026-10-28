@@ -103,7 +103,17 @@ impl<'a> FlattenedClockCeilingController<'a> {
             });
         } else {
             let supported = self.backend.supported_core_clock_steps_mhz();
-            let requested_min = supported.first().map_or(target, |&s| i64::from(s));
+            // An empty enumeration (transient NVML failure right after resume,
+            // or an unsupported query) must be an error: falling back to
+            // `target` would silently issue a min=max hard lock that pins the
+            // GPU at the ceiling clock even at idle.
+            let Some(&min_step) = supported.first() else {
+                return Err(crate::gpu::GpuError::other(
+                    "clock ceiling range lock unavailable: driver returned no supported core clocks",
+                    0,
+                ));
+            };
+            let requested_min = i64::from(min_step);
             let range = self.backend.apply_locked_core_clock_range_mhz(
                 requested_min,
                 target,

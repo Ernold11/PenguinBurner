@@ -3,14 +3,13 @@ import struct
 from pathlib import Path
 from unittest import mock
 
-from runtime import frame_history
-
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_NONE,
     PROFILE_TIER_PERFORMANCE,
 )
+from runtime import frame_history
 from runtime.frame_history import (
     BOTTLENECK_CPU,
     BOTTLENECK_GPU,
@@ -497,3 +496,13 @@ def test_reader_decodes_only_the_window_of_a_wrapped_ring(tmp_path: Path) -> Non
     # One decode per kept frame, plus the single frame that overran the budget.
     assert len(calls) <= len(history.frametimes_ms) + 1
     assert len(calls) < 4096  # never walks the whole ring
+
+
+def test_only_steam_game_keys_map_to_a_recorded_app_id() -> None:
+    # The ring header stores a numeric Steam app id; other launchers' ids are
+    # arbitrary strings the daemon does not record (burnerd's steam_app_id).
+    assert frame_history.frame_history_app_id("steam:1145360") == "1145360"
+    assert frame_history.frame_history_app_id("heroic:Fortnite") == ""
+    assert frame_history.frame_history_app_id("lutris:27") == ""
+    assert frame_history.frame_history_app_id("steam:0") == ""
+    assert frame_history.frame_history_app_id("") == ""

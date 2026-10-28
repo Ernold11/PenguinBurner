@@ -80,8 +80,14 @@ uint64_t handle_to_u64(Handle handle) {
     }
 }
 
+// The loader hands a layer several entries of the same chain struct, told
+// apart by ``function``: VK_LAYER_LINK_INFO carries the next layer's proc
+// addresses, and VK_LOADER_DATA_CALLBACK carries the callback that stamps
+// loader data onto dispatchable objects the layer creates itself.
 template <typename CreateInfo>
-auto find_layer_link(CreateInfo* create_info) {
+auto find_layer_chain_entry(
+    CreateInfo* create_info,
+    VkLayerFunction function = VK_LAYER_LINK_INFO) {
     using LayerInfo = std::conditional_t<
         std::is_same_v<std::remove_const_t<CreateInfo>, VkInstanceCreateInfo>,
         VkLayerInstanceCreateInfo,
@@ -94,7 +100,7 @@ auto find_layer_link(CreateInfo* create_info) {
                     std::is_same_v<std::remove_const_t<CreateInfo>, VkInstanceCreateInfo>,
                     std::integral_constant<VkStructureType, VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO>,
                     std::integral_constant<VkStructureType, VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO>>::value
-            && item->function == VK_LAYER_LINK_INFO) {
+            && item->function == function) {
             return item;
         }
         item = reinterpret_cast<LayerInfo*>(const_cast<void*>(item->pNext));
@@ -271,6 +277,10 @@ struct DeviceContext {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
+    // Stamps loader data onto command buffers this layer allocates for the
+    // overlay. Without it a layer above us is handed a dispatchable handle it
+    // cannot look up.
+    PFN_vkSetDeviceLoaderData set_device_loader_data = nullptr;
     PFN_vkDestroyDevice destroy_device = nullptr;
     PFN_vkDeviceWaitIdle device_wait_idle = nullptr;
     PFN_vkGetDeviceQueue get_device_queue = nullptr;

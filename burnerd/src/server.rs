@@ -52,6 +52,11 @@ pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
 /// Accept loop. Each connection is handled on its own thread; a panic in a
 /// connection is caught so it never takes the daemon down.
 pub fn serve(listener: UnixListener, sup: Arc<Mutex<Supervisor>>) {
+    let uid = env::var(DAEMON_ALLOWED_UID_ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| nix::unistd::Uid::current().as_raw());
+    crate::sessions::recover(uid);
     for incoming in listener.incoming() {
         let stream = match incoming {
             Ok(stream) => stream,
@@ -121,11 +126,57 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
         }
         match serde_json::from_str::<Value>(line) {
             Ok(value) => {
+                let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+                if method == "subscribe_launcher_sessions" {
+                    crate::sessions::subscribe(&mut writer);
+                    return;
+                }
+                if method == "reconcile_launcher_sessions" {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .map(|peer| {
+                            crate::sessions::recover(peer.uid());
+                            api::MethodResult::Value(crate::sessions::snapshot())
+                        });
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
+                if method == "observe_launcher_session" {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .and_then(|peer| crate::sessions::observe(peer.uid(), &value));
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
+                if matches!(
+                    method,
+                    "register_launcher_session" | "update_launcher_session"
+                ) {
+                    let response = getsockopt(&writer, PeerCredentials)
+                        .map_err(|e| e.to_string())
+                        .and_then(|peer| {
+                            let pid = u32::try_from(peer.pid()).map_err(|_| "invalid peer PID")?;
+                            crate::sessions::request(pid, &value)
+                        });
+                    if !api::write_response(&mut writer, response) {
+                        return;
+                    }
+                    continue;
+                }
                 if let Some(kind) = streaming_kind(&value) {
                     handle_start_stream(kind, &value, sup, &mut writer);
                     return; // streaming consumes the connection
                 }
-                let response = api::handle_request(sup, &value);
+                let response =
+                    if value.get("method").and_then(Value::as_str) == Some("client_identity") {
+                        client_identity(&writer, &value)
+                    } else {
+                        api::handle_request(sup, &value)
+                    };
                 if !api::write_response(&mut writer, response) {
                     return;
                 }
@@ -139,6 +190,21 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
             }
         }
     }
+}
+
+/// Credentials are reported in the daemon's host PID namespace, including for
+/// Flatpak clients. Never accept a caller-supplied PID for this read-only query.
+fn client_identity(stream: &UnixStream, value: &Value) -> Result<api::MethodResult, String> {
+    if value.as_object().is_none_or(|object| object.len() != 1) {
+        return Err("client_identity accepts only method".to_string());
+    }
+    let credentials = getsockopt(stream, PeerCredentials).map_err(|error| error.to_string())?;
+    if credentials.pid() <= 0 {
+        return Err("client host PID is unavailable".to_string());
+    }
+    Ok(api::MethodResult::Value(serde_json::json!({
+        "pid": credentials.pid(), "uid": credentials.uid()
+    })))
 }
 
 fn streaming_kind(value: &Value) -> Option<ChildKind> {
@@ -232,6 +298,23 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::peer_uid_allowed_with;
+
+    #[test]
+    fn client_identity_uses_socket_credentials() {
+        let (client, _server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let result =
+            super::client_identity(&client, &serde_json::json!({"method": "client_identity"}))
+                .unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["pid"], std::process::id());
+        assert!(super::client_identity(
+            &client,
+            &serde_json::json!({
+                "method": "client_identity", "pid": 1
+            })
+        )
+        .is_err());
+    }
 
     #[test]
     fn empty_allowlist_fails_closed_as_root() {

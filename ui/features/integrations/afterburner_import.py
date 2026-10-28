@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from common.penguin_burner_paths import (
+    default_runtime_config_path,
+    discover_afterburner_device_profiles,
+    managed_afterburner_root,
+    resolve_afterburner_root,
+    sync_afterburner_export_tree,
+)
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from integrations.afterburner.fan_curve import load_afterburner_fan_settings
 from integrations.afterburner.import_vf_curve import (
     build_plan,
@@ -12,24 +21,18 @@ from integrations.afterburner.vfcurve import (
     discover_afterburner_vf_sections,
     resolve_afterburner_vf_source,
 )
-from integrations.afterburner.vfcurve_describe import describe_afterburner_flatten_validation
-from common.penguin_burner_paths import (
-    default_runtime_config_path,
-    discover_afterburner_device_profiles,
-    managed_afterburner_root,
-    resolve_afterburner_root,
-    sync_afterburner_export_tree,
+from integrations.afterburner.vfcurve_describe import (
+    describe_afterburner_flatten_validation,
 )
-from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from profiles.gpu_identity import normalized_gpu_identity
 from profiles.uv.profile_store import archive_auto_uv_profile
-
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
 def configured_afterburner_root() -> str:
     try:
         options = load_afterburner_runtime_options(default_runtime_config_path())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ""
     return str(options.get("afterburner_root", "")).strip()
 
@@ -107,7 +110,14 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
         device_profile_hint=device_profile_relative_path,
     )
     section_info = source.get("section_info", {})
-    reader = create_hidden_vf_curve_reader(gpu_index=runtime_gpu_index(config_path))
+    gpu_index = runtime_gpu_index(config_path)
+    identity = normalized_gpu_identity(
+        DaemonGpuClient(gpu_index).capabilities().identity,
+        index_at_verification=gpu_index,
+    )
+    if not identity.get("uuid"):
+        raise RuntimeError("could not identify the GPU used for this import")
+    reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
     if reader is None:
         raise RuntimeError("could not open the live Nvidia V/F curve reader")
     try:
@@ -138,6 +148,7 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
         "lock_clock_mhz": int(clock),
         "final_verified": True,
         "verification_status": "imported",
+        "gpu_identity": identity,
         "plan": plan,
         "points": plan,
         "flatten_target": dict(section_info.get("flatten_target") or {}),
@@ -176,8 +187,8 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
 
 def afterburner_fan_curve_payload(afterburner_root: str | Path) -> dict | None:
     try:
-        settings = load_afterburner_fan_settings(afterburner_root)
-    except Exception:
+        settings = load_afterburner_fan_settings(Path(afterburner_root))
+    except Exception:  # noqa: BLE001
         return None
     curve_points = fan_curve_points(settings.get("curve", {}).get("points"))
     if not curve_points:
@@ -216,8 +227,8 @@ def afterburner_profile_target_pair(section: dict) -> tuple[int | None, int | No
     if not isinstance(target, dict):
         return None, None
     try:
-        clock = int(round(float(target["lock_clock_mhz"])))
-        voltage = int(round(float(target["lock_voltage_mv"])))
+        clock = round(float(target["lock_clock_mhz"]))
+        voltage = round(float(target["lock_voltage_mv"]))
     except (KeyError, TypeError, ValueError):
         return None, None
     return clock, voltage
@@ -228,7 +239,7 @@ def afterburner_profile_target_value(section: dict, key: str) -> int | None:
     if not isinstance(target, dict):
         return None
     try:
-        return int(round(float(target[key])))
+        return round(float(target[key]))
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -249,7 +260,7 @@ def afterburner_section_curve_points(section: dict) -> list[tuple[float, float]]
         voltage = point.get("voltage_mv")
         clock = point.get("frequency_mhz", point.get("target_mhz"))
         try:
-            points.append((float(voltage), float(clock)))
+            points.append((float(str(voltage)), float(str(clock))))
         except (TypeError, ValueError):
             continue
     return points

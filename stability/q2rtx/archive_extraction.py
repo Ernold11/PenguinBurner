@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import tarfile
 import tempfile
+from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 

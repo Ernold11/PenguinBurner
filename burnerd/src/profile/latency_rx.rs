@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
+use super::frametime::{frametime_stats, p95_us, FrametimeStats};
 use super::{monotonic_now, round_half_even, LatencySnapshot};
 use crate::paths::{
     claim_desktop_user_ownership, cpath, desktop_cache_dir, nonempty_env, run_user_penguin_dir,
@@ -31,10 +32,9 @@ use crate::paths::{
 
 // --- constants (receiver.py / framegen.py) ----------------------------------
 
-const METER_SAMPLE_MAX_AGE_S: f64 = 3.0;
+pub(super) const METER_SAMPLE_MAX_AGE_S: f64 = 3.0;
 const METER_MAX_SAMPLES: usize = 4096;
 const METER_MIN_PRESENT_SAMPLES: usize = 4;
-const METER_UNSEEDED_PRESENT_FPS_MAX: f64 = 70.0;
 const METER_MARKER_FPS_MAX_PRESENT_RATIO: f64 = 1.25;
 const DRIVER_REPORT_RING_SPAN: i64 = 256;
 const FRAMEGEN_CADENCE_RATIO: f64 = 1.5;
@@ -141,19 +141,6 @@ fn pid_value(value: Option<&Value>) -> Option<String> {
 }
 
 // --- aggregation helpers (receiver.py) --------------------------------------
-
-/// `_p95_us(values)` — drop `<= 0`, sort, index `round((n-1)*0.95)` (banker's).
-fn p95_us(values: &[i64]) -> Option<i64> {
-    let mut v: Vec<i64> = values.iter().copied().filter(|&x| x > 0).collect();
-    if v.is_empty() {
-        return None;
-    }
-    v.sort_unstable();
-    let n = v.len();
-    let raw = round_half_even((n as f64 - 1.0) * 0.95) as i64;
-    let idx = raw.clamp(0, n as i64 - 1) as usize;
-    Some(v[idx])
-}
 
 /// `_mean_fps` — `n * 1e6 / sum` over positive frametimes (float division).
 fn mean_fps(values: &[i64]) -> Option<f64> {
@@ -296,7 +283,7 @@ fn has_marker_stream(samples: &[&Sample]) -> bool {
 // --- base-frame-marker + latency-proxy selection ----------------------------
 
 struct BaseMarkerSelection {
-    p95_us: i64,
+    stats: FrametimeStats,
     fps_source: &'static str,
 }
 
@@ -307,18 +294,20 @@ struct BaseMarkerSelection {
 fn select_base_marker_frametime_p95(
     samples: &[&Sample],
     raw_avg_fps: Option<f64>,
+    miss_deadline_us: Option<i64>,
 ) -> Option<BaseMarkerSelection> {
-    let valid_p95 = |frametimes: &[i64]| -> Option<i64> {
+    let valid_stats = |frametimes: &[i64]| -> Option<FrametimeStats> {
         if frametimes.len() < METER_MIN_PRESENT_SAMPLES {
             return None;
         }
-        let p95 = p95_us(frametimes)?;
-        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(p95)), raw_avg_fps) {
+        let stats = frametime_stats(frametimes, miss_deadline_us)?;
+        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(stats.p95_us)), raw_avg_fps)
+        {
             if marker_fps > raw * METER_MARKER_FPS_MAX_PRESENT_RATIO {
                 return None;
             }
         }
-        Some(p95)
+        Some(stats)
     };
 
     let shim_frametimes: Vec<i64> = samples
@@ -330,9 +319,9 @@ fn select_base_marker_frametime_p95(
         .map(|s| int_value(s.data.get("base_frame_frametime_us")))
         .filter(|&value| value > 0)
         .collect();
-    if let Some(p95) = valid_p95(&shim_frametimes) {
+    if let Some(stats) = valid_stats(&shim_frametimes) {
         return Some(BaseMarkerSelection {
-            p95_us: p95,
+            stats,
             fps_source: "nvapi-base-frame-marker",
         });
     }
@@ -358,26 +347,27 @@ fn select_base_marker_frametime_p95(
 
     for name in BASE_FRAME_MARKER_PRIORITY {
         if let Some(list) = marker_frametimes.get(name) {
-            if let Some(p95) = valid_p95(list) {
+            if let Some(stats) = valid_stats(list) {
                 return Some(BaseMarkerSelection {
-                    p95_us: p95,
+                    stats,
                     fps_source: "base-frame-marker",
                 });
             }
         }
     }
 
-    let mut eligible: Vec<(String, usize, i64)> = marker_frametimes
+    let mut eligible: Vec<(String, usize, FrametimeStats)> = marker_frametimes
         .iter()
-        .filter_map(|(name, fts)| valid_p95(fts).map(|p95| (name.clone(), fts.len(), p95)))
+        .filter_map(|(name, fts)| valid_stats(fts).map(|stats| (name.clone(), fts.len(), stats)))
         .collect();
     if eligible.is_empty() {
         return None;
     }
     // sort by (-len, name): most samples first, name ascending as tie-break.
     eligible.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let best = &eligible[0].2;
     Some(BaseMarkerSelection {
-        p95_us: eligible[0].2,
+        stats: *best,
         fps_source: "base-frame-marker",
     })
 }
@@ -610,7 +600,7 @@ impl Meter {
 
     /// `snapshot(now)` — the fresh-window aggregation the engine consumes. `None`
     /// when there are no samples within `METER_SAMPLE_MAX_AGE_S` of `now`.
-    fn snapshot(&mut self, now: f64) -> Option<LatencySnapshot> {
+    fn snapshot(&mut self, now: f64, miss_deadline_us: Option<i64>) -> Option<LatencySnapshot> {
         if self.samples.is_empty() {
             return None;
         }
@@ -632,11 +622,12 @@ impl Meter {
             .copied()
             .filter(|&v| v > 0)
             .collect();
-        let present_frametime_p95 = if present_frametimes.len() >= METER_MIN_PRESENT_SAMPLES {
-            p95_us(&present_frametimes)
+        let present_stats = if present_frametimes.len() >= METER_MIN_PRESENT_SAMPLES {
+            frametime_stats(&present_frametimes, miss_deadline_us)
         } else {
             None
         };
+        let present_frametime_p95 = present_stats.map(|stats| stats.p95_us);
         let raw_present_avg_fps = mean_fps(&present_frametimes);
         // `_present_fps_stats["avg"]`: "n/a" below the minimum sample count.
         let raw_present_fps_stats_avg = if present_frametimes.len() >= METER_MIN_PRESENT_SAMPLES {
@@ -645,14 +636,22 @@ impl Meter {
             "n/a".to_string()
         };
 
-        let marker_selection = select_base_marker_frametime_p95(&samples, raw_present_avg_fps);
+        let marker_selection =
+            select_base_marker_frametime_p95(&samples, raw_present_avg_fps, miss_deadline_us);
+        // The presented-frame median, kept whatever the marker path decided:
+        // it is the only median a game without markers can offer.
+        let present_pacing_p50_us = present_stats.map(|stats| stats.p50_us);
         let base_present_frametime_p95_us;
+        let mut base_present_frametime_p50_us = None;
+        let promotion_stats;
         let present_fps_value;
         let cadence_is_independent;
         let fps_source;
         if let Some(marker) = marker_selection {
-            base_present_frametime_p95_us = Some(marker.p95_us);
-            present_fps_value = fps_from_frametime(Some(marker.p95_us));
+            base_present_frametime_p95_us = Some(marker.stats.p95_us);
+            base_present_frametime_p50_us = Some(marker.stats.p50_us);
+            promotion_stats = Some(marker.stats);
+            present_fps_value = fps_from_frametime(Some(marker.stats.p95_us));
             self.last_base_present_fps = present_fps_value;
             cadence_is_independent = true;
             fps_source = marker.fps_source;
@@ -662,7 +661,17 @@ impl Meter {
                 fps_from_frametime(present_frametime_p95),
                 raw_present_avg_fps,
                 has_marker_stream(&samples),
+                explicit_framegen_active(&samples),
             );
+            // An unmodified present cadence measures base frames. An inferred
+            // frame-generation rate has no matching base-frame sample set:
+            // retain its p95 fallback, but never use generated-frame medians
+            // or miss ratios to veto a base-frame promotion.
+            promotion_stats = if fps_val.is_some() && !deinterlaced {
+                present_stats
+            } else {
+                None
+            };
             present_fps_value = fps_val;
             cadence_is_independent = deinterlaced;
             fps_source = if fps_val.is_none() {
@@ -709,6 +718,9 @@ impl Meter {
 
         Some(LatencySnapshot {
             base_present_frametime_p95_ms: base_present_frametime_p95_us.map(|v| v as f64 / 1000.0),
+            base_present_frametime_p50_ms: base_present_frametime_p50_us.map(|v| v as f64 / 1000.0),
+            present_pacing_p50_ms: present_pacing_p50_us.map(|v| v as f64 / 1000.0),
+            promotion_stats,
             present_fps: Some(format_fps_value(present_fps_value)),
             fps_source: Some(fps_source.to_string()),
             raw_present_fps_stats_avg: Some(raw_present_fps_stats_avg),
@@ -723,31 +735,27 @@ impl Meter {
 }
 
 /// `_estimate_base_present_fps` — recover the base render FPS, dividing out a
-/// detected frame-generation multiplier only when a marker stream proves the
-/// high present rate is generated (not a genuine framerate increase). Operates on
+/// detected frame-generation multiplier only with marker or generated-frame
+/// evidence. Operates on
 /// the meter's `last_base` cell directly (disjoint from the borrowed sample view).
 fn estimate_base_present_fps(
     last_base: &mut Option<f64>,
     p95_fps: Option<f64>,
     raw_avg_fps: Option<f64>,
     marker_stream: bool,
+    framegen_active: bool,
 ) -> (Option<f64>, bool) {
     let Some(p95_fps) = p95_fps else {
         return (None, false);
     };
     let seed = *last_base;
-    if seed.is_none() && marker_stream && p95_fps > METER_UNSEEDED_PRESENT_FPS_MAX {
-        // With a marker stream, a fast first window may be frame-gen output;
-        // wait for the markers to establish the base before seeding. Without
-        // markers frame generation can never be asserted (deinterlace below is
-        // marker-gated), so rejecting here would blind the meter permanently
-        // for any session that starts above 70 fps — a 120 Hz vsync menu.
-        return (None, false);
-    }
+    // Present pacing is usable from the first window, at any framerate. A
+    // high rate alone is not evidence of generated frames. Real base-frame
+    // markers take priority in snapshot() whenever the game supplies them.
     let inferred = infer_framegen_multiplier(raw_avg_fps, seed);
     let mut base_fps = p95_fps;
     let mut deinterlaced = false;
-    if marker_stream {
+    if marker_stream || framegen_active {
         if let (Some(last), Some(raw)) = (seed, raw_avg_fps) {
             if p95_fps > last * 1.6 && raw != 0.0 {
                 if let Some(mult) = inferred {
@@ -756,6 +764,12 @@ fn estimate_base_present_fps(
                 }
             }
         }
+    }
+    // Known generated output is not a base-frame measurement. If markers are
+    // missing and the prior base cadence cannot recover it, keep it unknown
+    // instead of seeding future decisions with the displayed framerate.
+    if framegen_active && !deinterlaced {
+        return (None, false);
     }
     *last_base = Some(base_fps);
     (Some(base_fps), deinterlaced)
@@ -942,12 +956,16 @@ impl LatencyReceiver {
     }
 
     /// `latency_meter.snapshot(now=loop_started)` — aggregate the current window.
-    pub(super) fn snapshot(&self, now: f64) -> Option<LatencySnapshot> {
+    pub(super) fn snapshot(
+        &self,
+        now: f64,
+        miss_deadline_us: Option<i64>,
+    ) -> Option<LatencySnapshot> {
         let mut meter = self
             .meter
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        meter.snapshot(now)
+        meter.snapshot(now, miss_deadline_us)
     }
 
     fn close(&mut self) {
@@ -1120,42 +1138,13 @@ mod tests {
         for s in samples {
             meter.add_sample(obj(s));
         }
-        meter.snapshot(monotonic_now())
+        meter.snapshot(monotonic_now(), None)
     }
 
     fn timing(extra: Value) -> Value {
         let mut map = obj(extra);
         map.insert("type".to_string(), Value::from("timing"));
         Value::Object(map)
-    }
-
-    #[test]
-    fn markerless_sessions_seed_above_the_unseeded_fps_gate() {
-        // A 120 Hz vsync menu with no marker stream: the meter must report
-        // the present cadence instead of staying blind for the whole session
-        // (which held adaptive on the fastest tier — the Hades II bug).
-        let mut last_base = None;
-        let (fps, deinterlaced) =
-            estimate_base_present_fps(&mut last_base, Some(120.0), Some(120.0), false);
-        assert!(approx(fps.expect("markerless high fps must seed"), 120.0));
-        assert!(!deinterlaced);
-        assert!(approx(last_base.expect("seeded"), 120.0));
-    }
-
-    #[test]
-    fn marker_sessions_still_wait_before_seeding_fast_first_windows() {
-        // With markers present, a fast first window may be frame-gen output:
-        // keep the cautious unseeded gate exactly as before.
-        let mut last_base = None;
-        let (fps, deinterlaced) =
-            estimate_base_present_fps(&mut last_base, Some(120.0), Some(120.0), true);
-        assert!(fps.is_none());
-        assert!(!deinterlaced);
-        assert!(last_base.is_none());
-        // Below the gate a marker session seeds normally.
-        let (fps, _) =
-            estimate_base_present_fps(&mut last_base, Some(60.0), Some(60.0), true);
-        assert!(approx(fps.expect("seeds below the gate"), 60.0));
     }
 
     // --- `_int_value` parity table (samples.py) ------------------------------
@@ -1244,14 +1233,14 @@ mod tests {
         }
         let received = meter.samples.back().unwrap().received_monotonic;
         // 4s past the newest sample → outside the 3s window.
-        assert!(meter.snapshot(received + 4.0).is_none());
+        assert!(meter.snapshot(received + 4.0, None).is_none());
         // Still fresh at receipt time.
-        assert!(meter.snapshot(received).is_some());
+        assert!(meter.snapshot(received, None).is_some());
     }
 
     #[test]
     fn empty_meter_snapshot_none() {
-        assert!(Meter::new().snapshot(monotonic_now()).is_none());
+        assert!(Meter::new().snapshot(monotonic_now(), None).is_none());
     }
 
     #[test]
@@ -1271,7 +1260,7 @@ mod tests {
         }
 
         assert_eq!(meter.samples.len(), 4);
-        let snapshot = meter.snapshot(monotonic_now()).unwrap();
+        let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(snapshot.pid.as_deref(), Some("111"));
         assert_eq!(snapshot.present_fps.as_deref(), Some("60"));
     }
@@ -1296,7 +1285,7 @@ mod tests {
             }))));
         }
 
-        let snapshot = meter.snapshot(monotonic_now()).unwrap();
+        let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(meter.samples.len(), 12);
         assert_eq!(snapshot.session_id.as_deref(), Some("700"));
         assert_eq!(snapshot.pid.as_deref(), Some("219896"));
@@ -1519,11 +1508,313 @@ mod tests {
         }
         // 6 present samples + exactly 1 retained driver report.
         assert_eq!(meter.samples.len(), 7);
-        let s = meter.snapshot(monotonic_now()).unwrap();
+        let s = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(s.base_present_frametime_p95_ms.unwrap(), 16.6));
         assert!(approx(s.latency_p95_ms.unwrap(), 99.0));
         assert!(s.display_latency_p95_ms.is_none());
         assert_eq!(s.pid.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn present_pacing_starts_at_any_framerate_without_a_seed() {
+        // A game's first samples are usable without first visiting a slow menu.
+        // Marker availability alone must not impose a framerate ceiling either.
+        for frametime_us in [33333, 16667, 10000, 8333, 6944, 4167, 2000] {
+            for marker_bits in [0, 64] {
+                let snapshot = snapshot_of(
+                    (0..6)
+                        .map(|_| {
+                            timing(json!({
+                                "pid": 8,
+                                "measurement": "present-pacing",
+                                "present_frametime_us": frametime_us,
+                                "marker_bits": marker_bits,
+                            }))
+                        })
+                        .collect(),
+                )
+                .unwrap();
+                assert_eq!(
+                    snapshot.base_present_frametime_p95_ms,
+                    Some(frametime_us as f64 / 1000.0),
+                    "frametime={frametime_us}, marker_bits={marker_bits}",
+                );
+                assert_eq!(snapshot.fps_source.as_deref(), Some("present-pacing"));
+                assert_eq!(snapshot.framegen_active.as_deref(), Some("false"));
+            }
+        }
+    }
+
+    fn slowdown_snapshot(
+        marker: bool,
+        normal_us: i64,
+        slow_us: i64,
+        slow_count: usize,
+    ) -> LatencySnapshot {
+        let mut meter = Meter::new();
+        for i in 0..100 {
+            let us = if i < slow_count { slow_us } else { normal_us };
+            let mut sample = obj(timing(json!({
+                "pid": 8,
+                "measurement": "present-pacing",
+                "present_frametime_us": us,
+            })));
+            if marker {
+                sample.insert("source".into(), json!(NVAPI_MARKER_SOURCE));
+                sample.insert("marker_name".into(), json!("simulation-start"));
+                sample.insert("base_frame_frametime_us".into(), json!(us));
+            }
+            meter.add_sample(sample);
+        }
+        // The 80 FPS policy's badly-slow deadline, rounded as the engine does.
+        let policy = crate::profile::adaptive::PolicyConfig::for_target_fps(80.0);
+        meter
+            .snapshot(
+                monotonic_now(),
+                Some((policy.badly_slow_ms * 1000.0).round() as i64),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn both_streams_protect_deus_ex_like_transition_spikes() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, PolicyConfig,
+        };
+
+        let tiers = vec!["efficiency".into(), "performance".into()];
+        // Observed slow tails and medians at an 80 FPS target. The miss fraction
+        // is synthetic: native pacing did not report it in the original log.
+        for (normal_us, slow_us) in [(8300, 32200), (10000, 43500), (10300, 19500)] {
+            for marker in [false, true] {
+                let mut policy = AdaptiveProfileController::new(
+                    "efficiency",
+                    PolicyConfig::for_target_fps(80.0),
+                );
+                let spike = slowdown_snapshot(marker, normal_us, slow_us, 10);
+                let stats = spike.promotion_stats.unwrap();
+                assert_eq!(stats.p50_us, normal_us);
+                assert_eq!(stats.p95_us, slow_us);
+                assert_eq!(stats.miss_ratio, Some(0.1));
+                let recovered = slowdown_snapshot(marker, normal_us, slow_us, 0);
+                // A transient remains in the 3-second window across overlapping
+                // ticks, then leaves it. It must never jump directly to the top.
+                for tick in 0..10 {
+                    let snapshot = if tick < 3 { &spike } else { &recovered };
+                    let decision = policy.update(
+                        FrametimeReadings::from_snapshot(Some(snapshot)),
+                        &tiers,
+                        100.0 + tick as f64,
+                        Some(98.0),
+                        Some(20.0),
+                        Some(35.0),
+                    );
+                    assert_eq!(
+                        decision.tier, "efficiency",
+                        "marker={marker}, tick={tick}, {decision:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_streams_still_promote_for_real_slowdown() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, PolicyConfig,
+        };
+
+        let tiers = vec!["efficiency".into(), "performance".into()];
+        for marker in [false, true] {
+            let mut policy =
+                AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(80.0));
+            let snapshot = slowdown_snapshot(marker, 10000, 25000, 90);
+            let decision = policy.update(
+                FrametimeReadings::from_snapshot(Some(&snapshot)),
+                &tiers,
+                100.0,
+                Some(98.0),
+                Some(20.0),
+                Some(35.0),
+            );
+            assert_eq!(
+                decision.reason, "badly-slow",
+                "marker={marker}, {decision:?}"
+            );
+            assert_eq!(decision.tier, "performance");
+
+            // Persistent tail misses still promote after normal confirmation;
+            // the common guard only vetoes the immediate jump.
+            let mut policy =
+                AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(80.0));
+            let snapshot = slowdown_snapshot(marker, 10000, 25000, 10);
+            for tick in 0..=3 {
+                let decision = policy.update(
+                    FrametimeReadings::from_snapshot(Some(&snapshot)),
+                    &tiers,
+                    100.0 + tick as f64,
+                    Some(98.0),
+                    Some(20.0),
+                    Some(35.0),
+                );
+                assert_eq!(
+                    decision.changed,
+                    tick == 3,
+                    "marker={marker}, tick={tick}, {decision:?}"
+                );
+                if tick == 3 {
+                    assert_eq!(decision.reason, "clearly-slow");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pacing_evidence_requires_a_valid_window_and_replaces_rejected_markers() {
+        let mut meter = Meter::new();
+        for _ in 0..3 {
+            meter.add_sample(obj(timing(
+                json!({"pid": 8, "present_frametime_us": 10000}),
+            )));
+        }
+        assert!(meter
+            .snapshot(monotonic_now(), Some(16566))
+            .unwrap()
+            .promotion_stats
+            .is_none());
+        meter.add_sample(obj(timing(
+            json!({"pid": 8, "present_frametime_us": 10000}),
+        )));
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(json!({
+                "pid": 8, "source": NVAPI_MARKER_SOURCE, "marker_name": "simulation-start",
+                "base_frame_frametime_us": 1000,
+            }))));
+        }
+        let snapshot = meter.snapshot(monotonic_now(), Some(16566)).unwrap();
+        assert_eq!(snapshot.fps_source.as_deref(), Some("present-pacing"));
+        assert_eq!(snapshot.base_present_frametime_p50_ms, None);
+        let stats = snapshot.promotion_stats.unwrap();
+        assert_eq!(stats.p50_us, 10000);
+        assert_eq!(stats.miss_ratio, Some(0.0));
+    }
+
+    #[test]
+    fn real_fps_above_target_eases_down_from_performance() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, PolicyConfig,
+        };
+
+        let tiers = vec!["efficiency".into(), "balanced".into(), "performance".into()];
+        for (target_fps, frametime_us) in [(60.0, 8333), (90.0, 5556), (144.0, 3472)] {
+            let mut meter = Meter::new();
+            let mut controller = AdaptiveProfileController::new(
+                "performance",
+                PolicyConfig::for_target_fps(target_fps),
+            );
+            let mut decision = None;
+            for tick in 0..=120 {
+                meter.samples.clear();
+                for _ in 0..6 {
+                    meter.add_sample(obj(timing(json!({
+                        "pid": 8,
+                        "measurement": "present-pacing",
+                        "present_frametime_us": frametime_us,
+                    }))));
+                }
+                let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
+                let readings = FrametimeReadings::from_snapshot(Some(&snapshot));
+                decision = Some(controller.update(
+                    readings,
+                    &tiers,
+                    100.0 + tick as f64,
+                    Some(38.0),
+                    Some(20.0),
+                    Some(35.0),
+                ));
+            }
+            assert_eq!(decision.unwrap().tier, "efficiency", "target={target_fps}");
+        }
+    }
+
+    #[test]
+    fn reflex_base_fps_wins_over_generated_output_at_startup() {
+        for base_us in [25000, 8333, 4167] {
+            let snapshot = snapshot_of(
+                (0..6)
+                    .map(|_| {
+                        timing(json!({
+                            "pid": 8,
+                            "source": NVAPI_MARKER_SOURCE,
+                            "marker_name": "simulation-start",
+                            "base_frame_frametime_us": base_us,
+                            "present_frametime_us": base_us / 2,
+                        }))
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            assert_eq!(
+                snapshot.base_present_frametime_p95_ms,
+                Some(base_us as f64 / 1000.0)
+            );
+            assert_eq!(
+                snapshot.fps_source.as_deref(),
+                Some("nvapi-base-frame-marker")
+            );
+            assert_eq!(snapshot.framegen_active.as_deref(), Some("true"));
+        }
+    }
+
+    #[test]
+    fn generated_output_without_base_timing_is_not_used_as_real_fps() {
+        for frametime_us in [33333, 16667, 8333, 4167] {
+            let mut meter = Meter::new();
+            for _ in 0..6 {
+                meter.add_sample(obj(timing(json!({
+                    "pid": 8,
+                    "measurement": "present-pacing",
+                    "present_frametime_us": frametime_us,
+                    "framegen_active": true,
+                }))));
+            }
+            let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
+            assert_eq!(snapshot.base_present_frametime_p95_ms, None);
+            assert_eq!(snapshot.promotion_stats, None);
+            assert_eq!(snapshot.fps_source.as_deref(), Some("none"));
+            assert_eq!(snapshot.framegen_active.as_deref(), Some("true"));
+            assert!(snapshot.raw_present_fps_avg.is_some());
+            assert_eq!(meter.last_base_present_fps, None);
+        }
+    }
+
+    #[test]
+    fn late_reflex_markers_replace_present_pacing_with_real_fps() {
+        let mut meter = Meter::new();
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(json!({
+                "session_id": "700", "pid": 42,
+                "measurement": "present-pacing", "present_frametime_us": 5000,
+            }))));
+        }
+        let first = meter.snapshot(monotonic_now(), None).unwrap();
+        assert_eq!(first.base_present_frametime_p95_ms, Some(5.0));
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(json!({
+                "session_id": "700", "pid": 99,
+                "source": NVAPI_MARKER_SOURCE,
+                "marker_name": "simulation-start",
+                "base_frame_frametime_us": 10000,
+            }))));
+        }
+        let second = meter.snapshot(monotonic_now(), None).unwrap();
+        assert_eq!(second.base_present_frametime_p95_ms, Some(10.0));
+        assert_eq!(
+            second.fps_source.as_deref(),
+            Some("nvapi-base-frame-marker")
+        );
+        assert_eq!(second.framegen_active.as_deref(), Some("true"));
+        assert_eq!(meter.last_base_present_fps, Some(100.0));
     }
 
     #[test]
@@ -1535,7 +1826,7 @@ mod tests {
                 json!({"pid": 8, "present_frametime_us": 20000, "marker_bits": 64}),
             )));
         }
-        let w1 = meter.snapshot(monotonic_now()).unwrap();
+        let w1 = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(w1.base_present_frametime_p95_ms.unwrap(), 20.0));
         assert_eq!(w1.fps_source.as_deref(), Some("present-pacing"));
         assert_eq!(w1.framegen_active.as_deref(), Some("false"));
@@ -1548,7 +1839,7 @@ mod tests {
                 json!({"pid": 8, "present_frametime_us": 10000, "marker_bits": 64}),
             )));
         }
-        let w2 = meter.snapshot(monotonic_now()).unwrap();
+        let w2 = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(w2.base_present_frametime_p95_ms.unwrap(), 20.0));
         assert_eq!(w2.present_fps.as_deref(), Some("50"));
         assert_eq!(
@@ -1561,6 +1852,47 @@ mod tests {
     }
 
     #[test]
+    fn generated_present_frames_do_not_veto_base_fps_promotion() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, PolicyConfig,
+        };
+
+        let mut meter = Meter::new();
+        // Seed the real 40 FPS cadence, then enable 2x frame generation.
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(
+                json!({"pid": 8, "present_frametime_us": 25000, "marker_bits": 64}),
+            )));
+        }
+        meter.snapshot(monotonic_now(), None).unwrap();
+        meter.samples.clear();
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(
+                json!({"pid": 8, "present_frametime_us": 12500, "marker_bits": 64}),
+            )));
+        }
+        let snapshot = meter.snapshot(monotonic_now(), Some(22000)).unwrap();
+        assert_eq!(
+            snapshot.fps_source.as_deref(),
+            Some("present-pacing-deinterlaced")
+        );
+        assert_eq!(snapshot.base_present_frametime_p95_ms, Some(25.0));
+        assert_eq!(snapshot.base_present_frametime_p50_ms, None);
+        assert_eq!(snapshot.present_pacing_p50_ms, Some(12.5));
+        assert_eq!(snapshot.promotion_stats, None);
+
+        let readings = FrametimeReadings::from_snapshot(Some(&snapshot));
+        let tiers = vec!["efficiency".into(), "balanced".into(), "performance".into()];
+        let mut controller = AdaptiveProfileController::new("efficiency", PolicyConfig::default());
+        let decision =
+            controller.update(readings, &tiers, 100.0, Some(99.0), Some(20.0), Some(35.0));
+        // 80 displayed FPS must not hide a GPU-bound 40 base FPS session
+        // missing the default 60 FPS target.
+        assert_eq!(decision.tier, "performance", "{decision:?}");
+        assert_eq!(decision.reason, "badly-slow");
+    }
+
+    #[test]
     fn deinterlace_gated_on_marker_stream() {
         // Same rate jump WITHOUT a marker stream is a real framerate increase, not
         // frame generation: no deinterlace, base tracks the new rate.
@@ -1570,14 +1902,14 @@ mod tests {
                 json!({"pid": 9, "present_frametime_us": 20000}),
             )));
         }
-        meter.snapshot(monotonic_now());
+        meter.snapshot(monotonic_now(), None);
         meter.samples.clear();
         for _ in 0..6 {
             meter.add_sample(obj(timing(
                 json!({"pid": 9, "present_frametime_us": 10000}),
             )));
         }
-        let w2 = meter.snapshot(monotonic_now()).unwrap();
+        let w2 = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(w2.fps_source.as_deref(), Some("present-pacing"));
         assert_eq!(w2.framegen_active.as_deref(), Some("false"));
         assert!(approx(w2.base_present_frametime_p95_ms.unwrap(), 10.0));
@@ -1600,7 +1932,7 @@ mod tests {
                 json!({"pid": "12345", "present_frametime_us": 16667}),
             )));
         }
-        let s = meter.snapshot(monotonic_now()).unwrap();
+        let s = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(s.pid.as_deref(), Some("12345"));
         assert!(approx(s.base_present_frametime_p95_ms.unwrap(), 16.667));
     }
@@ -1618,6 +1950,63 @@ mod tests {
     // --- end-to-end: real socket, synthetic client, engine-visible snapshot ---
 
     static SOCK_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn socket_spikes_use_the_same_guard_for_both_sources() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, PolicyConfig,
+        };
+
+        for marker in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let sock_path = dir.path().join("latency.sock");
+            let receiver = LatencyReceiver::start_at(vec![sock_path.clone()], &mut |_| {})
+                .expect("receiver binds");
+            let client = UnixDatagram::unbound().unwrap();
+            for us in [10000, 10000, 10000, 10000, 10000, 32000] {
+                let mut payload = timing(json!({
+                    "pid": 31337, "present_frametime_us": us,
+                }));
+                if marker {
+                    payload["source"] = json!(NVAPI_MARKER_SOURCE);
+                    payload["marker_name"] = json!("simulation-start");
+                    payload["base_frame_frametime_us"] = json!(us);
+                }
+                client
+                    .send_to(payload.to_string().as_bytes(), &sock_path)
+                    .unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let snapshot = loop {
+                if let Some(snapshot) = receiver.snapshot(monotonic_now(), Some(16566)) {
+                    if snapshot
+                        .promotion_stats
+                        .is_some_and(|stats| stats.miss_ratio == Some(1.0 / 6.0))
+                    {
+                        break snapshot;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "all timing datagrams must arrive"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let mut policy =
+                AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(80.0));
+            let tiers = vec!["efficiency".into(), "performance".into()];
+            let decision = policy.update(
+                FrametimeReadings::from_snapshot(Some(&snapshot)),
+                &tiers,
+                100.0,
+                Some(98.0),
+                Some(20.0),
+                Some(35.0),
+            );
+            assert_eq!(decision.tier, "efficiency", "marker={marker}, {decision:?}");
+            assert_eq!(decision.reason, "clearly-slow-wait");
+        }
+    }
 
     #[test]
     fn end_to_end_client_datagrams_reach_snapshot() {
@@ -1646,7 +2035,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut got = None;
         while Instant::now() < deadline {
-            if let Some(snap) = receiver.snapshot(monotonic_now()) {
+            if let Some(snap) = receiver.snapshot(monotonic_now(), None) {
                 if snap.present_fps.as_deref() == Some("60") {
                     got = Some(snap);
                     break;

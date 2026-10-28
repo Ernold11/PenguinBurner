@@ -165,6 +165,7 @@ class CurvePlot:
         color: str = theme.PLOT_COMPARISON,
         alpha: int = 135,
         width: int = 1,
+        z_value: float = -5.0,
     ) -> None:
         if self.pg is None or not hasattr(self, "plot"):
             return
@@ -180,7 +181,7 @@ class CurvePlot:
             name=str(name),
         )
         if hasattr(trace, "setZValue"):
-            trace.setZValue(-5)
+            trace.setZValue(float(z_value))
         self.comparison_curves.append(trace)
 
     def clear(self) -> None:

@@ -25,8 +25,7 @@ def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:
 
 def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
     cleaned = str(pci_device_id or "").strip().lower()
-    if cleaned.startswith("0x"):
-        cleaned = cleaned[2:]
+    cleaned = cleaned.removeprefix("0x")
     cleaned = "".join(ch for ch in cleaned if ch in "0123456789abcdef")
     if len(cleaned) < 8:
         return "", ""
@@ -38,7 +37,7 @@ def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
 def _query_selected_nvidia_gpu(gpu_index: int) -> dict[str, str]:
     try:
         identity = DaemonGpuClient(int(gpu_index)).capabilities().identity
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     dri_prime = _nvidia_pci_bus_id_to_dri_prime(identity.pci_bus_id)
     vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(
@@ -76,6 +75,19 @@ def _apply_nvidia_render_offload_env(
     if mesa_vk_select:
         updated["MESA_VK_DEVICE_SELECT"] = f"{mesa_vk_select}!"
         updated["MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE"] = "1"
+    # The NVIDIA ICD ignores the selectors above on multi-GPU boxes, so the
+    # Vulkan loader still enumerates all cards and the benchmark's "first
+    # capable device" pick is arbitrary. Pass the target UUID so a patched
+    # Q2RTX (Q2RTX-headless: pin-by-UUID) can select the correct device.
+    # NVML reports "GPU-<hex with dashes>"; the Vulkan device UUID is the same
+    # value without the prefix/dashes, so normalize to plain lowercase hex.
+    target_uuid = str(selected_gpu.get("uuid", "")).strip()
+    if target_uuid:
+        if target_uuid.upper().startswith("GPU-"):
+            target_uuid = target_uuid[4:]
+        target_uuid = target_uuid.replace("-", "").lower()
+    if target_uuid:
+        updated["Q2RTX_TARGET_UUID"] = target_uuid
     return updated
 
 

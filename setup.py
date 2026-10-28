@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parent
 NATIVE_LAYER_SOURCE_DIR = ROOT / "overlay" / "native" / "latency_layer"
 NATIVE_LAYER_LIBRARY = "libVkLayer_penguinburner_latency.so"
 NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
+# The 32-bit companion, built alongside and copied into the same directory
+# under distinct names so a 32-bit game (wine i386 winevulkan) gets the overlay.
+NATIVE_LAYER_LIBRARY_I386 = "libVkLayer_penguinburner_latency_i386.so"
+NATIVE_LAYER_MANIFEST_I386 = "VkLayer_PENGUINBURNER_latency.i386.json"
 NVAPI_SHIM_SOURCE_DIR = ROOT / "overlay" / "native" / "nvapi_shim"
 NVAPI_SHIM_DLL = "nvapi64.dll"
 NVAPI_SHIM_COMPILER = "x86_64-w64-mingw32-g++"
@@ -128,6 +132,106 @@ class build_py(_build_py):
                 return
             shutil.copy2(source, output_dir / name)
 
+        self._build_native_latency_layer_i386(cmake, output_dir)
+
+    def _build_native_latency_layer_i386(self, cmake: str, output_dir: Path) -> None:
+        """Build the 32-bit companion layer, best effort, into the same dir.
+
+        A 32-bit Windows game renders through wine's i386 winevulkan, so the
+        loader can only inject a 32-bit layer into it. Optional like the NVAPI
+        shim: without a 32-bit C++ toolchain the overlay simply stays 64-bit
+        only, so a missing multilib toolchain is a warning, not a failure --
+        unless PENGUIN_BURNER_REQUIRE_NATIVE_LAYER32 is set, for a release
+        build that must ship both.
+        """
+        if _env_flag_disabled("PENGUIN_BURNER_BUILD_NATIVE_LAYER32"):
+            return
+        require = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_NATIVE_LAYER32")
+        if self._copy_prebuilt_native_layer32(output_dir, require=require):
+            return
+        build_root = Path(self.build_lib).parent / "penguinburner-latency-layer-i386"
+        if build_root.exists():
+            shutil.rmtree(build_root)
+        try:
+            subprocess.check_call(
+                [
+                    cmake,
+                    "-S",
+                    str(NATIVE_LAYER_SOURCE_DIR),
+                    "-B",
+                    str(build_root),
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_C_FLAGS=-m32",
+                    "-DCMAKE_CXX_FLAGS=-m32",
+                    "-DPB_LAYER_NAME_SUFFIX=_i386",
+                ]
+            )
+            subprocess.check_call(
+                [cmake, "--build", str(build_root), "--config", "Release"]
+            )
+        except subprocess.CalledProcessError as exc:
+            self._native_layer32_unavailable(
+                f"32-bit native Vulkan layer build failed: {exc}", require=require
+            )
+            return
+        # The 32-bit build's manifest already names the _i386 library and
+        # declares library_arch 32 (CMAKE_SIZEOF_VOID_P is 4 under -m32); it is
+        # copied under a distinct manifest file name so it sits beside the
+        # 64-bit manifest in one directory the loader scans.
+        for build_name, output_name in (
+            (NATIVE_LAYER_LIBRARY_I386, NATIVE_LAYER_LIBRARY_I386),
+            (NATIVE_LAYER_MANIFEST, NATIVE_LAYER_MANIFEST_I386),
+        ):
+            source = build_root / build_name
+            if not source.exists():
+                self._native_layer32_unavailable(
+                    f"32-bit native Vulkan layer build did not produce {source}",
+                    require=require,
+                )
+                return
+            shutil.copy2(source, output_dir / output_name)
+
+    def _copy_prebuilt_native_layer32(self, output_dir: Path, *, require: bool) -> bool:
+        """Take the layer from PENGUIN_BURNER_NATIVE_LAYER32_PREBUILT instead.
+
+        For a build whose own toolchain cannot produce 32-bit objects at all.
+        The Flatpak SDK is the case: its gcc has no multilib and no 32-bit
+        libgcc exists in the SDK or in Sdk.Compat.i386, so -m32 compiles and
+        never links. scripts/build-native-layer-i386.sh prepares the pair
+        outside the sandbox and this copies it in.
+
+        Returns True when the directory was consulted -- including when it was
+        unusable, since a caller that named one has already said its own
+        toolchain cannot stand in.
+        """
+        prebuilt = os.environ.get("PENGUIN_BURNER_NATIVE_LAYER32_PREBUILT", "").strip()
+        if not prebuilt:
+            return False
+        source_dir = Path(prebuilt)
+        missing = [
+            name
+            for name in (NATIVE_LAYER_LIBRARY_I386, NATIVE_LAYER_MANIFEST_I386)
+            if not (source_dir / name).is_file()
+        ]
+        if missing:
+            self._native_layer32_unavailable(
+                f"prebuilt 32-bit layer directory {source_dir} is missing "
+                f"{', '.join(missing)}",
+                require=require,
+            )
+            return True
+        for name in (NATIVE_LAYER_LIBRARY_I386, NATIVE_LAYER_MANIFEST_I386):
+            shutil.copy2(source_dir / name, output_dir / name)
+        return True
+
+    def _native_layer32_unavailable(self, message: str, *, require: bool) -> None:
+        if require:
+            raise RuntimeError(message)
+        self.warn(
+            f"{message}; installing without the 32-bit overlay layer "
+            "(64-bit games are unaffected)"
+        )
+
     def _native_layer_unavailable(self, message: str, *, require: bool) -> None:
         if require:
             raise RuntimeError(message)
@@ -197,11 +301,11 @@ class build_py(_build_py):
         # Compile the root daemon (burnerd/ Rust crate) and stage the release
         # binary inside the package at runtime/daemon_bin/penguin-burnerd so the
         # elevated systemd-install step has a copy to place at
-        # /usr/libexec/penguin-burnerd. The unit always executes that root-owned
-        # target; the bundled file is only an install source. Without cargo, a
-        # plain `pip install .` still yields a working GUI/CLI, so a missing
-        # toolchain is a warning unless REQUIRE_DAEMON forces it (release/native
-        # builds do).
+        # /var/opt/penguin-burner/libexec/penguin-burnerd. The unit always
+        # executes that root-owned target; the bundled file is only an install
+        # source. Without cargo, a plain `pip install .` still yields a working
+        # GUI/CLI, so a missing toolchain is a warning unless REQUIRE_DAEMON
+        # forces it (release/native builds do).
         if _env_flag_disabled("PENGUIN_BURNER_BUILD_DAEMON"):
             return
         require_daemon = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_DAEMON")
@@ -212,6 +316,10 @@ class build_py(_build_py):
             )
             return
         if not DAEMON_MANIFEST.exists():
+            self._daemon_unavailable(
+                f"penguin-burnerd daemon sources are missing ({DAEMON_MANIFEST})",
+                require=require_daemon,
+            )
             return
         cargo = shutil.which("cargo")
         if not cargo:

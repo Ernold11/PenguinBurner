@@ -6,7 +6,6 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class AutoUvDefaults:
     probe_duration_s: int = 10
-    shape_probe_duration_s: int = 10
     final_duration_s: int = 300
     # Per-tier final-verification soak: the deeper/more aggressive the tier,
     # the longer the confirmation. An explicit --auto-uv-final-verification-s
@@ -15,15 +14,13 @@ class AutoUvDefaults:
     balanced_final_duration_s: int = 180
     performance_final_duration_s: int = 300
     max_drop_pct: float = 10.0
-    max_core_clock_drop_pct: float = 12.5
     efficiency_stop_streak: int = 2
-    tail_rise_bins: int = 0
-    balanced_tail_rise_bins: int = 4
-    # 6 bins (+90 MHz) predates the per-tier scan reaching the full NV-UV
-    # table lock; with the lock on target it overshoots in gameplay (3060
-    # on a 2970 lock). Keep the default boost headroom modest; the
-    # --auto-uv-tail-rise-bins expert flag still allows up to the max.
-    performance_tail_rise_bins: int = 4
+    tail_rise_bins: int = 2
+    # Keep modest boost headroom (+30 MHz nominal) above each selected point.
+    # Matching tails preserve Balanced-to-Performance descent reuse when
+    # the remaining policy inputs also match.
+    balanced_tail_rise_bins: int = 2
+    performance_tail_rise_bins: int = 2
     max_tail_rise_bins: int = 8
 
 
@@ -37,42 +34,29 @@ class AutoUvCurveTuning:
     lower_voltage_nominal_drop_mv: int = 5
     lower_voltage_effective_gap_mv: float = 5.0
     clock_step_mhz: int = 15
-    clock_select_tolerance_mhz: float = 5.0
     flatten_ramp_window_mv: int = 40
 
 
 @dataclass(frozen=True, slots=True)
 class AutoUvMetricTuning:
-    min_temp_normalized_fps_per_w_improvement_pct: float = 1.0
     min_efficiency_stop_voltage_drop_pct: float = 10.0
-    temperature_normalization_power_pct_per_c: float = 0.5
-    temperature_normalization_max_delta_c: float = 10.0
     loaded_sample_warmup_s: float = 5.0
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2
-    min_performance_core_clock_pct: float = 85.0
     min_proper_run_power_pct: float = 50.0
     efficiency_stop_high_fps_variance_pct: float = 2.0
     efficiency_stop_low_variance_streak: int = 2
     efficiency_stop_high_variance_streak: int = 4
-    target_core_clock_low_streak_samples: int = 3
     power_saturation_headroom_pct: float = 2.0
     loaded_sample_power_floor_pct: float = 75.0
     loaded_sample_gpu_util_pct: float = 60.0
     active_core_clock_percentile: float = 0.75
-    loaded_voltage_floor_percentile: float = 0.10
-    loaded_voltage_ceiling_percentile: float = 0.90
-
-    @property
-    def max_core_clock_drop_pct(self) -> float:
-        return max(0.0, 100.0 - float(self.min_performance_core_clock_pct))
 
 
 @dataclass(frozen=True, slots=True)
 class AutoUvProbeTuning:
     tiered_cuda_duration_s: int = 5
-    timeout_multiplier: float = 2.0
     short_timeout_buffer_s: float = 15.0
     high_voltage_pct: float = 95.0
     medium_voltage_pct: float = 90.0
@@ -80,10 +64,8 @@ class AutoUvProbeTuning:
 
 @dataclass(frozen=True, slots=True)
 class AutoUvStallTuning:
-    timeout_min_s: float = 15.0
-    timeout_multiplier: float = 2.5
-    live_core_clock_abort_min_samples: int = 8
-    avg_core_clock_abort_min_samples: int = 12
+    load_lost_min_samples: int = 8
+    load_lost_streak_samples: int = 3
     selected_gpu_idle_min_s: float = 12.0
     selected_gpu_idle_min_samples: int = 8
     selected_gpu_idle_max_util_pct: float = 5.0

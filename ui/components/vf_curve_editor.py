@@ -1,24 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
-from curve_editors.uv.vf_curve_manual_editor import ManualCurveEdit
-from curve_editors.uv.vf_curve_manual_editor import manual_add_curve_point_edit
-from curve_editors.uv.vf_curve_manual_editor import manual_drag_anchor_edit
-from curve_editors.uv.vf_curve_manual_editor import manual_flatten_from_existing_point
-from curve_editors.uv.vf_curve_manual_editor import manual_nudge_selected_frequency
-from curve_editors.uv.vf_curve_manual_editor import manual_nudge_selected_voltage
-from curve_editors.uv.vf_curve_manual_editor import manual_offset_selected_range
-from curve_editors.uv.vf_curve_manual_editor import manual_select_adjacent_point
-from curve_editors.uv.vf_curve_manual_editor import manual_select_curve_point
-from curve_editors.uv.vf_curve_manual_editor import manual_select_range_to_right
-from curve_editors.uv.vf_curve_manual_editor import manual_tune_single_point_edit
+from curve_editors.uv.vf_curve_manual_editor import (
+    ManualCurveEdit,
+    manual_add_curve_point_edit,
+    manual_drag_anchor_edit,
+    manual_flatten_from_existing_point,
+    manual_nudge_selected_frequency,
+    manual_nudge_selected_voltage,
+    manual_offset_selected_range,
+    manual_select_adjacent_point,
+    manual_select_curve_point,
+    manual_select_range_to_right,
+    manual_tune_single_point_edit,
+)
+from ui.features.curves.curve_profiles import curve_points_from_values
 
 from .. import theme
-from ui.features.curves.curve_profiles import curve_points_from_values
-from .curve_editor import CurveEditHistory
-from .curve_editor import install_curve_editor_shortcut_legend
-from .curve_editor import nearest_curve_point
+from .curve_editor import (
+    CurveEditHistory,
+    install_curve_editor_shortcut_legend,
+    nearest_curve_point,
+)
 from .curve_plot import CurvePlot
 
 
@@ -72,7 +77,7 @@ def open_vf_curve_editor_dialog(
     current_edit = {"value": initial_manual_edit()}
     syncing_target = {"active": False}
     syncing_point_handles = {"active": False}
-    point_handle_items: dict[int, object] = {}
+    point_handle_items: dict[int, Any] = {}
 
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Edit VF Curve")
@@ -327,7 +332,7 @@ def open_vf_curve_editor_dialog(
 
     def point_handle_values(edit: ManualCurveEdit) -> dict[int, int]:
         values = {}
-        control_voltage_mvs = set(int(value) for value in edit.control_voltage_mvs)
+        control_voltage_mvs = {int(value) for value in edit.control_voltage_mvs}
         anchor_voltage_mv = int(edit.anchor_voltage_mv)
         selected_voltage_mv = (
             None
@@ -363,7 +368,7 @@ def open_vf_curve_editor_dialog(
             points.append((float(voltage_mv), float(clock_mhz)))
         return sorted(points)
 
-    def point_item(entry):
+    def point_item(entry: Any) -> Any:
         return entry.get("item") if isinstance(entry, dict) else entry
 
     def style_point_handle(item, *, selected: bool) -> None:
@@ -647,7 +652,7 @@ def open_vf_curve_editor_dialog(
     def save_edit() -> None:
         try:
             message = save_callback(current_edit["value"])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 dialog,
                 "Edit VF Curve",

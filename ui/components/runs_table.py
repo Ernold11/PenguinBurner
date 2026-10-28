@@ -3,14 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .. import theme
-from ..models import probe_decision_label
-from ..models import probe_failure_label
-from ..models import probe_reason_tooltip
+from ..models import probe_decision_label, probe_failure_label, probe_reason_tooltip
 from .table_sizing import set_header_fit_column_widths
 
 
 class RunsTable:
-    COLUMNS = [
+    COLUMNS = (
         "Run",
         "mV",
         "Tgt MHz",
@@ -24,7 +22,7 @@ class RunsTable:
         "FPS/W",
         "Result",
         "Status",
-    ]
+    )
     TARGET_MHZ_COLUMN = 2
     OC_MHZ_COLUMN = 3
     MEASURED_MHZ_COLUMN = 4
@@ -97,7 +95,7 @@ class RunsTable:
                 self.TEMP_COLUMN: "100.00",
                 self.FAN_COLUMN: "100.00",
                 self.PERF_CAP_COLUMN: "sw-power",
-                self.FPSW_COLUMN: "0.25 (+28.34%)",
+                self.FPSW_COLUMN: "0.2500 (+28.34%)",
                 self.DECISION_COLUMN: "discarded",
             },
             QtCore=QtCore,
@@ -277,7 +275,10 @@ class RunsTable:
             self._metric_text_with_delta(payload.get("power_w"), "power_w"),
             _format_float(payload.get("temp_c")),
             _format_float(payload.get("fan_pct")),
-            _perf_cap_reason_text(payload.get("perf_cap_reason")),
+            _perf_cap_reason_text(
+                payload.get("perf_cap_reason"),
+                payload.get("hw_power_brake_samples"),
+            ),
             self._metric_text_with_delta(
                 payload.get("efficiency_fps_per_w"),
                 "efficiency_fps_per_w",
@@ -313,7 +314,7 @@ class RunsTable:
         return _payload_oc_from_measured_baseline(payload, self.base_baseline)
 
     def _metric_text_with_delta(self, value, baseline_key: str) -> str:
-        value_text = _format_float(value)
+        value_text = _format_float(value, precision=4 if baseline_key == "efficiency_fps_per_w" else 2)
         if not value_text:
             return ""
         delta_text = self._delta_text(value, baseline_key)
@@ -336,7 +337,7 @@ class RunsTable:
         if current is None or baseline is None or baseline == 0.0:
             return ""
         if current == baseline:
-            return "ref" if baseline_key == "fps" else "ref"
+            return "ref"
         raw_delta_pct = ((current - baseline) / baseline) * 100.0
         return f"{raw_delta_pct:+.2f}%"
 
@@ -404,7 +405,10 @@ class RunsTable:
         item.setToolTip(f"FPS/W {delta_pct:+.2f}% vs base")
 
     def _set_perf_cap_cell(self, row: int, payload: dict, *, row_state: str) -> None:
-        reason_text = _perf_cap_reason_text(payload.get("perf_cap_reason"))
+        reason_text = _perf_cap_reason_text(
+            payload.get("perf_cap_reason"),
+            payload.get("hw_power_brake_samples"),
+        )
         item = self.widget.item(row, self.PERF_CAP_COLUMN)
         if item is None:
             item = self.widget_item(
@@ -415,7 +419,10 @@ class RunsTable:
             self.widget.setItem(row, self.PERF_CAP_COLUMN, item)
         elif reason_text:
             item.setText(reason_text)
-        tooltip = _perf_cap_reason_tooltip(payload.get("perf_cap_reason"))
+        tooltip = _perf_cap_reason_tooltip(
+            payload.get("perf_cap_reason"),
+            payload.get("hw_power_brake_samples"),
+        )
         if tooltip:
             item.setToolTip(tooltip)
 
@@ -445,7 +452,7 @@ class RunsTable:
                 ratio = 1.0
                 shown_elapsed = float(target)
             bar.setRange(0, 1000)
-            bar.setValue(int(round(ratio * 1000.0)))
+            bar.setValue(round(ratio * 1000.0))
             time_text = _progress_time_text(shown_elapsed, target)
             bar.setFormat(f"{label} {time_text}" if label else time_text)
             bar.setToolTip(
@@ -510,7 +517,11 @@ class RunsTable:
             voltage = self._cell_text(row, 1)
             clock = self._cell_text(row, self.TARGET_MHZ_COLUMN)
             probe_key = (voltage, clock)
-        progress = dict(self._progress_by_probe.get(probe_key, {}))
+        progress = (
+            dict(self._progress_by_probe.get(probe_key, {}))
+            if probe_key is not None
+            else {}
+        )
         progress["label"] = str(label)
         return progress
 
@@ -670,9 +681,10 @@ def _row_state(payload: dict, *, running: bool) -> str:
     severity = str(payload.get("failure_severity", "")).lower()
     reason = str(payload.get("reason", "")).lower()
     text = f"{decision} {reason}"
-    if "base" in stage or "stock" in stage or stage == "baseline":
-        if "fail" not in text and "error" not in text:
-            return "baseline"
+    if (
+        "base" in stage or "stock" in stage or stage == "baseline"
+    ) and "fail" not in text and "error" not in text:
+        return "baseline"
     if severity == "recoverable":
         return "warning"
     if severity in {"critical", "unsafe"}:
@@ -833,7 +845,7 @@ def _payload_oc_from_measured_baseline(
     )
     if target_clock_mhz is None or baseline_clock_mhz is None:
         return None
-    delta_mhz = int(round(float(target_clock_mhz) - float(baseline_clock_mhz)))
+    delta_mhz = round(float(target_clock_mhz) - float(baseline_clock_mhz))
     return (delta_mhz, delta_mhz)
 
 
@@ -880,7 +892,7 @@ def _format_duration_compact(seconds) -> str:
     if seconds in (None, ""):
         return "n/a"
     try:
-        total_seconds = max(0, int(round(float(seconds))))
+        total_seconds = max(0, round(float(seconds)))
     except (TypeError, ValueError):
         return "n/a"
     if total_seconds < 60:
@@ -891,7 +903,7 @@ def _format_duration_compact(seconds) -> str:
             return f"{minutes}min {remainder_seconds}s"
         return f"{minutes}min"
     hours, remainder_seconds = divmod(total_seconds, 3600)
-    minutes = int(round(remainder_seconds / 60.0))
+    minutes = round(remainder_seconds / 60.0)
     if minutes >= 60:
         hours += 1
         minutes = 0
@@ -912,18 +924,34 @@ def _payload_number(payload: dict, *keys: str):
     return None
 
 
-def _perf_cap_reason_text(value) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    return text.replace(",", "+")
+def _perf_cap_reason_text(value, hw_power_brake_samples: object = 0) -> str:
+    text = str(value or "").strip().replace(",", "+")
+    if not _brake_count(hw_power_brake_samples):
+        return text
+    # The summarizer may suppress a sparse power token, but a power-delivery
+    # brake is never something the Cap column should quietly drop.
+    if "power-brake" in text.lower():
+        return text
+    return f"{text}+hw-power-brake" if text and text != "none" else "hw-power-brake"
 
 
-def _perf_cap_reason_tooltip(value) -> str:
-    text = _perf_cap_reason_text(value)
+def _perf_cap_reason_tooltip(value, hw_power_brake_samples: object = 0) -> str:
+    text = _perf_cap_reason_text(value, hw_power_brake_samples)
     if not text:
         return ""
-    return f"NVML clocks throttle reason: {text}"
+    tooltip = f"NVML clocks throttle reason: {text}"
+    brake_samples = _brake_count(hw_power_brake_samples)
+    if brake_samples:
+        tooltip += (
+            f"\nhw-power-brake on {brake_samples} samples: the board's power "
+            "delivery limited the clock, not the configured power limit"
+        )
+    return tooltip
+
+
+def _brake_count(value: object) -> int:
+    number = _to_float(value)
+    return max(0, int(number)) if number is not None else 0
 
 
 def _to_float(value) -> float | None:
@@ -939,7 +967,7 @@ def _format_int(value) -> str:
     number = _to_float(value)
     if number is None:
         return ""
-    return str(int(round(number)))
+    return str(round(number))
 
 
 def _format_oc_progress(value: tuple[int, int] | None) -> str:
@@ -949,7 +977,7 @@ def _format_oc_progress(value: tuple[int, int] | None) -> str:
     if value is None:
         return ""
     oc_mhz, _limit_mhz = value
-    return _format_signed_mhz(int(round(float(oc_mhz))))
+    return _format_signed_mhz(round(float(oc_mhz)))
 
 
 def _format_oc_progress_for_payload(
@@ -965,8 +993,8 @@ def _format_signed_mhz(value: int) -> str:
     return f"{int(value):+d} MHz"
 
 
-def _format_float(value) -> str:
+def _format_float(value, *, precision: int = 2) -> str:
     number = _to_float(value)
     if number is None:
         return ""
-    return f"{number:.2f}"
+    return f"{number:.{precision}f}"

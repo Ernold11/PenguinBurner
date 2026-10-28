@@ -5,12 +5,12 @@ This package is outside auto_uv because it validates system readiness, not the u
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Any, Callable, Protocol, cast
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient, VfPoint
-
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)
 AUTO_UV_SUPPORT_ISSUE_URL = "https://github.com/jpietek/PenguinBurner/issues/3"
@@ -165,7 +165,7 @@ def run_auto_uv_initial_check(
 
     try:
         client = gpu_client_factory(int(gpu_index))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         client = None
         client_error = exc
     else:
@@ -217,7 +217,7 @@ def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
     rows = []
     try:
         capabilities = DaemonGpuClient.discover_capabilities()
-    except Exception:
+    except Exception:  # noqa: BLE001
         capabilities = []
     for item in capabilities:
         identity = item.identity
@@ -297,7 +297,7 @@ def _validate_architecture(architecture: int | None) -> InitialCheckIssue | None
 def _validate_nvapi_voltage_reader(reader: _VoltageReader) -> list[InitialCheckIssue]:
     try:
         voltage_uv = reader.read_microvolts()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return [
             InitialCheckIssue(
                 "error",
@@ -333,7 +333,7 @@ def _validate_nvapi_voltage_reader(reader: _VoltageReader) -> list[InitialCheckI
 def _validate_vf_curve(reader) -> list[InitialCheckIssue]:
     try:
         points = list(reader.editable_core_points())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return [
             InitialCheckIssue(
                 "error",
@@ -403,7 +403,7 @@ def _validate_nvapi_vf_setter(
             for point in reader.editable_core_points()
         ]
         reader.apply_offsets_khz(offsets)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         permission_error = _looks_like_permission_error(exc)
         return [
             InitialCheckIssue(
@@ -444,7 +444,7 @@ def _validate_nvml_clock_lock(
             snap_to_supported=True,
         )
         controller.reset_locked_core_clocks()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         permission_error = _looks_like_permission_error(exc)
         return [
             InitialCheckIssue(
@@ -465,7 +465,7 @@ def _validate_nvml_clock_lock(
     finally:
         try:
             controller.reset_locked_core_clocks()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return []
 
@@ -476,7 +476,7 @@ def _reader_last_raw_microvolts(reader) -> int | None:
         return None
     try:
         raw = getter()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if raw is None:
         return None

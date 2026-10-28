@@ -20,6 +20,20 @@ def test_inject_into_empty_string() -> None:
     )
 
 
+@pytest.mark.parametrize("literal", [
+    "sh -c 'echo PENGUIN_BURNER --pb-overlay=1 PB_INGAME_LATENCY=1'",
+    'env NOTE="literal  PENGUIN_BURNER --pb-overlay=1"  gamemoderun',
+])
+def test_strip_preserves_wrapper_looking_text_inside_arguments(literal) -> None:
+    assert strip_penguin_burner_tokens(literal) == literal
+    state = injection_state(literal)
+    assert not state.wrapped
+    assert not state.overlay
+    assert not state.ingame_latency
+    wrapped = f"PENGUIN_BURNER --pb-overlay=0 {literal} %command%"
+    assert strip_penguin_burner_tokens(wrapped) == f"{literal} %command%"
+
+
 def test_inject_preserves_env_prefix() -> None:
     assert (
         inject_launch_options("DXVK_ASYNC=1 %command%")
@@ -50,6 +64,19 @@ def test_inject_replaces_first_token_only() -> None:
         inject_launch_options('eval $(echo "%command%" | sed "s/a/b/")')
         == 'eval $(echo "PENGUIN_BURNER --pb-overlay=0 %command%" | sed "s/a/b/")'
     )
+
+
+def test_quoted_command_builder_can_toggle_without_duplicate_wrappers() -> None:
+    original = 'eval $(echo "%command%" | sed "s/a/b/")'
+    injected = inject_launch_options(original, overlay=True, ingame_latency=True)
+    assert injection_state(injected).wrapped
+    assert injection_state(injected).overlay
+    assert inject_launch_options(injected, overlay=True, ingame_latency=True) == injected
+    hidden = inject_launch_options(injected, ingame_latency=True)
+    assert hidden.count("PENGUIN_BURNER") == 1
+    assert injection_state(hidden).ingame_latency
+    assert not injection_state(hidden).overlay
+    assert strip_penguin_burner_tokens(hidden) == original
 
 
 def test_tokenless_string_is_treated_as_game_args() -> None:
@@ -178,3 +205,40 @@ def test_popular_linux_gaming_launch_chains_survive_pb_round_trip(
     # Toggling PB visualization only changes PB's own flag.
     overlay_off = inject_launch_options(injected, overlay=False)
     assert overlay_off == injected.replace("--pb-overlay=1", "--pb-overlay=0")
+
+
+@pytest.mark.parametrize('original', ['gamescope -- %command% -arg', 'bash -c \'%command% -arg\'', ''])
+def test_flatpak_wrapper_can_be_toggled_repeatedly(original):
+    wrapper = '/home/player/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    enabled = inject_launch_options(original, overlay=True, executable=wrapper)
+    assert injection_state(enabled).wrapped and injection_state(enabled).overlay
+    hidden = inject_launch_options(enabled, executable=wrapper)
+    assert hidden.count(wrapper) == 1
+    assert injection_state(hidden).wrapped and not injection_state(hidden).overlay
+    assert remove_injection(hidden) == original
+
+
+def test_flatpak_wrapper_with_spaces_round_trips_outside_script():
+    wrapper = '/home/space home/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    enabled = inject_launch_options('%command% -arg', executable=wrapper)
+    assert injection_state(enabled).wrapped
+    assert inject_launch_options(enabled, executable=wrapper) == enabled
+    assert remove_injection(enabled) == '%command% -arg'
+
+
+def test_quoted_script_with_unsafe_wrapper_path_is_rejected():
+    with pytest.raises(ValueError, match='quoted %command%'):
+        inject_launch_options("bash -c '%command%'", executable='/home/space home/PENGUIN_BURNER')
+
+
+@pytest.mark.parametrize('original', [
+    'PENGUIN_BURNER --pb-overlay=1 --pb-custom=keep %command%',
+    "sh -c 'PENGUIN_BURNER --pb-overlay=1 --pb-custom=keep %command%'",
+])
+def test_manual_flatpak_wrapper_retargets_without_losing_flags(original):
+    from integrations.steam.launch_options import retarget_wrapper
+
+    wrapper = '/home/player/.var/app/com.valvesoftware.Steam/data/penguin-burner/PENGUIN_BURNER'
+    result = retarget_wrapper(original, wrapper)
+    assert result == original.replace('PENGUIN_BURNER', wrapper)
+    assert retarget_wrapper(result, wrapper) == result

@@ -25,10 +25,6 @@ def _memory_offset(value):
     return max(0, int(value))
 
 
-def _float_nonnegative(value):
-    return max(0.0, float(value))
-
-
 # (arg_name, runtime_key, transform). transform is called only when args.<arg_name> is not None.
 _AUTO_UV_NUMERIC_OPTIONS = [
     ("auto_uv_min_voltage_mv", "auto_uv_min_voltage_mv", _INT_POS),
@@ -42,17 +38,17 @@ _AUTO_UV_NUMERIC_OPTIONS = [
     ("auto_oc_target_voltage_mv", "auto_oc_target_voltage_mv", _INT_POS),
     ("auto_oc_target_clock_mhz", "auto_oc_target_clock_mhz", _INT_POS),
     ("auto_uv_final_verification_s", "auto_uv_final_verification_s", _INT_POS),
-    ("auto_uv_max_clock_drop_pct", "auto_uv_max_clock_drop_pct", _float_nonnegative),
 ] + [
-    # Per-tier full-scan overrides: each adaptive tier's clock-drop allowance,
-    # board-power cap, and memory offset (same units/semantics as the
+    # Per-tier full-scan overrides: each adaptive tier's
+    # board-power cap and memory offset (same units/semantics as the
     # scan-wide keys above), keys derived from the canonical tier constants.
     (key, key, transform)
     for tier in ADAPTIVE_TIER_MODES
     for key, transform in (
-        (adaptive_tier_option_key(tier, "max_clock_drop_pct"), _float_nonnegative),
         (adaptive_tier_option_key(tier, "power_limit_w"), _INT_POS),
         (adaptive_tier_option_key(tier, "memory_offset_mhz"), _memory_offset),
+        (adaptive_tier_option_key(tier, "target_voltage_mv"), int),
+        (adaptive_tier_option_key(tier, "target_clock_mhz"), int),
     )
 ]
 
@@ -64,13 +60,22 @@ def build_effective_auto_uv_runtime_options(args) -> dict:
         if value is not None:
             runtime_options[key] = transform(value)
 
+    resolution = getattr(args, "auto_uv_q2rtx_resolution", None)
+    if resolution is not None:
+        runtime_options["auto_uv_q2rtx_resolution"] = str(resolution)
+    if getattr(args, "auto_uv_retry_after_freeze", False):
+        runtime_options["auto_uv_retry_after_freeze"] = True
+    boost = getattr(args, "auto_uv_boost", None)
+    if boost is not None:
+        runtime_options["auto_uv_tail_rise_bins"] = {"standard": 2, "aggressive": 4}[boost]
+
     if getattr(args, "auto_uv_mode", None) is not None:
         requested_auto_uv_mode = str(args.auto_uv_mode).strip().lower()
         runtime_options["auto_uv_requested_mode"] = requested_auto_uv_mode
         runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(args.auto_uv_mode)
         if (
             requested_auto_uv_mode == AUTO_UV_MODE_BALANCED
-            and getattr(args, "auto_uv_tail_rise_bins") is None
+            and "auto_uv_tail_rise_bins" not in runtime_options
         ):
             runtime_options["auto_uv_tail_rise_bins"] = (
                 AUTO_UV_DEFAULTS.balanced_tail_rise_bins

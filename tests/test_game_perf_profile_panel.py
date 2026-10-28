@@ -25,6 +25,12 @@ from ui.components.game_perf_profile_panel import (
 from ui.qt import import_qt
 
 
+def _timer(panel):
+    timer = panel._refresh_timer
+    assert timer is not None
+    return timer
+
+
 def _sample(
     t_rel_s: int,
     *,
@@ -153,7 +159,7 @@ def test_panel_empty_and_missing_states(qtbot, tmp_path: Path) -> None:
         assert panel._stack.currentIndex() == 0
         assert "No telemetry captured for Ghost Game" in panel.empty_label.text()
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_warming_state_under_five_minutes(qtbot, tmp_path: Path) -> None:
@@ -168,7 +174,7 @@ def test_panel_warming_state_under_five_minutes(qtbot, tmp_path: Path) -> None:
         assert "Warming up" in panel.empty_label.text()
         assert "2 of 5 min" in panel.empty_label.text()
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_shows_a_live_session_before_the_qualify_gate(
@@ -188,7 +194,7 @@ def test_panel_shows_a_live_session_before_the_qualify_gate(
         assert "2.0 min captured" in meta
         assert "fingerprint at 5 min" in meta  # honest about the short window
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_live_zoom_buys_1hz_and_the_overview_stays_at_2s(
@@ -201,13 +207,13 @@ def test_live_zoom_buys_1hz_and_the_overview_stays_at_2s(
     qtbot.addWidget(panel.widget)
     try:
         panel.select_app("4242", game_name="INDIKA")
-        assert panel._refresh_timer.interval() == 2000
+        assert _timer(panel).interval() == 2000
         panel.live_toggle.setChecked(True)
-        assert panel._refresh_timer.interval() == 1000
+        assert _timer(panel).interval() == 1000
         panel.live_toggle.setChecked(False)
-        assert panel._refresh_timer.interval() == 2000
+        assert _timer(panel).interval() == 2000
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_archived_session_never_buys_the_fast_tick(qtbot, tmp_path: Path) -> None:
@@ -218,9 +224,9 @@ def test_archived_session_never_buys_the_fast_tick(qtbot, tmp_path: Path) -> Non
         panel.select_app("4242", game_name="INDIKA")
         panel.live_toggle.setChecked(True)
         # Dead data cannot advance; 1 Hz would redraw the same picture.
-        assert panel._refresh_timer.interval() == 2000
+        assert _timer(panel).interval() == 2000
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_populates_detail_from_a_qualified_ring(qtbot, tmp_path: Path) -> None:
@@ -271,7 +277,7 @@ def test_panel_populates_detail_from_a_qualified_ring(qtbot, tmp_path: Path) -> 
         assert min(live_xs) >= -10.5  # seconds, not minutes
         panel.live_toggle.setChecked(False)
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_latency_cell_never_shows_the_display_tail(
@@ -287,7 +293,7 @@ def test_panel_latency_cell_never_shows_the_display_tail(
         assert panel._stack.currentIndex() == 1
         assert not panel._latency_cell.isVisibleTo(panel.widget)
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_latency_cell_hidden_without_any_source(qtbot, tmp_path: Path) -> None:
@@ -299,7 +305,7 @@ def test_panel_latency_cell_hidden_without_any_source(qtbot, tmp_path: Path) -> 
         assert panel._stack.currentIndex() == 1
         assert not panel._latency_cell.isVisibleTo(panel.widget)
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_panel_reads_archived_rings_too(qtbot, tmp_path: Path) -> None:
@@ -323,7 +329,7 @@ def test_panel_reads_archived_rings_too(qtbot, tmp_path: Path) -> None:
         assert panel._stack.currentIndex() == 1
         assert panel.tier_chip.text() == "EFFICIENCY"
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()
 
 
 def test_live_window_dropdown_switches_the_tail_span(qtbot, tmp_path: Path) -> None:
@@ -349,4 +355,4 @@ def test_live_window_dropdown_switches_the_tail_span(qtbot, tmp_path: Path) -> N
         assert min(xs) < -30.0  # genuinely widened beyond the old span
         panel.live_toggle.setChecked(False)
     finally:
-        panel._refresh_timer.stop()
+        _timer(panel).stop()

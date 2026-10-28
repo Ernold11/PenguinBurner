@@ -14,8 +14,10 @@ cargo build --release --locked --manifest-path burnerd/Cargo.toml
 ```
 
 and `%install` places the binary at `%{_libexecdir}/penguin-burnerd`
-(`/usr/libexec/penguin-burnerd`, 0755, root-owned) — the path
-`runtime/support/runtime_service.py` discovers first.
+(`/usr/libexec/penguin-burnerd`, 0755, root-owned). This package-owned file is
+an install source: explicit hardware-service setup copies it to
+`/var/opt/penguin-burner/libexec/penguin-burnerd`, which is the only path
+generated systemd units execute.
 
 `--locked` pins the committed `burnerd/Cargo.lock`, but cargo still fetches the
 crate sources from crates.io at build time. **The COPR project must have

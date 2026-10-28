@@ -22,6 +22,7 @@ from runtime.daemon_client import (
     gpu_reset_locked_memory_clocks,
     gpu_telemetry,
     gpu_vf_snapshot,
+    probe_power_limit_support,
 )
 
 
@@ -216,7 +217,10 @@ class DaemonGpuClient:
     def refresh_points(self) -> list[VfPoint]:
         raw = gpu_vf_snapshot(self.gpu_index).get("points")
         if not isinstance(raw, list):
-            raise RuntimeError("PenguinBurner daemon returned an invalid V/F snapshot")
+            # A malformed daemon reply is a runtime protocol failure.
+            raise RuntimeError(  # noqa: TRY004
+                "PenguinBurner daemon returned an invalid V/F snapshot"
+            )
         self._vf_points_cache = [
             _parse_vf_point(point) for point in raw if isinstance(point, dict)
         ]
@@ -262,6 +266,12 @@ class DaemonGpuClient:
         self._capabilities_cache = None
         self._telemetry_cache = None
         return int(result.get("applied_w", requested))
+
+    def power_limit_set_supported(self) -> bool:
+        result = probe_power_limit_support(self.gpu_index)
+        if result.get("reason") == "auto-uv-scan-running":
+            raise RuntimeError("power-limit support probe deferred while Auto-UV runs")
+        return bool(result.get("supported"))
 
     def enable_persistence_mode(self) -> bool:
         gpu_enable_persistence_mode(self.gpu_index)

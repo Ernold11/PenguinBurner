@@ -225,6 +225,22 @@ def test_oc_progress_and_cap_helpers() -> None:
     assert isinstance(rt._perf_cap_reason_tooltip("sw_power_cap"), str)
 
 
+def test_hw_power_brake_is_visible_even_when_the_summary_suppressed_it() -> None:
+    # The Cap column is the most visible surface for a power-delivery brake,
+    # and the probe summarizer can drop a sparse power token from the reason
+    # text. The reported sample count must put it back.
+    assert rt._perf_cap_reason_text("none", 4) == "hw-power-brake"
+    assert rt._perf_cap_reason_text("sw-power", 4) == "sw-power+hw-power-brake"
+    # Already named: no duplicate.
+    assert rt._perf_cap_reason_text("sw-power+hw-power-brake", 4) == (
+        "sw-power+hw-power-brake"
+    )
+    # No brake, no change.
+    assert rt._perf_cap_reason_text("sw-power", 0) == "sw-power"
+    assert "power delivery" in rt._perf_cap_reason_tooltip("sw-power", 4)
+    assert "power delivery" not in rt._perf_cap_reason_tooltip("sw-power", 0)
+
+
 def test_measured_clock_and_progress_color() -> None:
     assert rt._measured_clock_value({"avg_core_clock_mhz": 2490}) is not None
     color = rt._progress_text_color("#123456", 0.5)

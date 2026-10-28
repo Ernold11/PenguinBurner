@@ -164,8 +164,7 @@ fn pack_header(state: &HeaderState) -> [u8; HEADER_SIZE] {
     buf[24..26].copy_from_slice(&WINDOW_S.to_le_bytes());
     buf[26..28].copy_from_slice(&(state.metrics_cap as u16).to_le_bytes());
     buf[28..30].copy_from_slice(&((state.metrics_head % state.metrics_cap) as u16).to_le_bytes());
-    buf[30..32]
-        .copy_from_slice(&(state.metrics_count.min(state.metrics_cap) as u16).to_le_bytes());
+    buf[30..32].copy_from_slice(&(state.metrics_count.min(state.metrics_cap) as u16).to_le_bytes());
     buf[32..36].copy_from_slice(&state.frame_cap.to_le_bytes());
     buf[36..40].copy_from_slice(&(state.frame_head % state.frame_cap).to_le_bytes());
     buf[40..44].copy_from_slice(&state.frame_count.min(state.frame_cap).to_le_bytes());
@@ -191,9 +190,8 @@ impl Recorder {
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
         let path = dir.join(format!("{pid}.ring"));
         let file = File::create(&path)?;
-        let total = HEADER_SIZE as u64
-            + u64::from(METRICS_CAP) * RECORD_SIZE as u64
-            + u64::from(FRAME_CAP);
+        let total =
+            HEADER_SIZE as u64 + u64::from(METRICS_CAP) * RECORD_SIZE as u64 + u64::from(FRAME_CAP);
         file.set_len(total)?;
         // The GUI runs unprivileged and reads the live ring directly.
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o644));
@@ -225,7 +223,10 @@ impl Recorder {
     }
 
     fn push_frame(&mut self, stream: String, frametime_ms: f64) {
-        self.sec_frametimes.entry(stream).or_default().push(frametime_ms);
+        self.sec_frametimes
+            .entry(stream)
+            .or_default()
+            .push(frametime_ms);
     }
 
     fn append_frames(&mut self, companded: &[u8]) -> std::io::Result<()> {
@@ -299,8 +300,16 @@ impl Recorder {
         record[17] = flags;
         let uv = state.uv_offset_mv.unwrap_or(0).clamp(-32768, 32767) as i16;
         record[18..20].copy_from_slice(&uv.to_le_bytes());
-        put16(&mut record, 20, c16(parse_metric(&state.present_fps) * 10.0));
-        put16(&mut record, 22, c16(parse_metric(&state.framegen_fps) * 10.0));
+        put16(
+            &mut record,
+            20,
+            c16(parse_metric(&state.present_fps) * 10.0),
+        );
+        put16(
+            &mut record,
+            22,
+            c16(parse_metric(&state.framegen_fps) * 10.0),
+        );
         put16(&mut record, 24, c16(parse_metric(&state.latency_ms) * 20.0));
         put16(
             &mut record,
@@ -330,11 +339,23 @@ impl Recorder {
     }
 }
 
+/// The numeric Steam app id the ring header stores, from the daemon's
+/// `<launcher>:<id>` game key (a bare id is accepted too). Other launchers'
+/// ids are arbitrary strings the u32 header cannot hold, so those games are
+/// not recorded.
+fn steam_app_id(game_key: &str) -> Option<u32> {
+    let key = game_key.trim();
+    let id = key.strip_prefix("steam:").unwrap_or(key);
+    id.parse::<u32>().ok().filter(|&app_id| app_id > 0)
+}
+
 /// Called by the supervisor once a game watch is registered. Also archives
 /// any orphaned rings a previous daemon left behind.
-pub fn session_start(pid: u32, app_id: &str) {
+pub fn session_start(pid: u32, game_key: &str) {
     recover_orphans();
-    let app_id_num = app_id.trim().parse::<u32>().unwrap_or(0);
+    let Some(app_id_num) = steam_app_id(game_key) else {
+        return;
+    };
     match Recorder::open(pid, app_id_num) {
         Ok(recorder) => {
             let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
@@ -393,7 +414,7 @@ pub fn record_metrics(
 
 /// Called by the supervisor when the watched game's process exits. Trims the
 /// live ring into the durable per-app archive and removes it.
-pub fn session_end(pid: u32, app_id: &str) {
+pub fn session_end(pid: u32, game_key: &str) {
     let recorder = {
         let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
         match slot.as_ref() {
@@ -405,7 +426,7 @@ pub fn session_end(pid: u32, app_id: &str) {
         return;
     };
     ACTIVE.store(false, Ordering::Relaxed);
-    let app_id_num = app_id.trim().parse::<u32>().unwrap_or(recorder.header.app_id);
+    let app_id_num = steam_app_id(game_key).unwrap_or(recorder.header.app_id);
     let path = recorder.path.clone();
     drop(recorder);
     let _ = archive_ring_file(&path, app_id_num);
@@ -462,10 +483,8 @@ fn compact_ring(data: &[u8], app_id: u32) -> Option<Vec<u8>> {
     if data.len() < HEADER_SIZE || &data[0..4] != MAGIC {
         return None;
     }
-    let read_u16 =
-        |offset: usize| u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap());
-    let read_u32 =
-        |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let read_u16 = |offset: usize| u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap());
+    let read_u32 = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     let metrics_cap = u32::from(read_u16(26));
     let metrics_head = u32::from(read_u16(28));
     let metrics_count = u32::from(read_u16(30)).min(metrics_cap);
@@ -497,10 +516,8 @@ fn compact_ring(data: &[u8], app_id: u32) -> Option<Vec<u8>> {
 
     let out_metrics_cap = metrics_count;
     let out_frame_cap = kept_frames.max(1);
-    let mut out = vec![
-        0u8;
-        HEADER_SIZE + out_metrics_cap as usize * RECORD_SIZE + out_frame_cap as usize
-    ];
+    let mut out =
+        vec![0u8; HEADER_SIZE + out_metrics_cap as usize * RECORD_SIZE + out_frame_cap as usize];
     out[..HEADER_SIZE].copy_from_slice(&data[..HEADER_SIZE]);
     out[8..12].copy_from_slice(&app_id.to_le_bytes());
     out[26..28].copy_from_slice(&(out_metrics_cap as u16).to_le_bytes());
@@ -549,6 +566,16 @@ fn trim_frames_to_window(frames: &mut Vec<u8>, window_s: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steam_app_id_reads_the_namespaced_game_key() {
+        assert_eq!(steam_app_id("steam:1145360"), Some(1_145_360));
+        assert_eq!(steam_app_id("1145360"), Some(1_145_360));
+        assert_eq!(steam_app_id("heroic:Fortnite"), None);
+        assert_eq!(steam_app_id("lutris:27"), None);
+        assert_eq!(steam_app_id("steam:0"), None);
+        assert_eq!(steam_app_id(""), None);
+    }
 
     // Serializes env mutation across tests (the savings.rs guard pattern).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -651,7 +678,10 @@ mod tests {
         assert_eq!(u16::from_le_bytes([record[2], record[3]]), 79);
         assert_eq!(u16::from_le_bytes([record[4], record[5]]), 2610);
         assert_eq!(u16::from_le_bytes([record[10], record[11]]), 298);
-        assert_eq!(record[17] & 0x0F, FLAG_FRAMEGEN_ACTIVE | (2 << FPS_SOURCE_SHIFT));
+        assert_eq!(
+            record[17] & 0x0F,
+            FLAG_FRAMEGEN_ACTIVE | (2 << FPS_SOURCE_SHIFT)
+        );
         assert_eq!(record[17] >> TIER_SHIFT, 3);
         // p99 of [12.8ms x78, 42ms] is the worst frame.
         let p99 = f64::from(u16::from_le_bytes([record[30], record[31]])) / 20.0;
@@ -688,7 +718,11 @@ mod tests {
         // presents 30. Only the game's cadence must land in the ring.
         for index in 0..150 {
             let mut map = timing_sample(if index % 5 == 4 { 33_333.0 } else { 8_333.0 });
-            let stream = if index % 5 == 4 { "overlay-swapchain" } else { "game-session" };
+            let stream = if index % 5 == 4 {
+                "overlay-swapchain"
+            } else {
+                "game-session"
+            };
             map.insert("session_id".into(), Value::from(stream));
             record_frame(&map);
         }

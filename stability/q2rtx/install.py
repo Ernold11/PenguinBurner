@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 
@@ -31,12 +31,50 @@ from .progress import DependencyProgressCallback, _emit_dependency_progress
 from .runtime_env import _prepare_q2rtx_runtime_env
 
 __all__ = [
+    "clean_managed_q2rtx",
     "clear_q2rtx_stability_logs",
     "default_q2rtx_install_cache_dir",
     "default_q2rtx_install_data_dir",
     "fetch_latest_q2rtx_release_metadata",
     "install_latest_q2rtx",
 ]
+
+
+def clean_managed_q2rtx(
+    *,
+    data_dir: Path | None = None,
+    cache_dir: Path | None = None,
+) -> tuple[Path, ...]:
+    """Remove the managed Q2RTX install and its regenerable download cache."""
+    resolved_data_dir = (
+        data_dir.expanduser().resolve()
+        if data_dir is not None
+        else default_q2rtx_install_data_dir().expanduser().resolve()
+    )
+    resolved_cache_dir = (
+        cache_dir.expanduser().resolve()
+        if cache_dir is not None
+        else default_q2rtx_install_cache_dir().expanduser().resolve()
+    )
+    removed: list[Path] = []
+    for directory in dict.fromkeys((resolved_data_dir, resolved_cache_dir)):
+        if directory == directory.parent:
+            raise StabilityTestError(
+                f"refusing to remove filesystem root as Q2RTX data: {directory}"
+            )
+        if not directory.exists():
+            continue
+        try:
+            if directory.is_dir():
+                shutil.rmtree(directory)
+            else:
+                directory.unlink()
+        except OSError as exc:
+            raise StabilityTestError(
+                f"failed to remove managed Q2RTX directory {directory}: {exc}"
+            ) from exc
+        removed.append(directory)
+    return tuple(removed)
 
 
 def clear_q2rtx_stability_logs(

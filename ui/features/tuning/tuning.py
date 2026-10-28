@@ -3,28 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_ADAPTIVE
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_ADAPTIVE,
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_PERFORMANCE,
+)
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
-    uv_limit_clock_drop_pct_for_gpu,
     uv_limit_power_limit_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
-    uv_limit_voltage_floor_target_for_gpu,
-    voltage_drop_pct,
 )
 from common.penguin_burner_paths import default_runtime_config_path
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
-
-DEFAULT_AUTO_UV_MAX_DROP_PCT = AUTO_UV_DEFAULTS.max_drop_pct
-AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
-DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
-DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
+DEFAULT_AUTO_UV_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.tail_rise_bins
 DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
 DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.performance_tail_rise_bins
 AUTO_UV_PRESET_EFFICIENCY = "efficiency"
@@ -48,35 +42,20 @@ GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "result can be dead-silent fan operation, lower temperatures, and lower "
     "electricity bills. PenguinBurner automatically searches for the operating "
     "sweet spot of your Nvidia GPU, so you do not have to resort to trial and "
-    "error or risk introducing avoidable system instability."
+    "error or risk introducing avoidable system instability. One scan saves "
+    "three verified tiers — Efficiency, Balanced, and Performance — that "
+    "the adaptive runtime switches between while you play, per game, across "
+    "your Steam, Lutris, Heroic and Faugus libraries."
 )
 
 
 @dataclass(frozen=True, slots=True)
-class AutoUvVoltageDropDefault:
-    value_pct: float
-    gpu_name: str | None
-    gpu_family: str | None
-    floor_voltage_mv: int | None
-    reference_voltage_mv: int
-    preset_matched: bool
-
-
-@dataclass(frozen=True, slots=True)
-class AutoUvPerformanceTargetDefault:
+class AutoUvTargetDefault:
     gpu_name: str | None
     gpu_family: str | None
     voltage_mv: int | None
     clock_mhz: int | None
     profile_id: str
-    preset_matched: bool
-
-
-@dataclass(frozen=True, slots=True)
-class AutoUvClockDropDefault:
-    value_pct: float
-    gpu_name: str | None
-    gpu_family: str | None
     preset_matched: bool
 
 
@@ -145,15 +124,6 @@ def auto_uv_preset(preset_id: object) -> AutoUvPreset:
     )
 
 
-def auto_uv_presets() -> tuple[AutoUvPreset, ...]:
-    return (
-        auto_uv_preset(AUTO_UV_PRESET_EFFICIENCY),
-        auto_uv_preset(AUTO_UV_PRESET_BALANCED),
-        auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE),
-        auto_uv_preset(AUTO_UV_PRESET_ADAPTIVE),
-    )
-
-
 def auto_uv_scan_estimate_minutes(preset_id: object) -> tuple[int, int]:
     preset = auto_uv_preset(preset_id)
     return AUTO_UV_SCAN_ESTIMATE_MINUTES[preset.preset_id]
@@ -162,77 +132,6 @@ def auto_uv_scan_estimate_minutes(preset_id: object) -> tuple[int, int]:
 def auto_uv_scan_estimate_text(preset_id: object) -> str:
     minimum, maximum = auto_uv_scan_estimate_minutes(preset_id)
     return f"about {minimum}-{maximum} minutes"
-
-
-def auto_uv_voltage_drop_default(
-    *,
-    gpu_name: object | None = None,
-    gpu_index: int | None = None,
-    auto_uv_mode: object | None = None,
-    reference_voltage_mv: int = AUTO_UV_DROP_REFERENCE_VOLTAGE_MV,
-) -> AutoUvVoltageDropDefault:
-    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
-    target = uv_limit_voltage_floor_target_for_gpu(
-        detected_name,
-        auto_uv_mode,
-    )
-    if target is None:
-        floor_voltage_mv = int(
-            round(
-                float(reference_voltage_mv)
-                * (1.0 - (float(DEFAULT_AUTO_UV_MAX_DROP_PCT) / 100.0))
-            )
-        )
-        return AutoUvVoltageDropDefault(
-            value_pct=float(DEFAULT_AUTO_UV_MAX_DROP_PCT),
-            gpu_name=detected_name or None,
-            gpu_family=None,
-            floor_voltage_mv=floor_voltage_mv,
-            reference_voltage_mv=int(reference_voltage_mv),
-            preset_matched=False,
-        )
-    return AutoUvVoltageDropDefault(
-        value_pct=voltage_drop_pct(
-            start_voltage_mv=int(reference_voltage_mv),
-            floor_voltage_mv=int(target.voltage_mv),
-        ),
-        gpu_name=detected_name or None,
-        gpu_family=str(target.gpu_family),
-        floor_voltage_mv=int(target.voltage_mv),
-        reference_voltage_mv=int(reference_voltage_mv),
-        preset_matched=True,
-    )
-
-
-def auto_uv_clock_drop_default(
-    *,
-    gpu_name: object | None = None,
-    gpu_index: int | None = None,
-    preset_id: object | None = AUTO_UV_PRESET_EFFICIENCY,
-) -> AutoUvClockDropDefault:
-    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
-    preset = auto_uv_preset(preset_id)
-    value_pct = uv_limit_clock_drop_pct_for_gpu(
-        detected_name,
-        # Callers pass a real tier id (the dialog keeps one page per profile);
-        # a plain "adaptive" request falls back to the efficiency (loosest)
-        # allowance, which bounds the deepest descent.
-        profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_EFFICIENCY),
-    )
-    target = uv_limit_profile_target_for_gpu(detected_name, "efficiency")
-    if value_pct is None:
-        return AutoUvClockDropDefault(
-            value_pct=float(DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT),
-            gpu_name=detected_name or None,
-            gpu_family=None,
-            preset_matched=False,
-        )
-    return AutoUvClockDropDefault(
-        value_pct=float(value_pct),
-        gpu_name=detected_name or None,
-        gpu_family=str(target.gpu_family) if target is not None else None,
-        preset_matched=True,
-    )
 
 
 def auto_uv_power_limit_default(
@@ -246,11 +145,11 @@ def auto_uv_power_limit_default(
 ) -> AutoUvPowerLimitDefault:
     """Preset-aware default board-power cap in watts.
 
-    Savings-biased presets pair the V/F floor with a fraction of the card's
+    The efficiency preset pairs its V/F floor with a fraction of the card's
     stock power budget (the driver default limit, not the raised OC maximum);
-    the performance preset (and any GPU not covered by the tier table) keeps
-    the stock board power budget so nothing is left on the table when the user
-    asked for headroom.
+    balanced and performance (and any GPU not covered by the tier table) keep
+    the stock board power budget — matching regimes keep the full scan's
+    balanced descent donatable to the performance tier.
     """
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
     preset = auto_uv_preset(preset_id)
@@ -272,18 +171,18 @@ def auto_uv_power_limit_default(
     )
     if pct is None:
         return AutoUvPowerLimitDefault(
-            watts=int(round(base_watts)),
+            watts=round(base_watts),
             pct=100.0,
             gpu_name=detected_name or None,
             gpu_family=None,
             preset_matched=False,
         )
-    watts = int(round(base_watts * (float(pct) / 100.0)))
+    watts = round(base_watts * (float(pct) / 100.0))
     floor_watts = _positive_float(min_w)
     if floor_watts is not None:
-        watts = max(int(round(floor_watts)), watts)
+        watts = max(round(floor_watts), watts)
     if max_watts is not None:
-        watts = min(int(round(max_watts)), watts)
+        watts = min(round(max_watts), watts)
     return AutoUvPowerLimitDefault(
         watts=watts,
         pct=float(pct),
@@ -309,16 +208,16 @@ def _positive_float(value: object) -> float | None:
     return number if number > 0.0 else None
 
 
-def auto_uv_performance_target_default(
+def auto_uv_target_default(
     *,
     gpu_name: object | None = None,
     gpu_index: int | None = None,
-) -> AutoUvPerformanceTargetDefault:
+    profile_id: str = AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
+) -> AutoUvTargetDefault:
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
-    profile_id = AUTO_UV_PERFORMANCE_OC_PROFILE_ID
     target = uv_limit_profile_target_for_gpu(detected_name, profile_id)
     if target is None:
-        return AutoUvPerformanceTargetDefault(
+        return AutoUvTargetDefault(
             gpu_name=detected_name or None,
             gpu_family=None,
             voltage_mv=None,
@@ -326,7 +225,7 @@ def auto_uv_performance_target_default(
             profile_id=str(profile_id),
             preset_matched=False,
         )
-    return AutoUvPerformanceTargetDefault(
+    return AutoUvTargetDefault(
         gpu_name=detected_name or None,
         gpu_family=str(target.gpu_family),
         voltage_mv=int(target.voltage_mv),
@@ -353,16 +252,11 @@ def read_auto_uv_nvml_info(
     *,
     gpu_client: DaemonGpuClient | None = None,
 ) -> AutoUvNvmlInfo:
-    # Mobile GPUs with a fixed board power limit stay excluded from
-    # power-limit controls by identity (0.6.6 mobile support). Read-only NVML
-    # identity lookup, architecture-neutral — no daemon round-trip.
-    fixed_power_limit_excluded = _fixed_power_limit_excluded_by_gpu_identity(
-        gpu_index
-    )
+    client = gpu_client
     try:
-        client = gpu_client or DaemonGpuClient(int(gpu_index))
+        client = client or DaemonGpuClient(int(gpu_index))
         snapshot = client.snapshot(refresh=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         snapshot = None
 
     capabilities = snapshot.capabilities if snapshot is not None else None
@@ -370,14 +264,11 @@ def read_auto_uv_nvml_info(
     power = capabilities.power if capabilities is not None else None
     clocks = telemetry.clocks if telemetry is not None else None
 
-    if fixed_power_limit_excluded:
-        power_limit_set_supported_value = False
-    else:
-        power_limit_set_supported_value = (
-            power_limit_set_supported(gpu_index)
-            if _power_limit_set_probe_applicable(power)
-            else None
-        )
+    power_limit_set_supported_value = (
+        _power_limit_set_supported(client)
+        if client is not None and _power_limit_set_probe_applicable(power)
+        else None
+    )
     return AutoUvNvmlInfo(
         power_draw_w=getattr(telemetry, "power_draw_w", None),
         power_management_enabled=getattr(power, "management_enabled", None),
@@ -397,28 +288,6 @@ def read_auto_uv_nvml_info(
     )
 
 
-def _fixed_power_limit_excluded_by_gpu_identity(gpu_index: int) -> bool:
-    """Identity gate for mobile GPUs whose board power limit is fixed.
-
-    Read-only NVML lookup (no daemon round-trip): these GPUs must not offer
-    power-limit controls no matter what the probe would report, so the scan
-    dialog grays the control out and scans run at the vanilla/stock limit.
-    """
-    try:
-        from drivers.nvidia.nvml_gpu_policy import (
-            fixed_power_limit_excluded_by_identity,
-        )
-        from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
-
-        identity = query_nvml_gpu_identity(int(gpu_index))
-        return fixed_power_limit_excluded_by_identity(
-            gpu_name=getattr(identity, "name", None),
-            pci_device_id=getattr(identity, "pci_device_id", None),
-        )
-    except Exception:
-        return False
-
-
 def _power_limit_set_probe_applicable(power: object | None) -> bool:
     if power is None:
         return False
@@ -428,6 +297,13 @@ def _power_limit_set_probe_applicable(power: object | None) -> bool:
         getattr(power, "minimum_w", None) is not None
         and getattr(power, "maximum_w", None) is not None
     )
+
+
+def _power_limit_set_supported(gpu_client: DaemonGpuClient) -> bool:
+    try:
+        return gpu_client.power_limit_set_supported()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _NVML_INFO_UNAVAILABLE_TEXT = (
@@ -453,16 +329,6 @@ def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
     return text or _NVML_INFO_UNAVAILABLE_TEXT
 
 
-def power_limit_set_supported(gpu_index: int) -> bool:
-    try:
-        from runtime.daemon_client import probe_power_limit_support
-
-        result = probe_power_limit_support(int(gpu_index), timeout_s=1.0)
-    except Exception:
-        return False
-    return bool(result.get("supported"))
-
-
 def memory_offset_mhz_range(
     gpu_index: int | None = None,
     *,
@@ -477,7 +343,7 @@ def memory_offset_mhz_range(
         )
         client = gpu_client or DaemonGpuClient(gpu_index=index)
         driver_range = client.capabilities().memory_clock_offset_range_mhz
-    except Exception:
+    except Exception:  # noqa: BLE001
         return fallback
     if not driver_range:
         return fallback
@@ -495,17 +361,16 @@ def auto_uv_voltage_floor_range_mv(
     gpu_index: int | None = None,
     *,
     gpu_client: DaemonGpuClient | None = None,
-) -> tuple[int, int]:
+) -> tuple[int, int] | None:
     """Settable voltage-floor range (mV), derived from the live V/F curve.
 
     Lower bound = the curve "knee": the lowest voltage that still holds a real
     boost clock (at/above half the card's max base clock). Below the knee the
     curve is the flat idle shelf (e.g. 180 MHz on Blackwell), so those voltages
     are unreachable-under-load and pointless as a floor. Upper bound = the
-    curve's max voltage point. Falls back to (800, 1250) when the live curve
-    cannot be read (no GPU, non-editable driver, etc.).
+    curve's max voltage point. Returns None when the live curve
+    cannot be read, so the dialog keeps the voltage target automatic.
     """
-    fallback = (800, 1250)
     index = (
         runtime_gpu_index(default_runtime_config_path())
         if gpu_index is None
@@ -517,11 +382,11 @@ def auto_uv_voltage_floor_range_mv(
             (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
             for p in client.editable_core_points()
         ]
-    except Exception:
-        return fallback
+    except Exception:  # noqa: BLE001
+        return None
     points = [(v, c) for v, c in points if v > 0 and c > 0]
     if not points:
-        return fallback
+        return None
     max_clock = max(c for _, c in points)
     max_voltage = max(v for v, _ in points)
     # Knee: lowest voltage that reaches at least half the max base clock. Snap to
@@ -540,7 +405,7 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
             else runtime_gpu_index(default_runtime_config_path())
         )
         name = DaemonGpuClient(gpu_index=index).capabilities().identity.name
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return str(name).strip() if name else None
 

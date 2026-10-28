@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export PYTHONUNBUFFERED=1
 
 ppa="${PPA_TARGET:-ppa:jpietek/penguin-burner}"
 version="${1:-}"
@@ -26,7 +27,7 @@ PY
 fi
 
 if [ "${#series_list[@]}" -eq 0 ]; then
-    series_list=(questing resolute)
+    series_list=(resolute)
 fi
 
 for command in cargo dpkg-buildpackage dput git gpg python3; do
@@ -53,10 +54,37 @@ if [ -n "$tracked_artifacts" ]; then
     exit 1
 fi
 
-python3 "$status_helper" check \
-    "$version" \
-    "$debian_revision" \
-    "${series_list[@]}"
+new_series=()
+for series in "${series_list[@]}"; do
+    status=0
+    python3 "$status_helper" exists "$version" "$debian_revision" "$series" || status=$?
+    case "$status" in
+        0) echo "$series: source already accepted; resuming build monitoring" ;;
+        3) new_series+=("$series") ;;
+        *) exit "$status" ;;
+    esac
+done
+
+wait_for_builds() {
+    python3 "$status_helper" wait \
+        "$version" "$debian_revision" "${series_list[@]}" \
+        --timeout "${PPA_WAIT_TIMEOUT_S:-10800}" \
+        --poll "${PPA_POLL_INTERVAL_S:-30}"
+}
+
+if [ "${#new_series[@]}" -eq 0 ]; then
+    wait_for_builds
+    exit
+fi
+
+"$ROOT/scripts/release-gpg.sh" --check \
+    "${DEBSIGN_KEYID:-B098E377E3C3C124A009E54093CEE10EDB7F01A2}"
+
+# Check credentials before the expensive build, then validate the supported
+# Ubuntu package before uploading it to Launchpad.
+if [ "${PENGUIN_BURNER_SKIP_PACKAGE_SMOKE:-0}" != 1 ]; then
+    "$ROOT/scripts/check-ubuntu-package-build.sh" resolute
+fi
 
 cleanup() {
     profile="$HOME/.dput.d/profiles/penguin-ppa.json"
@@ -72,9 +100,9 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$ppa" = "ppa:jpietek/penguin-burner" ]; then
-    # Fedora's distro-info data may not know future Ubuntu series such as
-    # questing/resolute. Use a local dput-ng profile without the
-    # supported-distribution hook while keeping checksum, suite, and GPG checks.
+    # The host's distro-info data may lag the currently supported Ubuntu series.
+    # Use a local dput-ng profile without the supported-distribution hook while
+    # keeping checksum, suite, and GPG checks.
     dput_profile_dir="$(mktemp -d)"
     mkdir -p "$dput_profile_dir/profiles"
     cat > "$dput_profile_dir/profiles/penguin-ppa.json" <<'JSON'
@@ -97,7 +125,7 @@ JSON
 fi
 
 changes_files=()
-for series in "${series_list[@]}"; do
+for series in "${new_series[@]}"; do
     scripts/build-deb-source.sh "$series" "$version" "$debian_revision"
     changes="$(find "dist/deb/${series}" -maxdepth 1 -name "*_${version}-${debian_revision}~ppa1~${series}1_source.changes" -print -quit)"
     if [ -z "$changes" ]; then
@@ -117,9 +145,4 @@ for changes in "${changes_files[@]}"; do
     dput "$ppa" "$changes"
 done
 
-python3 "$status_helper" wait \
-    "$version" \
-    "$debian_revision" \
-    "${series_list[@]}" \
-    --timeout "${PPA_WAIT_TIMEOUT_S:-10800}" \
-    --poll "${PPA_POLL_INTERVAL_S:-30}"
+wait_for_builds

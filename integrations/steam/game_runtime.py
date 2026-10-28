@@ -12,22 +12,14 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
-from profiles.uv.profile_tiers import PROFILE_TIERS, resolve_profile_tier_profiles
+from integrations.launchers.runtime_profile import profile_argv, send_profile
 
-from .settings import (
-    GAME_MODE_ADAPTIVE,
-    GAME_MODE_DEFAULT,
-    GAME_MODE_NONE,
-    GAME_MODE_STOCK,
-    SteamGameSetting,
-    steam_game_setting,
-)
+from .identity import steam_game_key
+from .settings import steam_game_setting
 from .users import list_steam_users
-
 
 APP_ID_ENV_VARS = ("SteamAppId", "STEAM_COMPAT_APP_ID", "SteamGameId")
 ACCOUNT_NAME_ENV_VARS = ("SteamUser", "SteamAppUser")
@@ -54,51 +46,10 @@ def game_account_id(env: dict[str, str], *, home: Path | None = None) -> str:
     return users[0].account_id if users else ""
 
 
-def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
-    """Daemon runtime argv for a preset; None when there is nothing to apply."""
-    argv = _profile_argv_for_setting(setting)
-    if argv is not None and not setting.telemetry:
-        argv.append("--no-game-telemetry")
-    return argv
 
 
-def _profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
-    if not setting.enabled:
-        return None
-    if setting.mode in (GAME_MODE_NONE, GAME_MODE_DEFAULT):
-        return None
-    if setting.mode == GAME_MODE_STOCK:
-        # Explicit per-game stock: pin factory GPU state while this game
-        # runs, even when a standing adaptive/tier profile is active.
-        return ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
-    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
-    if setting.mode == GAME_MODE_ADAPTIVE:
-        # Start from the highest explicitly assigned/available tier, not the
-        # newest file. "latest" lets a newer scratch or verification profile
-        # silently replace the user's Performance assignment in the runtime
-        # spec before adaptive switching even begins.
-        profile_id = ""
-        for tier in reversed(PROFILE_TIERS):
-            profile = resolved.get(tier)
-            if isinstance(profile, dict):
-                profile_id = str(profile.get("profile_id") or "").strip()
-            if profile_id:
-                break
-        if not profile_id:
-            return None
-        argv = ["--auto-uv-profile", profile_id, "--adaptive-auto-uv"]
-        if setting.target_fps is not None:
-            argv += ["--adaptive-target-fps", f"{float(setting.target_fps):g}"]
-        return argv
-    profile = resolved.get(setting.mode)
-    profile_id = (
-        str(profile.get("profile_id") or "").strip()
-        if isinstance(profile, dict)
-        else ""
-    )
-    if not profile_id:
-        return None
-    return ["--auto-uv-profile", profile_id]
+
+
 
 
 def game_runtime_profile_argv(
@@ -107,6 +58,12 @@ def game_runtime_profile_argv(
     home: Path | None = None,
     settings_path: str | Path | None = None,
 ) -> tuple[list[str], str] | None:
+    """The daemon request this launch means, and the game key to register it under.
+
+    The key is namespaced (``steam:570``) like every other launcher's, because
+    the daemon keys running games by one opaque string across all of them. The
+    app id itself stays Steam's own numeric one everywhere else.
+    """
     app_id = game_app_id(env)
     if not app_id:
         return None
@@ -116,10 +73,12 @@ def game_runtime_profile_argv(
     setting = steam_game_setting(account_id, app_id, path=settings_path)
     if setting is None:
         return None
-    argv = profile_argv_for_setting(setting)
+    argv = profile_argv(setting)
     if argv is None:
         return None
-    return argv, app_id
+    if not setting.telemetry:
+        argv.append("--no-game-telemetry")
+    return argv, steam_game_key(app_id)
 
 
 def apply_game_runtime_profile(
@@ -132,23 +91,8 @@ def apply_game_runtime_profile(
     resolved = game_runtime_profile_argv(env, home=home, settings_path=settings_path)
     if resolved is None:
         return False
-    argv, app_id = resolved
-    from runtime.daemon_client import start_game_runtime_profile
-
-    try:
-        start_game_runtime_profile(
-            argv,
-            watch_pid=os.getpid() if watch_pid is None else int(watch_pid),
-            app_id=app_id,
-            timeout_s=45.0,
-        )
-    except Exception as error:
-        print(
-            f"penguin-burner: per-game profile apply skipped: {error}",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    argv, game_key = resolved
+    return send_profile(argv, app_id=game_key, watch_pid=watch_pid)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         env["SteamUser"] = str(args.account_name)
     try:
         apply_game_runtime_profile(env, watch_pid=args.watch_pid)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         # The wrapper must never trade a game launch for profile automation.
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",

@@ -7,8 +7,10 @@ mod gpu_rpc;
 mod logging;
 mod paths;
 mod profile;
+mod rtd3;
 mod scan;
 mod server;
+mod sessions;
 mod supervisor;
 
 use std::env;
@@ -41,8 +43,9 @@ fn run() -> i32 {
     };
 
     logging::info(&format!(
-        "penguin-burnerd {} starting",
-        env!("CARGO_PKG_VERSION")
+        "penguin-burnerd {} ({}) starting",
+        env!("CARGO_PKG_VERSION"),
+        env!("PENGUIN_BURNERD_BUILD_ID"),
     ));
 
     // Register before spawning the autostart engine so every termination
@@ -58,8 +61,10 @@ fn run() -> i32 {
     let sup = Arc::new(Mutex::new(Supervisor::new()));
 
     // Start the persisted runtime profile before binding the socket (parity with
-    // `serve_daemon_api`, which runs autostart first).
-    supervisor::start_autostart_if_configured(&sup);
+    // `serve_daemon_api`, which runs autostart first). On RTD3 laptops the
+    // deep-sleep gate defers this until the GPU is actually in use, so a
+    // sleeping dGPU is never woken (and then pinned) just to apply a profile.
+    rtd3::watch::startup(&sup);
     supervisor::start_game_watch_monitor(&sup);
 
     // Route SIGINT/SIGTERM to a dedicated thread that performs a clean shutdown.
@@ -104,8 +109,22 @@ fn parse_args() -> Result<PathBuf, String> {
             other if other.starts_with("--socket=") => {
                 socket = PathBuf::from(&other["--socket=".len()..]);
             }
+            "--version" => {
+                // Exit-0 identity probe. The Flatpak install transaction runs
+                // this on the staged binary before committing, so a host whose
+                // system libraries cannot load the daemon fails with the
+                // loader's error instead of a broken service.
+                println!(
+                    "penguin-burnerd {} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("PENGUIN_BURNERD_BUILD_ID"),
+                );
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
-                return Err("usage: penguin-burnerd [serve] [--socket PATH]".to_string());
+                return Err(
+                    "usage: penguin-burnerd [serve] [--socket PATH] [--version]".to_string()
+                );
             }
             other => return Err(format!("unknown argument: {other}")),
         }

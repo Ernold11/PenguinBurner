@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 
 from common.subprocess_locale import stable_subprocess_env
 from drivers.nvidia.daemon_gpu import (
@@ -38,7 +38,7 @@ def query_gpu_metrics(
     client = gpu_client or DaemonGpuClient(int(gpu_index))
     try:
         telemetry = client.telemetry(refresh=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     voltage_mv = (
         telemetry.voltage_mv

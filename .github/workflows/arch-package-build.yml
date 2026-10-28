@@ -1,0 +1,29 @@
+name: Arch package build
+
+# Builds the Arch package in containers for each supported toolchain
+# scenario (see scripts/check-arch-package-build.sh). The weekly run exists
+# because this surface breaks through distro toolchain drift — new rustc
+# defaults, alternative makedepend providers — not through our commits.
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Arch package (${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [vanilla, cachyos-shelly]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package in ${{ matrix.scenario }} scenario
+        run: scripts/check-arch-package-build.sh "${{ matrix.scenario }}"

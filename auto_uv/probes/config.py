@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
+from dataclasses import replace
 
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from stability.q2rtx.constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
 from stability.q2rtx.cuda_companion import cuda_bruteforce_companion_command
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2
@@ -155,22 +155,18 @@ def tiered_q2rtx_probe_duration_s(
     elif voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
         return max(
             1,
-            int(
-                math.ceil(
+            math.ceil(
                     float(base_probe_duration_s)
                     * float(MEDIUM_VOLTAGE_Q2RTX_DURATION_MULTIPLIER)
-                )
-            ),
+                ),
         )
     else:
         return max(
             1,
-            int(
-                math.ceil(
+            math.ceil(
                     float(base_probe_duration_s)
                     * float(DEEP_VOLTAGE_Q2RTX_DURATION_MULTIPLIER)
-                )
-            ),
+                ),
         )
 
 
@@ -183,13 +179,11 @@ def tiered_cuda_probe_duration_s(
     base_probe_duration_s = base_q2rtx_probe_duration_s(base_duration_s)
     cuda_duration_s = max(
         1,
-        int(
-            math.ceil(
+        math.ceil(
                 float(base_probe_duration_s)
                 * float(AUTO_UV_PROBE_TUNING.tiered_cuda_duration_s)
                 / float(AUTO_UV_DEFAULTS.probe_duration_s)
-            )
-        ),
+            ),
     )
     if initial_target_voltage_mv is None or candidate_voltage_mv is None:
         return int(cuda_duration_s)

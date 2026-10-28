@@ -34,6 +34,7 @@ def test_reset_runtime_defaults_passes_through_mobile_daemon_result(monkeypatch)
         assert gpu_index == 0
         return {
             "gpu_name": "NVIDIA GeForce RTX 5060 Laptop GPU",
+            "pci_device_id": "0x2D1910DE",
             "points": [
                 {
                     "index": 0,
@@ -57,6 +58,7 @@ def test_reset_runtime_defaults_passes_through_mobile_daemon_result(monkeypatch)
     )
 
     assert result["gpu_name"] == "NVIDIA GeForce RTX 5060 Laptop GPU"
+    assert result["pci_device_id"] == "0x2D1910DE"
     assert result["power_limit_w"] is None
     assert result["power_limits"] == {}
     assert len(result["plan"]) == 1

@@ -3,20 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from auto_uv_test_data import base_curve
 
-from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
 from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
 from auto_uv.curve.base_vf_curve_voltage_bins import (
-    base_target_clock_at_voltage,
     higher_editable_voltage_bins,
     lock_voltage_for_target_clock,
     lower_editable_voltage_bins,
     nearest_editable_voltage_bin,
     next_higher_editable_voltage_bin,
 )
-from auto_uv.curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
-
-from auto_uv_test_data import base_curve
+from auto_uv.curve.measured_probe_lock_clock import probe_indicates_power_saturation
+from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
+from auto_uv.probes.summary import summarize_perf_cap_reason
 
 
 def _all_preserved_curve() -> list[dict]:
@@ -169,44 +168,34 @@ def test_lock_voltage_for_target_clock_returns_first_match() -> None:
     assert lock_voltage_for_target_clock(curve, 2050) == 850
 
 
-def test_base_target_clock_at_voltage_matches_existing_bin() -> None:
-    curve = base_curve(800, 900, 25, 2000, 30)
+def test_power_reason_can_trigger_clock_reclaim_without_proving_a_wall() -> None:
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.perf_cap_reason = "sw-power"
 
-    assert base_target_clock_at_voltage(curve, voltage_mv=825, fallback_mhz=0) == 2030
-
-
-def test_base_target_clock_at_voltage_falls_back_when_missing() -> None:
-    curve = base_curve(800, 900, 25, 2000, 30)
-
-    assert (
-        base_target_clock_at_voltage(curve, voltage_mv=12345, fallback_mhz=1500) == 1500
+    assert probe_indicates_power_saturation(probe, power_limit_w=575)
+    assert not probe_indicates_power_saturation(
+        probe, power_limit_w=575, require_power_evidence=True
     )
 
 
-# --- measured_probe_lock_clock.py ---------------------------------------------
+def test_measured_power_at_limit_proves_a_wall_without_perf_cap_reason() -> None:
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.avg_power_w = 566.0
 
-
-def test_lock_clock_returns_previous_when_no_measured_clock() -> None:
-    curve = base_curve()
-
-    result = lock_clock_from_probe_loaded_clock(
-        curve,
-        probe=_probe_summary(avg_core_clock_mhz=None),
-        previous_lock_clock_mhz=2400,
+    assert probe_indicates_power_saturation(
+        probe, power_limit_w=575, require_power_evidence=True
     )
 
-    assert result == 2400
 
-
-def test_lock_clock_takes_min_of_measured_and_previous() -> None:
-    curve = base_curve(800, 1025, 25, 2000, 30)
-
-    # Measured clock snaps well below the previous lock, so it wins.
-    result = lock_clock_from_probe_loaded_clock(
-        curve,
-        probe=_probe_summary(avg_core_clock_mhz=2100.0),
-        previous_lock_clock_mhz=2400,
+def test_sparse_power_reason_summary_does_not_trigger_clock_reclaim() -> None:
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.perf_cap_reason = summarize_perf_cap_reason(
+        [
+            {"perf_cap_reason": "sw-power"},
+            *[{"perf_cap_reason": None} for _ in range(9)],
+        ],
+        require_sw_power_dominant=True,
     )
 
-    assert result < 2400
-    assert result == min(2400, result)
+    assert probe.perf_cap_reason == "none"
+    assert not probe_indicates_power_saturation(probe, power_limit_w=450)

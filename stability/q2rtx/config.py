@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import DEFAULT_DEMO_NAME
+from .constants import DEFAULT_DEMO_NAME, Q2RTX_REQUIRED_DATA_FILES
 from .install import (
+    clean_managed_q2rtx,
     default_q2rtx_install_data_dir,
     fetch_latest_q2rtx_release_metadata,
     install_latest_q2rtx,
@@ -13,9 +15,16 @@ from .install import (
 from .long_stability_config import long_stability_workload_durations
 from .models import Q2RTXStabilityConfig, StabilityTestError
 from .resolution import (
+    Q2RTX_SCAN_RESOLUTIONS,
     format_q2rtx_resolution_choice,
     resolve_q2rtx_render_resolution,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ManagedQ2RTXDiscovery:
+    source: str
+    incomplete: bool
 
 
 def build_stability_config(
@@ -44,10 +53,28 @@ def build_stability_config(
     default_log_dir = config_dir / "stability-logs"
     emit_dependency_progress(0.0, "Checking Q2RTX dependency setup")
 
-    q2rtx_dir = _find_managed_q2rtx_install(
+    discovery = _discover_managed_q2rtx_install(
         progress_context,
         emit_dependency_progress=emit_dependency_progress,
     )
+    q2rtx_dir = discovery.source
+
+    if auto_install_q2rtx and discovery.incomplete:
+        print(
+            f"{progress_context}: removing incomplete managed Q2RTX dependencies",
+            flush=True,
+        )
+        emit_dependency_progress(
+            3.0,
+            "Removing incomplete Q2RTX dependencies",
+        )
+        removed = clean_managed_q2rtx()
+        emit_dependency_progress(
+            4.0,
+            "Incomplete Q2RTX dependencies removed",
+            removed_paths=[str(path) for path in removed],
+        )
+        q2rtx_dir = ""
 
     if auto_install_q2rtx:
         q2rtx_dir = _refresh_stale_managed_q2rtx_source(
@@ -90,10 +117,15 @@ def build_stability_config(
             "Dependencies are ready",
             source=str(q2rtx_dir),
         )
+    resolution_preset = str(getattr(args, "auto_uv_q2rtx_resolution", None) or "auto")
+    try:
+        width, height = Q2RTX_SCAN_RESOLUTIONS[resolution_preset]
+    except KeyError as exc:
+        raise ValueError(f"Unknown Q2RTX scan resolution: {resolution_preset}") from exc
     resolution = resolve_q2rtx_render_resolution(
         gpu_index=int(gpu_index),
-        requested_width=None,
-        requested_height=None,
+        requested_width=width,
+        requested_height=height,
     )
     print(
         f"{progress_context}: Q2RTX render resolution "
@@ -114,11 +146,11 @@ def build_stability_config(
     )
 
 
-def _find_managed_q2rtx_install(
+def _discover_managed_q2rtx_install(
     progress_context,
     *,
     emit_dependency_progress,
-) -> str:
+) -> _ManagedQ2RTXDiscovery:
     managed_root = default_q2rtx_install_data_dir()
     print(
         f"{progress_context}: checking managed Q2RTX install under {managed_root}",
@@ -130,7 +162,7 @@ def _find_managed_q2rtx_install(
         path=str(managed_root),
     )
     if not managed_root.exists():
-        return ""
+        return _ManagedQ2RTXDiscovery(source="", incomplete=False)
 
     version_dirs = sorted(
         (
@@ -140,22 +172,81 @@ def _find_managed_q2rtx_install(
         ),
         reverse=True,
     )
+    source = ""
+    incomplete = False
     for candidate in version_dirs:
-        if (candidate / "q2rtx").is_file() and (candidate / "baseq2").exists():
-            print(
-                f"{progress_context}: found managed Q2RTX install {candidate}",
-                flush=True,
-            )
-            return str(candidate)
+        candidate_discovery = _inspect_managed_q2rtx_candidate(
+            progress_context,
+            candidate,
+            emit_dependency_progress=emit_dependency_progress,
+        )
+        incomplete = incomplete or candidate_discovery.incomplete
+        if candidate_discovery.source:
+            source = candidate_discovery.source
+            break
 
-    if (managed_root / "q2rtx").is_file():
+    if not source:
+        root_discovery = _inspect_managed_q2rtx_candidate(
+            progress_context,
+            managed_root,
+            emit_dependency_progress=emit_dependency_progress,
+        )
+        source = root_discovery.source
+        incomplete = incomplete or root_discovery.incomplete
+
+    return _ManagedQ2RTXDiscovery(source=source, incomplete=incomplete)
+
+
+def _inspect_managed_q2rtx_candidate(
+    progress_context,
+    candidate: Path,
+    *,
+    emit_dependency_progress,
+) -> _ManagedQ2RTXDiscovery:
+    missing_files = _missing_managed_q2rtx_files(candidate)
+    if not missing_files:
         print(
-            f"{progress_context}: found managed Q2RTX install {managed_root}",
+            f"{progress_context}: found managed Q2RTX install {candidate}",
             flush=True,
         )
-        return str(managed_root)
+        return _ManagedQ2RTXDiscovery(source=str(candidate), incomplete=False)
+    if (candidate / "q2rtx").is_file():
+        _report_incomplete_managed_q2rtx_install(
+            progress_context,
+            candidate,
+            missing_files,
+            emit_dependency_progress=emit_dependency_progress,
+        )
+        return _ManagedQ2RTXDiscovery(source="", incomplete=True)
+    return _ManagedQ2RTXDiscovery(source="", incomplete=False)
 
-    return ""
+
+def _missing_managed_q2rtx_files(candidate: Path) -> tuple[str, ...]:
+    required_files = ("q2rtx", *Q2RTX_REQUIRED_DATA_FILES)
+    return tuple(
+        relative for relative in required_files if not (candidate / relative).is_file()
+    )
+
+
+def _report_incomplete_managed_q2rtx_install(
+    progress_context,
+    candidate: Path,
+    missing_files: tuple[str, ...],
+    *,
+    emit_dependency_progress,
+) -> None:
+    missing_text = ", ".join(missing_files)
+    print(
+        f"{progress_context}: incomplete managed Q2RTX install {candidate}; "
+        f"missing {missing_text}",
+        flush=True,
+    )
+    emit_dependency_progress(
+        3.0,
+        "Incomplete Q2RTX install found; repairing dependencies",
+        path=str(candidate),
+        missing_files=list(missing_files),
+    )
 
 
 def _managed_q2rtx_source_version(source: str) -> str | None:

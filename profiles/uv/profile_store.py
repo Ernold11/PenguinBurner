@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
-from pathlib import Path
 import re
+from collections.abc import Sequence
+from datetime import datetime
+from pathlib import Path
 
 from common.atomic_write import atomic_write_json
-from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
+from common.penguin_burner_paths import (
+    claim_desktop_user_ownership,
+    default_user_config_dir,
+)
+from profiles.gpu_identity import (
+    normalized_gpu_identity,
+    profile_gpu_identity,
+    profile_gpu_label,
+    profile_gpu_uuid,
+)
 
 from .profile_tiers import (
     load_profile_tier_assignments,
     load_profile_tier_disabled_profile_ids,
+    migrate_legacy_profile_tier_to_gpu,
     profile_tier_summary_fields,
 )
-
 
 _PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _USER_EDITED_PROFILE_SOURCE = "user-edited"
@@ -113,6 +123,7 @@ def mark_auto_uv_profile_verified(
     verification: dict | None = None,
     metrics: dict | None = None,
     base_metrics: dict | None = None,
+    gpu_identity: dict | None = None,
 ) -> Path:
     resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
     if resolved is None:
@@ -129,6 +140,9 @@ def mark_auto_uv_profile_verified(
     updated["verification_status"] = "verified"
     updated["verified_at"] = now
     updated.setdefault("profile_source", "auto-uv-final")
+    normalized_identity = normalized_gpu_identity(gpu_identity or {})
+    if str(normalized_identity.get("uuid") or "").strip():
+        updated["gpu_identity"] = normalized_identity
 
     merged_verification = {}
     if isinstance(updated.get("verification"), dict):
@@ -158,7 +172,46 @@ def mark_auto_uv_profile_verified(
                 continue
             updated[target_key] = value
 
-    return atomic_write_json(path, updated)
+    written_path = atomic_write_json(path, updated)
+    if str(normalized_identity.get("uuid") or "").strip():
+        migrate_legacy_profile_tier_to_gpu(
+            str(updated.get("profile_id") or path.stem),
+            str(normalized_identity["uuid"]),
+        )
+    return written_path
+
+
+def bind_auto_uv_profile_gpu_identity(
+    selector: str | Path,
+    gpu_identity: dict,
+) -> Path:
+    """Bind a legacy profile during an explicit, unambiguous user action."""
+
+    resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
+    if resolved is None:
+        raise FileNotFoundError(f"Auto-UV profile not found: {selector}")
+    path, _resolved_payload = resolved
+    payload = _read_json(path)
+    if payload is None:
+        raise FileNotFoundError(f"Auto-UV profile not readable: {path}")
+    normalized_identity = normalized_gpu_identity(gpu_identity)
+    target_uuid = str(normalized_identity.get("uuid") or "").strip()
+    if not target_uuid:
+        raise ValueError("GPU identity requires a stable UUID")
+    existing_identity = profile_gpu_identity(payload)
+    existing_uuid = str(existing_identity.get("uuid") or "").strip()
+    if existing_uuid and existing_uuid.casefold() != target_uuid.casefold():
+        raise ValueError(
+            f"profile is already bound to {existing_uuid}, not {target_uuid}"
+        )
+    updated = dict(payload)
+    updated["gpu_identity"] = normalized_identity
+    written_path = atomic_write_json(path, updated)
+    migrate_legacy_profile_tier_to_gpu(
+        str(updated.get("profile_id") or path.stem),
+        target_uuid,
+    )
+    return written_path
 
 
 def mark_auto_uv_profile_verification_failed(
@@ -419,6 +472,7 @@ def profile_summary(
         "requires_verification": bool(profile.get("requires_verification", False)),
         "verification_status": profile.get("verification_status"),
         "manual_edit": profile.get("manual_edit"),
+        "gpu_identity": profile_gpu_identity(profile),
     }
     summary.update(
         profile_tier_summary_fields(
@@ -449,6 +503,90 @@ def profile_display_name(profile: dict) -> str:
     return str(profile.get("candidate_id") or profile.get("profile_id") or "")
 
 
+def memory_offset_summary(value) -> str:
+    """`mem +3000 MHz`, or nothing when the profile carries no offset."""
+    text = display_signed_memory_clock(value)
+    if not text or text.startswith("0 "):
+        return ""
+    return f"mem {text}"
+
+
+def clock_voltage_memory_summary(
+    *,
+    lock_clock_mhz=None,
+    candidate_voltage_mv=None,
+    memory_offset_mhz=None,
+) -> str:
+    """`2500 MHz 850 mV, mem +3000 MHz` -- the one phrasing for a tuning point.
+
+    The running-profile line, the profile table and the names given to
+    user-edited profiles all read the same way because they all come through
+    here.
+    """
+    clock = _display_number(lock_clock_mhz, precision=0)
+    voltage = _display_number(candidate_voltage_mv, precision=0)
+    if clock and voltage:
+        text = f"{clock} MHz {voltage} mV"
+    else:
+        text = f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
+    memory = memory_offset_summary(memory_offset_mhz)
+    if text and memory:
+        return f"{text}, {memory}"
+    return text or memory
+
+
+def profile_clock_voltage_memory_summary(profile: dict) -> str:
+    return clock_voltage_memory_summary(
+        lock_clock_mhz=profile.get("lock_clock_mhz"),
+        candidate_voltage_mv=profile.get("candidate_voltage_mv"),
+        memory_offset_mhz=profile.get("memory_offset_mhz"),
+    )
+
+
+# The two shapes the edit dialogs generated before they named a profile after
+# the point it runs at: "User edited memory offset +6000 MT/s" and the
+# memory-less "User edited 2500 MHz 850 mV".
+_LEGACY_USER_EDITED_NAME_RE = re.compile(
+    r"^User edited (?:memory offset [+-]?\d+ MT/s|\d+ MHz \d+ mV)$"
+)
+
+
+def profile_presentation_name(profile: dict) -> str:
+    """The name to show for a saved profile.
+
+    A profile edited before the naming changed still carries the old label in
+    its file. Rewriting saved profiles for the sake of a label would be a
+    silent write to user data, so the refresh happens here on read: a name
+    that is recognisably one the old dialogs generated is recomputed from the
+    profile's own clock, voltage and memory offset. Every other name --
+    Afterburner imports, edited fan curves, anything hand-picked -- is left
+    exactly as saved.
+    """
+    display_name = str(profile.get("display_name", "")).strip()
+    if display_name and _LEGACY_USER_EDITED_NAME_RE.match(display_name):
+        summary = profile_clock_voltage_memory_summary(profile)
+        if summary:
+            return f"User edited {summary}"
+    if display_name:
+        return display_name
+    return profile_display_name(profile)
+
+
+def user_edited_display_name(
+    *,
+    lock_clock_mhz=None,
+    candidate_voltage_mv=None,
+    memory_offset_mhz=None,
+) -> str:
+    """Name an edited profile after the point it actually runs at."""
+    summary = clock_voltage_memory_summary(
+        lock_clock_mhz=lock_clock_mhz,
+        candidate_voltage_mv=candidate_voltage_mv,
+        memory_offset_mhz=memory_offset_mhz,
+    )
+    return f"User edited {summary}" if summary else "User edited profile"
+
+
 def _display_date(value) -> str:
     text = str(value or "").strip()
     if not text:
@@ -460,16 +598,26 @@ def _display_date(value) -> str:
 
 
 def read_auto_uv_profile_summaries() -> list[dict]:
-    tier_assignments = load_profile_tier_assignments()
-    disabled_profile_tier_ids = load_profile_tier_disabled_profile_ids()
-    return [
-        profile_summary(
-            profile,
-            tier_assignments=tier_assignments,
-            disabled_profile_tier_ids=disabled_profile_tier_ids,
+    assignments_by_gpu: dict[str, dict[str, str]] = {}
+    disabled_by_gpu: dict[str, set[str]] = {}
+    summaries: list[dict] = []
+    for profile in read_auto_uv_profiles():
+        gpu_uuid = profile_gpu_uuid(profile)
+        if gpu_uuid not in assignments_by_gpu:
+            assignments_by_gpu[gpu_uuid] = load_profile_tier_assignments(
+                gpu_uuid=gpu_uuid
+            )
+            disabled_by_gpu[gpu_uuid] = load_profile_tier_disabled_profile_ids(
+                gpu_uuid=gpu_uuid
+            )
+        summaries.append(
+            profile_summary(
+                profile,
+                tier_assignments=assignments_by_gpu[gpu_uuid],
+                disabled_profile_tier_ids=disabled_by_gpu[gpu_uuid],
+            )
         )
-        for profile in read_auto_uv_profiles()
-    ]
+    return summaries
 
 
 def delete_auto_uv_profiles(selectors: list[str | Path]) -> list[Path]:
@@ -486,7 +634,7 @@ def delete_auto_uv_profiles(selectors: list[str | Path]) -> list[Path]:
     return delete_auto_uv_profile_paths(paths)
 
 
-def delete_auto_uv_profile_paths(paths: list[str | Path]) -> list[Path]:
+def delete_auto_uv_profile_paths(paths: Sequence[str | Path]) -> list[Path]:
     deleted: list[Path] = []
     seen: set[Path] = set()
     for raw_path in paths:
@@ -571,6 +719,7 @@ def format_profile_table(profiles: list[dict]) -> str:
         (
             "created",
             "id",
+            "GPU",
             "tier",
             "profile",
             "mV",
@@ -589,6 +738,7 @@ def format_profile_table(profiles: list[dict]) -> str:
             (
                 created,
                 str(profile.get("profile_id", "")),
+                profile_gpu_label(profile),
                 str(profile.get("profile_tier", "")),
                 profile_display_name(profile),
                 _display_number(profile.get("candidate_voltage_mv"), precision=0),
@@ -616,7 +766,7 @@ def _display_number(value, *, precision: int) -> str:
     except (TypeError, ValueError):
         return ""
     if precision <= 0:
-        return str(int(round(number)))
+        return str(round(number))
     return f"{number:.{int(precision)}f}"
 
 

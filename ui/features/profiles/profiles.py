@@ -1,23 +1,31 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
 import subprocess
+import time
+from pathlib import Path
 
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from profiles.uv.profile_store import display_signed_memory_clock
-from profiles.uv.profile_store import profile_display_name
-from profiles.uv.profile_store import read_auto_uv_profile_summaries
-from profiles.uv.profile_tiers import available_adaptive_tiers
-from profiles.uv.profile_tiers import profile_tier_label
-from profiles.uv.profile_tiers import resolve_profile_tier_profiles
-from runtime.daemon_client import boot_runtime_spec
-from runtime.daemon_client import daemon_status
-from runtime.support.runtime_service import LEGACY_PENGUIN_BURNER_UNIT_NAME
-from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
-from runtime.support.runtime_service import SYSTEMCTL
-from runtime.support.runtime_service import legacy_systemd_service_unit_path
-from runtime.support.runtime_service import systemd_service_unit_path
+from overlay.state import read_overlay_state
+from profiles.uv.profile_store import (
+    STOCK_PROFILE_SELECTOR,
+    profile_clock_voltage_memory_summary,
+    profile_display_name,
+    profile_presentation_name,
+    read_auto_uv_profile_summaries,
+)
+from profiles.uv.profile_tiers import (
+    available_adaptive_tiers,
+    profile_tier_label,
+    resolve_profile_tier_profiles,
+)
+from runtime.daemon_client import boot_runtime_spec, daemon_status
+from runtime.support.runtime_service import (
+    LEGACY_PENGUIN_BURNER_UNIT_NAME,
+    PENGUIN_BURNER_UNIT_NAME,
+    SYSTEMCTL,
+    legacy_systemd_service_unit_path,
+    systemd_service_unit_path,
+)
 
 
 def load_profile_summaries() -> list[dict]:
@@ -59,6 +67,8 @@ def profile_delete_autostart_action(
     profiles: list[dict],
     selected_ids: list[str],
     autostart_info: dict[str, object],
+    *,
+    include_legacy_profiles: bool = False,
 ) -> dict[str, str]:
     selected = {str(value).strip() for value in selected_ids if str(value).strip()}
     if not selected:
@@ -67,12 +77,17 @@ def profile_delete_autostart_action(
     if not selector:
         return {"action": "keep"}
     if bool(autostart_info.get("adaptive_auto_uv", False)):
+        gpu_uuid = str(autostart_info.get("gpu_uuid") or "").strip()
         remaining_profiles = [
             profile
             for profile in profiles
             if str(profile.get("profile_id", "")).strip() not in selected
         ]
-        resolved = resolve_profile_tier_profiles(remaining_profiles)
+        resolved = resolve_profile_tier_profiles(
+            remaining_profiles,
+            gpu_uuid=gpu_uuid,
+            include_legacy_profiles=include_legacy_profiles,
+        )
         remaining_tiers = available_adaptive_tiers(resolved)
         if remaining_tiers:
             # Adaptive runtime is valid with a single remaining tier: it
@@ -95,8 +110,15 @@ def adaptive_profile_tier_keys(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
-    resolved = resolve_profile_tier_profiles(list(profiles), assignments=assignments)
+    resolved = resolve_profile_tier_profiles(
+        list(profiles),
+        assignments=assignments,
+        gpu_uuid=gpu_uuid,
+        include_legacy_profiles=include_legacy_profiles,
+    )
     return available_adaptive_tiers(resolved)
 
 
@@ -104,12 +126,19 @@ def adaptive_profile_tier_labels(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
     return [
         label
         for label in (
             profile_tier_label(tier)
-            for tier in adaptive_profile_tier_keys(profiles, assignments=assignments)
+            for tier in adaptive_profile_tier_keys(
+                profiles,
+                assignments=assignments,
+                gpu_uuid=gpu_uuid,
+                include_legacy_profiles=include_legacy_profiles,
+            )
         )
         if label
     ]
@@ -139,35 +168,19 @@ def profile_status_label(profiles: list[dict], selector: str) -> str:
         return text or "unknown profile"
     display_name = str(profile.get("display_name", "")).strip()
     if display_name:
-        return display_name
+        # Saved name, with a legacy user-edited one refreshed on read.
+        return profile_presentation_name(profile)
     text = profile_frequency_voltage(profile)
     return text or profile_display_name(profile) or str(profile.get("profile_id", ""))
 
 
 def profile_frequency_voltage(profile: dict) -> str:
-    clock = _status_number(profile.get("lock_clock_mhz"), precision=0)
-    voltage = _status_number(profile.get("candidate_voltage_mv"), precision=0)
-    if clock and voltage:
-        text = f"{clock} MHz {voltage} mV"
-    else:
-        text = f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
-    memory = _memory_offset_summary(profile.get("memory_offset_mhz"))
-    if text and memory:
-        return f"{text}, {memory}"
-    return text or memory
+    # Same phrasing as the profile table and the names of user-edited
+    # profiles: one helper owns it.
+    return profile_clock_voltage_memory_summary(profile)
 
 
-def _memory_offset_summary(value) -> str:
-    # Match the profile table / Auto-UV dialog (signed memory-clock MHz), but
-    # suppress a no-op +0 MHz so the running-profile line stays clean when the
-    # profile carries no memory offset.
-    text = display_signed_memory_clock(value)
-    if not text or text.startswith("0 "):
-        return ""
-    return f"mem {text}"
-
-
-def runner_status_text(
+def runner_status_parts(
     profiles: list[dict],
     *,
     running_selector: str = "",
@@ -179,7 +192,14 @@ def runner_status_text(
     game_override: bool = False,
     standing_selector: str = "",
     standing_adaptive: bool = False,
-) -> str:
+) -> tuple[list[str], list[str]]:
+    """The status split into what is running and everything behind it.
+
+    Two groups, not one sentence. The headline -- the profile actually applied,
+    which is what the bar exists to say -- kept losing the race for width: the
+    whole thing runs to ~170 characters and the interesting half sits in the
+    middle, so it was the first part to disappear.
+    """
     running_selector = str(running_selector or "").strip()
     autostart_selector = str(autostart_selector or "").strip()
     standing_selector = str(standing_selector or "").strip()
@@ -188,7 +208,10 @@ def runner_status_text(
     # clock/voltage numbers -- those are the V/F ceiling, not the live point).
     if defaults_restored or running_selector == STOCK_PROFILE_SELECTOR:
         autostarts = "Yes" if autostart_selector else "No"
-        return f"Currently running profile: Default; Autostart: {autostarts}."
+        return (
+            ["Currently running profile: Default"],
+            [f"Autostart: {autostarts}"],
+        )
     if running_selector:
         autostarts = _profile_selectors_match(
             profiles,
@@ -205,7 +228,8 @@ def runner_status_text(
             markers.append("per-game")
         if markers:
             running_label = f"{running_label} ({', '.join(markers)})"
-        parts = [f"Currently running profile: {running_label}"]
+        head = [f"Currently running profile: {running_label}"]
+        parts: list[str] = []
         if game_override:
             if standing_selector and standing_selector != STOCK_PROFILE_SELECTOR:
                 standing_label = profile_status_label(profiles, standing_selector)
@@ -225,24 +249,79 @@ def runner_status_text(
             parts.append(
                 f"Autostart profile: {profile_status_label(profiles, autostart_selector)}"
             )
-        return "; ".join(parts) + "."
+        return head, parts
     if autostart_selector:
         return (
-            f"Autostart profile: {profile_status_label(profiles, autostart_selector)}; "
-            "Autostart: Yes; "
-            f"Silent fan curve: {_on_off(autostart_silent_fan)}; "
-            "Not running now."
+            [f"Autostart profile: {profile_status_label(profiles, autostart_selector)}"],
+            [
+                "Autostart: Yes",
+                f"Silent fan curve: {_on_off(autostart_silent_fan)}",
+                "Not running now",
+            ],
         )
-    return "No running/autostart profile available yet."
+    return ["No running/autostart profile available yet."], []
 
 
-def systemd_autostart_profile_info() -> dict[str, object]:
+def runner_status_text(
+    profiles: list[dict],
+    *,
+    running_selector: str = "",
+    running_adaptive: bool = False,
+    autostart_selector: str = "",
+    running_silent_fan: bool = False,
+    autostart_silent_fan: bool = False,
+    defaults_restored: bool = False,
+    game_override: bool = False,
+    standing_selector: str = "",
+    standing_adaptive: bool = False,
+) -> str:
+    """The same status as one sentence -- tooltips, the CLI, and old callers."""
+    head, details = runner_status_parts(
+        profiles,
+        running_selector=running_selector,
+        running_adaptive=running_adaptive,
+        autostart_selector=autostart_selector,
+        running_silent_fan=running_silent_fan,
+        autostart_silent_fan=autostart_silent_fan,
+        defaults_restored=defaults_restored,
+        game_override=game_override,
+        standing_selector=standing_selector,
+        standing_adaptive=standing_adaptive,
+    )
+    text = "; ".join(head + details)
+    return text if text.endswith(".") else f"{text}."
+
+
+def systemd_autostart_profile_info(*, gpu_uuid: str = "") -> dict[str, object]:
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
     try:
         summary = boot_runtime_spec(timeout_s=1.0)
-    except Exception:
+    except Exception:  # noqa: BLE001
         if not systemd_service_is_enabled():
             return _legacy_systemd_autostart_profile_info()
         return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    if selected_gpu_uuid:
+        saved_specs = summary.get("gpus") if isinstance(summary, dict) else None
+        if isinstance(saved_specs, list):
+            for saved_spec in saved_specs:
+                if not isinstance(saved_spec, dict):
+                    continue
+                saved_uuid = str(saved_spec.get("gpu_uuid") or "").strip()
+                if saved_uuid.casefold() == selected_gpu_uuid.casefold():
+                    info = _profile_info_from_runtime_summary(saved_spec)
+                    main_gpu_uuid = str(summary.get("main_gpu_uuid") or "").strip()
+                    info["main_gpu"] = bool(
+                        main_gpu_uuid
+                        and main_gpu_uuid.casefold() == selected_gpu_uuid.casefold()
+                    )
+                    return info
+        return {
+            "selector": "",
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+            "gpu_uuid": selected_gpu_uuid,
+            "main_gpu": False,
+        }
     return _profile_info_from_runtime_summary(summary, require_configured=True)
 
 
@@ -302,7 +381,7 @@ def systemd_unit_entry_exists() -> bool:
     try:
         boot_runtime_spec(timeout_s=1.0)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     try:
         return (
@@ -477,6 +556,14 @@ def _daemon_running_profile_info() -> dict[str, object]:
     active_job = payload.get("active_job")
     if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
         info = _profile_info_from_runtime_summary(active_job)
+        info["gpu_uuid"] = str(active_job.get("gpu_uuid") or "")
+        if bool(info.get("adaptive_auto_uv")):
+            # The job spec names the tier the run STARTED on; adaptive has
+            # very likely moved since. Prefer the live published tier, and
+            # fall back to the spec when nothing fresh is available.
+            live_profile_id = live_runtime_profile_id()
+            if live_profile_id:
+                info["selector"] = live_profile_id
         # The Steam tab's per-game override layer: active_job is the live
         # (possibly per-game) spec; game_runtime carries the standing one
         # that returns when the game exits.
@@ -512,31 +599,63 @@ def _profile_info_from_runtime_summary(
     mode = str(summary.get("runtime_mode") or "").strip().lower()
     profile_id = str(summary.get("profile_id") or "").strip()
     selector = STOCK_PROFILE_SELECTOR if mode == "stock" else profile_id
-    return {
+    info: dict[str, object] = {
         "selector": selector,
         "silent_fan_curve": bool(summary.get("silent_fan_curve")),
         "adaptive_auto_uv": mode == "adaptive",
     }
+    gpu_uuid = str(summary.get("gpu_uuid") or "").strip()
+    if gpu_uuid:
+        info["gpu_uuid"] = gpu_uuid
+    return info
+
+
+# With the in-game HUD off, the daemon republishes runtime state on the fan
+# poll cadence, which supports intervals up to 60 s. Allow one full interval
+# plus scheduling margin before treating a file as left over from an old run.
+LIVE_RUNTIME_STATE_MAX_AGE_S = 75.0
+
+
+def live_runtime_profile_id(
+    *,
+    max_age_s: float = LIVE_RUNTIME_STATE_MAX_AGE_S,
+) -> str:
+    """The profile the daemon is running RIGHT NOW, or "" when unknown.
+
+    An adaptive run switches tiers without touching the job spec it was
+    started from, so ``active_job.profile_id`` keeps naming the tier it began
+    on for the whole session. The published runtime state carries the tier
+    actually in effect; this reads it and refuses anything stale.
+    """
+    try:
+        state = read_overlay_state()
+    except Exception:  # noqa: BLE001 - status poll must survive any read failure
+        # Deliberately broad: this runs on the GUI's 2 s status poll, where an
+        # unreadable state file must degrade to "unknown" rather than take the
+        # whole poll down.
+        return ""
+    profile_id = str(state.get("profile_id") or "").strip()
+    if not profile_id:
+        return ""
+    try:
+        updated_ns = int(str(state.get("updated_unix_ns") or "").strip())
+    except ValueError:
+        return ""
+    if updated_ns <= 0:
+        return ""
+    # Only staleness disqualifies it. A timestamp slightly in the future is a
+    # clock detail, not evidence that the file describes an old session.
+    if time.time() - updated_ns / 1_000_000_000 > float(max_age_s):
+        return ""
+    return profile_id
 
 
 def _daemon_status_payload() -> dict[str, object]:
     try:
         payload = daemon_status(timeout_s=1.0)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _status_number(value, *, precision: int) -> str:
-    if value in (None, ""):
-        return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if precision <= 0:
-        return str(int(round(number)))
-    return f"{number:.{int(precision)}f}"
 
 
 def _on_off(value: bool) -> str:

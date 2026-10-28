@@ -160,7 +160,7 @@ def _terminate(handle: DaemonHandle) -> None:
 
 
 @pytest.fixture
-def make_daemon(tmp_path):
+def make_daemon(tmp_path, write_desktop_rtd3_tree):
     """Factory: start a fresh Rust daemon with the scan stub wired up.
 
     The stub's behavior is selected via keyword args (mapped to ``SCAN_STUB_*``
@@ -188,6 +188,7 @@ def make_daemon(tmp_path):
             state_file.write_text(json.dumps(seed_state), encoding="utf-8")
         stub = base / "scan_stub.py"
         stub.write_text(_STUB, encoding="utf-8")
+        rtd3_sys, rtd3_proc = write_desktop_rtd3_tree(base)
 
         env = os.environ.copy()
         env["PENGUIN_BURNER_DAEMON_PROGRAM_FILE"] = str(stub)
@@ -195,6 +196,8 @@ def make_daemon(tmp_path):
         env["PENGUIN_BURNERD_TEST_STATE_FILE"] = str(state_file)
         env["PENGUIN_BURNERD_TEST_INERT_ENGINE"] = "1"  # engine idles (no GPU under test)
         env["PENGUIN_BURNERD_TEST_TIMINGS"] = "1"  # fast kill ladder
+        env["PENGUIN_BURNERD_TEST_RTD3_SYSFS"] = str(rtd3_sys)
+        env["PENGUIN_BURNERD_TEST_RTD3_PROC"] = str(rtd3_proc)
         env.pop("PENGUIN_BURNER_DAEMON_ALLOWED_UID", None)  # open the peercred gate
         env.pop("NOTIFY_SOCKET", None)  # no systemd watchdog under test
         if exit_after_lines:
@@ -330,6 +333,28 @@ def test_status_idle_shape(make_daemon):
 # --- runtime profile: start / stop / state file ------------------------------
 
 
+def test_foreground_scan_stops_stock_engine_and_keeps_boot_spec(make_daemon, monkeypatch, tmp_path):
+    from runtime.daemon_client import set_boot_runtime_spec
+    from runtime.support import runtime_service
+
+    boot_path = tmp_path / "boot-runtime.json"
+    handle = make_daemon(extra_env={"PENGUIN_BURNERD_TEST_BOOT_STATE_FILE": str(boot_path)})
+    spec = _runtime_spec()
+    set_boot_runtime_spec(spec, socket_path=handle.socket_path)
+    apply_runtime_spec(spec, socket_path=handle.socket_path)
+    before = daemon_request("boot_runtime_spec", socket_path=handle.socket_path)
+    boot_bytes = boot_path.read_bytes()
+    assert daemon_status(socket_path=handle.socket_path)["state"] == "runtime_profile_running"
+    monkeypatch.setattr(runtime_service, "DEFAULT_DAEMON_SOCKET", handle.socket_path)
+
+    runtime_service.stop_existing_penguin_burner_runtime(log=lambda _: None)
+
+    assert handle.proc.poll() is None  # The service remains available for scan RPCs.
+    assert daemon_status(socket_path=handle.socket_path)["state"] == "idle"
+    assert daemon_request("boot_runtime_spec", socket_path=handle.socket_path) == before
+    assert boot_path.read_bytes() == boot_bytes
+
+
 def test_apply_runtime_spec_tracks_process_and_state_file(make_daemon):
     daemon = make_daemon()
     spec = _runtime_spec()
@@ -396,12 +421,13 @@ def _short_game(seconds: float = 0.35) -> "subprocess.Popen[bytes]":
     )
 
 
-def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon):
+@pytest.mark.parametrize("reapply", [False, True])
+def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon, reapply):
     daemon = make_daemon()
     standing = _runtime_spec(gpu_uuid="GPU-standing")
     game_spec = _runtime_spec(gpu_uuid="GPU-game")
     apply_runtime_spec(standing, socket_path=daemon.socket_path)
-    game = _short_game()
+    game = _short_game(1.0)
     try:
         result = start_game_runtime_spec(
             game_spec,
@@ -419,6 +445,15 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
             "standing_profile_id": "",
             "standing_runtime_mode": "stock",
         }
+        if reapply:
+            reapplied = start_game_runtime_spec(
+                game_spec,
+                watch_pid=game.pid,
+                app_id="1089130",
+                socket_path=daemon.socket_path,
+            )
+            assert reapplied["started"] is True
+            assert daemon_status(socket_path=daemon.socket_path)["game_runtime"] == status["game_runtime"]
         game.wait(timeout=5)
         assert _wait_until(
             lambda: "game_runtime"
@@ -428,6 +463,63 @@ def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon
         restored = daemon_status(socket_path=daemon.socket_path)
         assert restored["active_job"]["gpu_uuid"] == "GPU-standing"
         assert json.loads(daemon.state_file.read_text(encoding="utf-8")) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+@pytest.mark.parametrize("app_id", ["1089130", "heroic:fan-test", "lutris:42"])
+def test_game_launch_and_live_update_preserve_silent_fan_over_socket(make_daemon, app_id):
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    standing["fan"]["enabled"] = True
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    game_spec = _runtime_spec()
+    game_spec["mode"] = "static"
+    game_spec["static_profile"] = {
+        "profile_id": "game-profile",
+        "plan": [{"index": 12, "voltage_mv": 900, "base_mhz": 2500,
+                  "target_mhz": 2600, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2600,
+        "candidate_voltage_mv": 900,
+        "memory_offset_mhz": None,
+        "power_limit_w": None,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2600,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 1100,
+                           "tail_point_count": 6, "ceiling_clock_mhz": None,
+                           "tail_rise_bins": 0},
+    }
+    game = _short_game(30)
+    try:
+        for profile_id in ("game-profile", "live-update"):
+            game_spec["static_profile"]["profile_id"] = profile_id
+            result = start_game_runtime_spec(
+                game_spec, watch_pid=game.pid, app_id=app_id,
+                socket_path=daemon.socket_path,
+            )
+            assert result["started"] is True
+            active = daemon_status(socket_path=daemon.socket_path)["active_job"]
+            assert active["profile_id"] == profile_id
+            assert active["silent_fan_curve"] is True
+        start_game_runtime_spec(
+            _runtime_spec(), watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is False
+        start_game_runtime_spec(
+            game_spec, watch_pid=game.pid, app_id=app_id,
+            socket_path=daemon.socket_path,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["active_job"]["silent_fan_curve"] is True
+        assert json.loads(daemon.state_file.read_text()) == standing
     finally:
         if game.poll() is None:
             game.kill()
@@ -712,7 +804,7 @@ def test_scan_value_formatting_skips_null_empty_and_formats_float(make_daemon, t
                     "gpu_index": 1,
                     "auto_uv_mode": None,  # None -> skipped
                     "auto_uv_min_voltage_mv": "",  # "" -> skipped
-                    "auto_uv_max_clock_drop_pct": 6.5,  # float -> "6.5" (%.6g)
+                    "auto_oc_target_voltage_mv": 925.0,  # float -> "925" (%.6g)
                     "auto_uv_power_limit_w": 300,  # int -> "300"
                 },
             },
@@ -728,22 +820,28 @@ def test_scan_value_formatting_skips_null_empty_and_formats_float(make_daemon, t
         "--auto-uv-require-final-choice",
         "--gpu-index",
         "1",
-        "--auto-uv-max-clock-drop-pct",
-        "6.5",
         "--auto-uv-power-limit-w",
         "300",
+        "--auto-oc-target-voltage-mv",
+        "925",
     ]
 
 
-def test_unknown_scan_option_is_rejected(make_daemon):
+@pytest.mark.parametrize("option", [
+    "bogus", "auto_uv_max_clock_drop_pct",
+    "auto_uv_efficiency_max_clock_drop_pct",
+    "auto_uv_balanced_max_clock_drop_pct",
+    "auto_uv_performance_max_clock_drop_pct",
+])
+def test_unknown_scan_option_is_rejected(make_daemon, option):
     daemon = make_daemon()
     frames = list(
         daemon_stream_request(
-            {"method": "start_auto_uv_scan", "options": {"bogus": 1}},
+            {"method": "start_auto_uv_scan", "options": {option: 1}},
             socket_path=daemon.socket_path,
         )
     )
-    assert frames == [{"ok": False, "error": "unknown Auto-UV option: bogus"}]
+    assert frames == [{"ok": False, "error": f"unknown Auto-UV option: {option}"}]
 
 
 def test_second_scan_is_refused_while_one_runs(make_daemon):
@@ -857,3 +955,85 @@ def test_autostart_runs_the_persisted_runtime_profile(make_daemon):
     status = daemon_status(socket_path=daemon.socket_path)
     assert status["state"] == "runtime_profile_running"
     assert status["active_job"]["runtime_mode"] == "stock"
+
+
+def test_all_tier_targets_survive_gui_socket_and_worker_cli(make_daemon, tmp_path):
+    from cli.arguments import parse_arguments
+    from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
+    from ui.commands import scan_command
+
+    targets = {
+        f"auto_uv_{tier}_target_{field}": value
+        for tier, voltage, clock in [
+            ("efficiency", 850, 2380), ("balanced", 900, 2850),
+            ("performance", 925, 3000),
+        ]
+        for field, value in [("voltage_mv", voltage), ("clock_mhz", clock)]
+    }
+    command = scan_command({"auto_uv_mode": "adaptive", **targets})
+    options = json.loads(command[-1])
+    argv_file = tmp_path / "tier-target-argv.json"
+    daemon = make_daemon(exit_after_lines=True, argv_file=argv_file)
+    frames = list(daemon_stream_request(
+        {"method": "start_auto_uv_scan", "options": options},
+        socket_path=daemon.socket_path,
+    ))
+    assert frames[-1]["control"] == "finished" and frames[-1]["exit_code"] == 0
+    launched = json.loads(argv_file.read_text())
+    effective = build_effective_auto_uv_runtime_options(parse_arguments(launched))
+    assert {key: effective[key] for key in targets} == targets
+
+
+@pytest.mark.parametrize("launcher", ["heroic", "lutris"])
+def test_live_launcher_mode_roundtrip_preserves_session_and_standing_profile(make_daemon, monkeypatch, launcher):
+    from integrations.launchers import runtime_profile
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from runtime import daemon_client, runtime_spec
+
+    daemon = make_daemon()
+    standing = _runtime_spec()
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    curve = {
+        "profile_id": "perf-test", "profile_tier_key": "performance",
+        "plan": [{"index": 0, "voltage_mv": 900, "base_mhz": 2700,
+                  "target_mhz": 2800, "new_offset_mhz": 100}],
+        "lock_clock_mhz": 2800, "candidate_voltage_mv": 900,
+        "memory_offset_mhz": 0, "power_limit_w": 300,
+        "flatten_target": {"source": "auto-uv-final", "lock_clock_mhz": 2800,
+                           "lock_voltage_mv": 900, "end_voltage_mv": 900, "tail_point_count": 1},
+    }
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", list)
+    specs = {"stock": standing, "performance": {
+        **standing, "mode": "static", "static_profile": runtime_spec._profile_spec(curve),
+    }, "adaptive": {
+        **standing, "mode": "adaptive", "adaptive": runtime_spec._adaptive_spec(curve),
+    }}
+    key = f"{launcher}:27"
+    game = _short_game(30)
+    try:
+        start_game_runtime_spec(specs["adaptive"], watch_pid=game.pid, app_id=key,
+                                socket_path=daemon.socket_path)
+        before = daemon_status(socket_path=daemon.socket_path)["game_runtime"]
+        monkeypatch.setattr(daemon_client, "daemon_status",
+                            lambda **kw: daemon_status(socket_path=daemon.socket_path))
+        monkeypatch.setattr(runtime_profile, "profile_argv", lambda setting: [
+            "--auto-uv-profile", "perf-test", setting.mode,
+        ])
+        monkeypatch.setattr(daemon_client, "start_game_runtime_profile", lambda argv, **kw:
+            start_game_runtime_spec(specs[argv[-1]], socket_path=daemon.socket_path, **kw))
+        for mode in ("performance", "adaptive", "stock"):
+            result = runtime_profile.hot_reapply_game_profile(
+                key, LauncherGameSetting(enabled=True, mode=mode), mode_change=True,
+            )
+            assert result.ok, result.message
+            status = daemon_status(socket_path=daemon.socket_path)
+            assert status["active_job"]["runtime_mode"] == ("static" if mode == "performance" else mode)
+            assert status["game_runtime"] == before
+        game.terminate()
+        game.wait(timeout=5)
+        assert _wait_until(lambda: "game_runtime" not in daemon_status(socket_path=daemon.socket_path), timeout=5)
+        assert json.loads(daemon.state_file.read_text()) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)

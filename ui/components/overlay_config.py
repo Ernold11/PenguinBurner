@@ -3,22 +3,25 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
-from overlay.config import BASIC_OVERLAY_ITEM_IDS
-from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
-from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
-from overlay.config import OVERLAY_SCALE_OPTIONS
-from overlay.config import load_overlay_config
-from overlay.config import save_overlay_config
-from overlay.config import set_overlay_item_enabled
-from overlay.config import set_overlay_scale
-from overlay.config import set_overlay_update_interval_s
-from overlay.config import snap_overlay_scale
-from overlay.overlay_text import SAMPLE_OVERLAY_VALUES
-from overlay.overlay_text import format_overlay_item
-from overlay.overlay_text import preview_overlay_text
+from overlay.config import (
+    ADVANCED_OVERLAY_ITEM_IDS,
+    BASIC_OVERLAY_ITEM_IDS,
+    MAX_OVERLAY_UPDATE_INTERVAL_S,
+    MIN_OVERLAY_UPDATE_INTERVAL_S,
+    OVERLAY_SCALE_OPTIONS,
+    load_overlay_config,
+    save_overlay_config,
+    set_overlay_item_enabled,
+    set_overlay_scale,
+    set_overlay_update_interval_s,
+    snap_overlay_scale,
+)
+from overlay.overlay_text import (
+    SAMPLE_OVERLAY_VALUES,
+    format_overlay_item,
+    preview_overlay_text,
+)
 from overlay.state import read_overlay_state
-
 
 ITEM_LABELS = {
     "base_fps": "Base FPS",

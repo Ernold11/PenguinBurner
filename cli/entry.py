@@ -5,28 +5,29 @@ This module handles daemon flags and early profile validation before running the
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
+import os
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from common.cli_output import enable_cli_output_wrapping
+from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
+from profiles.uv.profile_tiers import (
+    available_adaptive_tiers,
+    resolve_profile_tier_profiles,
+)
+from runtime.daemon_client import apply_runtime_intent, daemon_status
+from runtime.runtime_spec import runtime_intent_from_argv
 from runtime.support.runtime_debug import debug_exception, log
 from runtime.support.runtime_service import (
     DEFAULT_DAEMON_SOCKET,
     install_systemd_service,
     migrate_to_daemon_service,
     parse_runtime_flags,
+    reexec_daemon_lifecycle_with_root,
     running_under_systemd_service,
     uninstall_systemd_service,
-)
-from runtime.daemon_client import apply_runtime_intent
-from runtime.daemon_client import daemon_status
-from runtime.runtime_spec import runtime_intent_from_argv
-from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
-from profiles.uv.profile_tiers import (
-    available_adaptive_tiers,
-    resolve_profile_tier_profiles,
 )
 
 from .runtime_profile_argument import (
@@ -61,7 +62,7 @@ def dispatch_cli(
                     {"profile_selector": STOCK_PROFILE_SELECTOR},
                     persist_on_startup=True,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 print(
                     "restore-stock could not reach the penguin-burnerd "
                     f"service: {exc}\n"
@@ -78,6 +79,16 @@ def dispatch_cli(
                 "Saved profiles were kept and can be re-applied from the GUI."
             )
             return 0
+        if (
+            runtime_flags["install_systemd_service"]
+            or runtime_flags["uninstall_systemd_service"]
+            or runtime_flags["migrate_to_daemon"]
+        ) and os.geteuid() != 0:
+            # Daemon-lifecycle commands need root, but a bare sudo on a pip
+            # --user install dies on import before product code runs. Elevate
+            # this one invocation ourselves (pkexec/sudo) with the invoking
+            # user's import root preserved.
+            return reexec_daemon_lifecycle_with_root(raw_argv)
         if runtime_flags["migrate_to_daemon"]:
             migrate_to_daemon_service(
                 program_file,
@@ -89,17 +100,16 @@ def dispatch_cli(
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)
         if runtime_flags["install_systemd_service"]:
-            try:
-                daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
-            except Exception:
-                install_systemd_service(
-                    program_file,
-                    runtime_argv,
-                    journal_hours=runtime_flags["journal_hours"],
-                    log=log,
-                )
-            else:
-                _apply_runtime_through_daemon(runtime_argv, persist_on_startup=True)
+            # Always run the real install: it refreshes the canonical /var/opt
+            # daemon binary, rewrites the unit, and restarts the service. Probing the
+            # socket and "applying instead" when a daemon answered left users
+            # running a stale daemon with success-looking output (issue #30).
+            install_systemd_service(
+                program_file,
+                runtime_argv,
+                journal_hours=runtime_flags["journal_hours"],
+                log=log,
+            )
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
         elif runtime_flags["daemonize"]:
@@ -109,7 +119,7 @@ def dispatch_cli(
     except KeyboardInterrupt:
         print("Interrupted by user.", file=sys.stderr, flush=True)
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         debug_exception("fatal error", exc)
         print(f"error: {exc}", file=sys.stderr, flush=True)
         return 1

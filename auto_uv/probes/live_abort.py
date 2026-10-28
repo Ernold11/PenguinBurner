@@ -1,17 +1,16 @@
 """Abort a live Q2RTX/CUDA probe only on strong instability evidence.
 
-Rules cover lost load, low clocks, and selected-GPU idle conditions.
+Rules cover lost load and selected-GPU idle conditions.
 """
 
 from __future__ import annotations
 
 from auto_uv.domain.user_options import (
-    AUTO_UV_CURVE_TUNING,
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )
-from .runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
-from .summary import mean
+
+from .runtime_guardrails import telemetry_sample_is_busy
 
 
 def telemetry_live_abort_reason(
@@ -19,16 +18,8 @@ def telemetry_live_abort_reason(
     *,
     busy_power_floor_w: float | None,
     proper_run_power_floor_w: float | None,
-    target_core_clock_floor_mhz: float | None,
     progress_state: dict,
 ) -> str | None:
-    samples = list(state.get("telemetry_samples") or [])
-    busy_samples = [s for s in samples if telemetry_sample_is_busy(s, busy_power_floor_w)]
-    clocks = [
-        float(sample.core_clock_mhz)
-        for sample in busy_samples
-        if sample is not None and sample.core_clock_mhz is not None
-    ]
     latest = state.get("latest_sample")
     latest_busy = telemetry_sample_is_busy(latest, busy_power_floor_w)
     lost = load_lost_abort_reason(
@@ -41,36 +32,7 @@ def telemetry_live_abort_reason(
     )
     if lost is not None:
         return lost
-    selected_gpu_idle = selected_nvidia_gpu_idle_abort_reason(state)
-    if selected_gpu_idle is not None:
-        return selected_gpu_idle
-    live_clock = (
-        float(latest.core_clock_mhz)
-        if latest is not None and latest.core_clock_mhz is not None
-        else None
-    )
-    low_live = low_live_clock_abort_reason(
-        live_core_clock_mhz=live_clock,
-        live_sample_is_busy=latest_busy,
-        core_clock_samples=clocks,
-        target_core_clock_floor_mhz=target_core_clock_floor_mhz,
-        progress_state=progress_state,
-    )
-    if low_live is not None:
-        return low_live
-    avg_clock = mean(clocks)
-    if (
-        target_core_clock_floor_mhz is not None
-        and avg_clock is not None
-        and len(clocks) >= AUTO_UV_STALL_TUNING.avg_core_clock_abort_min_samples
-        and core_clock_below_floor(avg_clock, target_core_clock_floor_mhz)
-    ):
-        return (
-            f"telemetry-live-core_clock-avg current={avg_clock:.1f}MHz "
-            f"floor={target_core_clock_floor_mhz:.1f}MHz "
-            f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
-        )
-    return None
+    return selected_nvidia_gpu_idle_abort_reason(state)
 
 
 def selected_nvidia_gpu_idle_abort_reason(state: dict) -> str | None:
@@ -142,7 +104,7 @@ def load_lost_abort_reason(
         or latest_sample is None
         or latest_sample.power_w is None
         or len(list(state.get("telemetry_samples") or []))
-        < AUTO_UV_STALL_TUNING.live_core_clock_abort_min_samples
+        < AUTO_UV_STALL_TUNING.load_lost_min_samples
         or float(state.get("elapsed_s", 0.0))
         < float(AUTO_UV_METRIC_TUNING.loaded_sample_warmup_s)
     ):
@@ -155,7 +117,7 @@ def load_lost_abort_reason(
     )
     if (
         int(progress_state["low_power_streak"])
-        < AUTO_UV_METRIC_TUNING.target_core_clock_low_streak_samples
+        < AUTO_UV_STALL_TUNING.load_lost_streak_samples
     ):
         return None
     busy_text = (
@@ -168,36 +130,4 @@ def load_lost_abort_reason(
         f"floor={float(proper_run_power_floor_w):.1f}W "
         f"busy-floor={busy_text} "
         f"load-floor={AUTO_UV_METRIC_TUNING.min_proper_run_power_pct:.1f}%"
-    )
-
-
-def low_live_clock_abort_reason(
-    *,
-    live_core_clock_mhz: float | None,
-    live_sample_is_busy: bool,
-    core_clock_samples: list[float],
-    target_core_clock_floor_mhz: float | None,
-    progress_state: dict,
-) -> str | None:
-    if (
-        target_core_clock_floor_mhz is None
-        or live_core_clock_mhz is None
-        or len(core_clock_samples) < AUTO_UV_STALL_TUNING.live_core_clock_abort_min_samples
-    ):
-        return None
-    progress_state["low_core_clock_streak"] = (
-        int(progress_state.get("low_core_clock_streak", 0)) + 1
-        if live_sample_is_busy
-        and core_clock_below_floor(live_core_clock_mhz, target_core_clock_floor_mhz)
-        else 0
-    )
-    if (
-        int(progress_state["low_core_clock_streak"])
-        < AUTO_UV_METRIC_TUNING.target_core_clock_low_streak_samples
-    ):
-        return None
-    return (
-        f"telemetry-live-core_clock current={live_core_clock_mhz:.1f}MHz "
-        f"floor={target_core_clock_floor_mhz:.1f}MHz "
-        f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
     )

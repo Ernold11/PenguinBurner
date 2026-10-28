@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from typing import Callable
+from collections.abc import Callable
 
 from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
 from runtime.support.runtime_service import daemon_worker_registration_error
+from ui.assets import application_version
 from ui.commands import daemon_migration_command
 
 
 def _daemon_status_and_worker_check(required_capabilities: tuple[str, ...]) -> dict:
-    status = require_daemon_capabilities(*required_capabilities)
+    status = require_daemon_capabilities(
+        *required_capabilities,
+        expected_version=application_version(),
+    )
     # A healthy, protocol-compatible daemon can still be registered to spawn
     # scan workers from a different install (flatpak<->pip switch, or a
     # Python upgrade that moved site-packages). Capabilities cannot see
@@ -48,13 +52,13 @@ def ensure_daemon_ready_for_privileged_action(
     except DaemonCompatibilityError as exc:
         unavailable_reason = str(exc)
         prompt = (
-            f"{action_label} needs a newer PenguinBurner root hardware "
-            "service than the one currently running.\n\n"
+            f"{action_label} needs a matching PenguinBurner root hardware "
+            "service.\n\n"
             f"({unavailable_reason})\n\n"
             "PenguinBurner can update and restart it now. This may ask for "
             "your administrator password once."
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         unavailable_reason = str(exc)
         prompt = (
             f"{action_label} requires the PenguinBurner root hardware service.\n\n"
@@ -107,7 +111,7 @@ def ensure_daemon_ready_for_privileged_action(
 
     try:
         check()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         QtWidgets.QMessageBox.critical(
             parent,
             "PenguinBurner Hardware Service",

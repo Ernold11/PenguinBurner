@@ -5,15 +5,20 @@ The latest file feeds resume handoff and the candidate list feeds the final-choi
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
-from .auto_uv_persisted_json_files import safe_json_write, verified_candidates_path
-from .auto_uv_persisted_json_files import auto_uv_user_config_dir
 from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
+
 from ..curve.base_vf_curve import read_base_vf_points
 from ..curve.vf_curve_flattening import build_flatten_target_for_plan
+from .auto_uv_persisted_json_files import (
+    auto_uv_user_config_dir,
+    safe_json_write,
+    verified_candidates_path,
+)
 
 
 def write_latest_verified_candidate(
@@ -24,6 +29,7 @@ def write_latest_verified_candidate(
     probe: AutoUvProbeSummary | None,
     base_probe: AutoUvProbeSummary | None = None,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> Path:
     output_path = auto_uv_user_config_dir() / "uv-result" / "auto-uv-latest-verified.json"
     payload = verified_candidate_payload(
@@ -35,6 +41,7 @@ def write_latest_verified_candidate(
         reason="latest-verified",
         label="passed-short-probe",
         tail_rise_bins=int(tail_rise_bins),
+        configured_power_limit_w=configured_power_limit_w,
     )
     path = safe_json_write(output_path, payload)
     append_verified_candidate(payload)
@@ -121,6 +128,7 @@ def verified_candidate_payload(
     base_probe: AutoUvProbeSummary | None = None,
     final_verified: bool = False,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> dict:
     _validate_plan_points(plan)
     flatten_target = build_flatten_target_for_plan(
@@ -143,6 +151,14 @@ def verified_candidate_payload(
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(voltage_mv),
         "tail_rise_bins": int(tail_rise_bins),
+        # The board-power regime this candidate was measured under; crash
+        # recovery re-establishes it before re-verifying (None = unlimited
+        # or unrecorded pre-regime cache entry).
+        "configured_power_limit_w": (
+            int(configured_power_limit_w)
+            if configured_power_limit_w is not None
+            else None
+        ),
         "core_oc_mhz": core_oc_mhz(
             lock_clock_mhz=int(lock_clock_mhz),
             base_probe=base_probe,
@@ -179,6 +195,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
             "efficiency_mhz_per_w": None,
             "watts_per_mhz": None,
             "perf_cap_reason": None,
+            "hw_power_brake_samples": 0,
             "fps_stddev": None,
             "fps_variance_pct": None,
         }
@@ -206,6 +223,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
         "efficiency_mhz_per_w": float_or_none(probe.efficiency_mhz_per_w),
         "watts_per_mhz": float_or_none(probe.watts_per_mhz),
         "perf_cap_reason": str_or_none(probe.perf_cap_reason),
+        "hw_power_brake_samples": int_or_zero(probe.hw_power_brake_samples),
     }
 
 
@@ -228,7 +246,7 @@ def core_oc_mhz(
 ) -> int | None:
     if base_probe is None or base_probe.avg_core_clock_mhz is None:
         return None
-    return int(round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz)))
+    return round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz))
 
 
 def artifact_points(plan: list[dict]) -> list[dict]:
@@ -245,11 +263,11 @@ def artifact_points(plan: list[dict]) -> list[dict]:
 
 
 def float_or_none(value: object) -> float | None:
-    return None if value is None else float(value)
+    return None if value is None else float(cast(Any, value))
 
 
 def int_or_zero(value: object) -> int:
-    return 0 if value is None else int(value)
+    return 0 if value is None else int(cast(Any, value))
 
 
 def str_or_none(value: object) -> str | None:

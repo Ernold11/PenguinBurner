@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-
 AutoUvEventCallback = Callable[[str, dict], None]
 
 

@@ -25,10 +25,7 @@ class StatusHeader:
                 "TextSelectableByKeyboard",
             )
         )
-        context_menu_policy = getattr(
-            getattr(QtCore.Qt, "ContextMenuPolicy", QtCore.Qt),
-            "CustomContextMenu",
-        )
+        context_menu_policy = getattr(QtCore.Qt, "ContextMenuPolicy", QtCore.Qt).CustomContextMenu
         self.candidate_label.setContextMenuPolicy(context_menu_policy)
         self.candidate_label.customContextMenuRequested.connect(
             self._show_candidate_context_menu

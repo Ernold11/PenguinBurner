@@ -3,6 +3,29 @@
 PenguinBurner publishes a self-hosted Flatpak repository at
 `https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo`.
 
+## Game launchers installed as Flatpak
+
+Steam, Lutris, Heroic and Faugus use the same sandbox integration. Enabling
+**Wrap this game** prepares a PenguinBurner runtime in the selected launcher's
+data directory and checks it inside a fresh sandbox. The game still starts
+through that launcher and its selected runner.
+
+This explicit action grants access to `~/.config/PenguinBurner`,
+`~/.cache/penguin-burner`, and `/run/penguin-burnerd.sock`. GPU writes remain
+with the root daemon. Existing overrides and game wrappers are preserved;
+no general host-execution permission is added.
+
+**Fully exit and reopen the launcher after first enabling wrapping**, then
+relaunch the game. Existing processes retain their old sandbox permissions.
+Reapply the setting after upgrading PenguinBurner to refresh the payload.
+Resolve integration-check errors before enabling the wrapper; update the
+root daemon too if requested. Disabling one game's wrapper leaves shared
+runtime files and grants available for other enabled games.
+
+See [Steam](steam.md), [Lutris](features/lutris.md),
+[Heroic](features/heroic.md) and [Faugus](features/faugus.md) for installation
+selection and launcher-specific settings.
+
 ## Install
 
 ```bash
@@ -30,6 +53,15 @@ fan control) works normally without them. To get the `pburn` PATH commands on
 a Steam-less host anyway, run the manual repair command below once; after
 that, startup keeps the generated files repaired across updates like on any
 other host.
+
+## Host requirements
+
+The root hardware daemon and the Vulkan latency layer are built inside the
+Flatpak runtime but execute on the host, so the host needs glibc 2.39 or
+newer — Ubuntu 24.04+, Debian 13+, Fedora 40+, or any current rolling
+release. On older hosts (Debian 12, Ubuntu 22.04, Mint 21) the daemon setup
+stops with a clear error before touching the system; install PenguinBurner
+from a native package (COPR, PPA, AUR, or pip) there instead.
 
 ## Host Wrappers
 
@@ -64,9 +96,10 @@ flatpak update --user -y io.github.jpietek.PenguinBurner && flatpak run io.githu
 
 To uninstall the Flatpak cleanly, remove the host wrappers before removing the
 app. Cleanup removes only files created by PenguinBurner: the `~/.local/bin`
-commands, user Vulkan manifest, and NVAPI shim fronts in Proton prefixes (the
-real DLLs are restored). It does not remove config or Auto-UV profiles under
-`~/.config/PenguinBurner`, so those stay available to PyPI/native installs.
+commands, user Vulkan manifest, and NVAPI shim fronts in tracked Wine or Proton
+prefixes (the real DLLs are restored). It does not remove config or Auto-UV
+profiles under `~/.config/PenguinBurner`, so those stay available to PyPI/native
+installs.
 
 ```bash
 flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall
@@ -82,6 +115,30 @@ Launch the installed app at any time with:
 flatpak run io.github.jpietek.PenguinBurner
 ```
 
+## Pre-release verification
+
+Automated, per change and weekly in CI (`.github/workflows/flatpak-*.yml`):
+
+- `scripts/check-flatpak-install-smoke.sh --container <fedora|ubuntu-lts|arch>`
+  builds and installs the current tree, asserts exports, sandbox entry
+  points, the wrapper installer, and that the host-side binaries stay within
+  the accepted host glibc floor.
+- `scripts/check-flatpak-host-python.sh` proves the pkexec-elevated import
+  closure runs under each supported host python (Debian 12's 3.11 floor
+  through current rolling releases) and that the rendered install
+  transaction parses.
+- `scripts/check-flatpak-channel-install.sh` installs the *published*
+  Flatpak from the live Pages repository per distro and round-trips the
+  wrapper installer, asserting uninstall leaves nothing behind.
+
+Manual, on the release host before dispatching a Pages deployment: build the
+snapshot with `--prepare-only`, install that exact build locally, and walk
+the GPU checklist — first launch installs a reachable daemon in the same
+session, an Auto-UV scan verifies, apply changes real clocks, boot persist
+survives a reboot, the overlay renders in one Steam game, and the documented
+uninstall leaves the host clean. Restore the host's native install medium
+afterwards.
+
 ## Publishing
 
 Flatpak repository output is deployed through a GitHub Pages Actions artifact,
@@ -95,6 +152,12 @@ From a clean checkout at the release tag, run:
 ```bash
 scripts/publish-flatpak-pages.sh vX.Y.Z
 ```
+
+Publication first runs the containerized host-python compatibility scenarios
+(`scripts/check-flatpak-host-python.sh`, requires docker or podman), because
+the elevated daemon-install step executes product code on the host's
+`python3`. `PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1` skips that gate, mirroring
+the COPR and PPA publishers.
 
 The publisher discovers the newest compatible snapshot Release asset and uses
 it to preserve the OSTree repository across releases. It refuses to replace an

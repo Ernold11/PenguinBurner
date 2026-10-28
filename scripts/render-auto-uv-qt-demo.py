@@ -3,22 +3,24 @@
 
 The script never starts the scanner or talks to the hardware daemon. It feeds
 synthetic scan events into ``MainWindow`` and captures the actual PySide6 and
-pyqtgraph widgets, then tours the real Profiles, Steam, and In-Game Overlay
-tabs, producing a short README-friendly animated GIF.
+pyqtgraph widgets, then tours the real Profiles, Game Library, and In-Game
+Overlay tabs, producing a short README-friendly animated GIF. An optional
+read-only launcher scan can populate Game Library from the capture host.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import argparse
 import math
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_SCALE_FACTOR", "1")
@@ -28,16 +30,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import ui.components.overlay_config as overlay_config_mod  # noqa: E402
-import ui.window as window_mod  # noqa: E402
-from integrations.steam.library import InstalledSteamGame  # noqa: E402
-from integrations.steam.manager import SteamGameRow  # noqa: E402
-from integrations.steam.settings import SteamGameSetting  # noqa: E402
-from overlay.config import OverlayConfig  # noqa: E402
-from ui.main import APP_DISPLAY_NAME  # noqa: E402
-from ui.qt import apply_dark_palette, import_qt  # noqa: E402
-from ui.window import MainWindow  # noqa: E402
-
+import ui.components.overlay_config as overlay_config_mod
+import ui.window as window_mod
+from integrations.launchers.library import SORT_RECENT, LibraryGame
+from integrations.steam.library import InstalledSteamGame
+from integrations.steam.manager import SteamGameRow
+from integrations.steam.settings import SteamGameSetting
+from overlay.config import OverlayConfig
+from ui.components.game_library_panel import game_key
+from ui.features.tuning.gpu_selection import GpuChoice  # noqa: E402
+from ui.main import APP_DISPLAY_NAME
+from ui.qt import apply_dark_palette, import_qt
+from ui.window import MainWindow
 
 FPS = 7
 DURATION_S = 24.0
@@ -48,8 +52,12 @@ CAPTURE_SIZE = (1600, 900)
 OUTPUT_SIZE = (1280, 720)
 DEFAULT_OUTPUT = REPO_ROOT / "docs/assets/auto-uv-full-scan-demo.gif"
 PROFILES_REVEAL_S = 15.6
-STEAM_REVEAL_S = 18.4
+GAME_LIBRARY_REVEAL_S = 18.4
 OVERLAY_REVEAL_S = 21.2
+DEMO_GPU = GpuChoice(
+    index=0, name="NVIDIA GeForce RTX 5080",
+    uuid="GPU-00000000-0000-0000-0000-000000005080", power_limit_default_w=360,
+)
 
 SOURCE_POINTS: list[tuple[float, float]] = [
     (800, 1940),
@@ -171,7 +179,7 @@ DEMO_PROFILES = [
         "base_avg_power_w": 341.574,
         "base_efficiency_fps_per_w": 0.179370,
         "memory_offset_mhz": 6000,
-        "power_limit_w": 319,
+        "power_limit_w": 360,
         "final_verified": True,
         "generated_profile_tier": "Balanced",
         "generated_profile_tier_key": "balanced",
@@ -278,23 +286,20 @@ DEMO_OVERLAY_STATE = {
 }
 
 
-def _stub_external_state() -> None:
+def _stub_external_state(*, live_game_library: bool) -> None:
     """Keep MainWindow construction completely local and daemon-free."""
 
-    # SteamPanel normally starts a background, read-only library scan during
-    # construction. The demo injects its fixed snapshot later instead.
-    setattr(window_mod.SteamPanel, "rescan", lambda *_args, **_kwargs: None)
-    setattr(
-        overlay_config_mod,
-        "load_overlay_config",
-        lambda *_args, **_kwargs: DEMO_OVERLAY_CONFIG,
-    )
-    setattr(
-        overlay_config_mod,
-        "read_overlay_state",
-        lambda: dict(DEMO_OVERLAY_STATE),
-    )
-    window_mod.load_profile_summaries = lambda: []
+    # The library tab normally starts a background, read-only scan the first
+    # time it is shown. The demo injects its fixed snapshot instead.
+    if not live_game_library:
+        setattr(  # noqa: B010 - intentionally replace a Qt callback for the render
+            window_mod.GameLibraryPanel,
+            "rescan",
+            lambda *_args, **_kwargs: None,
+        )
+    overlay_config_mod.load_overlay_config = lambda *_args, **_kwargs: DEMO_OVERLAY_CONFIG
+    overlay_config_mod.read_overlay_state = lambda: dict(DEMO_OVERLAY_STATE)
+    window_mod.load_profile_summaries = list
     window_mod.systemd_autostart_profile_info = lambda: {
         "selector": "",
         "silent_fan_curve": False,
@@ -307,6 +312,35 @@ def _stub_external_state() -> None:
     window_mod.penguin_burner_runtime_is_active = lambda: False
     window_mod.silent_fan_curve_from_runtime_config = lambda: False
     window_mod.silent_fan_curve_to_runtime_config = lambda value: value
+    window_mod.detected_gpu_choices = lambda: [DEMO_GPU]
+    window_mod.gpu_choices_with_fallback = lambda **_kwargs: ([DEMO_GPU], 0)
+
+
+def _demo_steam_source():
+    """The real Steam adapter, fed the demo snapshot instead of a live client.
+
+    Going through the adapter rather than poking the panel keeps this render
+    honest: what the tour shows is what the launcher contract produces.
+    """
+    from integrations.steam.library_source import SteamLibrarySource
+
+    class _Manager:
+        def available_compat_tools(self, _app_id):
+            return (("proton_experimental", "Proton Experimental"),)
+
+        def __getattr__(self, _name):
+            return lambda *_args, **_kwargs: None
+
+    source = SteamLibrarySource(manager=_Manager())  # type: ignore[arg-type]
+    source._rows = _demo_steam_rows()
+    source._playtime = {}
+    source._probe = {
+        "marker": True,
+        "running": True,
+        "cdp_ready": True,
+        "user": "connected",
+    }
+    return source
 
 
 def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
@@ -322,7 +356,7 @@ def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
                 state_flags=4,
                 last_played=game.last_played,
                 last_updated=game.last_played,
-                icon_path=None,
+                art_path=None,
                 compat_tool=game.compat_tool,
                 effective_compat_tool=(
                     game.effective_compat_tool
@@ -410,7 +444,7 @@ def _candidate_payload(
     spec = TIER_SPECS[tier]
     voltage_mv, clock_mhz, passed = spec["candidates"][candidate_index]
     fps, power_w, temp_c, fan_pct = spec["metrics"]
-    final_voltage, final_clock = spec["final"]
+    _final_voltage, final_clock = spec["final"]
     clock_delta = float(clock_mhz) - float(final_clock)
     measured_clock = float(clock_mhz) - 23.0 + math.sin(elapsed_s * 7.0) * 5.0
     measured_power = float(power_w) + clock_delta * 0.14 + math.sin(elapsed_s * 5.0) * 2.0
@@ -491,8 +525,51 @@ def _encode_gif(frame_dir: Path, output_path: Path) -> None:
     )
 
 
-def render(output_path: Path) -> None:
-    _stub_external_state()
+def _choose_live_game(
+    games: Sequence[LibraryGame], selected_name: str
+) -> LibraryGame:
+    """Choose an exact or partial title, defaulting to the first Lutris game."""
+    wanted = selected_name.strip().casefold()
+    matches = [game for game in games if game.name.casefold() == wanted]
+    if not matches and wanted:
+        matches = [game for game in games if wanted in game.name.casefold()]
+    if wanted and not matches:
+        raise RuntimeError(f"Game not found in installed library: {selected_name}")
+    return matches[0] if matches else next(
+        (game for game in games if game.launcher == "lutris"), games[0]
+    )
+
+
+def _load_live_game_library(window: MainWindow, app, selected_name: str) -> str:
+    """Load and select one host game without reading or writing GPU state."""
+    panel = window.game_library_panel
+    panel._gpu_choices_source = list
+    panel.ensure_scanned()
+    deadline = time.monotonic() + 30.0
+    while panel._scan_active and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    panel._library_timer.stop()
+    if panel._scan_active or not panel._games:
+        raise RuntimeError("The installed game library did not finish loading")
+
+    recent_index = panel.sort_combo.findData(SORT_RECENT)
+    if recent_index >= 0:
+        panel.sort_combo.setCurrentIndex(recent_index)
+    selected = _choose_live_game(panel._games, selected_name)
+    panel._select_key(game_key(selected))
+    panel._sync_status("per-game tuning ready")
+    return selected.name
+
+
+def render(
+    output_path: Path,
+    *,
+    live_game_library: bool = False,
+    selected_game: str = "",
+    screenshots_dir: Path | None = None,
+) -> None:
+    _stub_external_state(live_game_library=live_game_library)
     QtCore, QtGui, QtWidgets, pg = import_qt()
     if pg is None:
         raise RuntimeError("pyqtgraph is required to render the Auto-UV demo")
@@ -507,8 +584,8 @@ def render(output_path: Path) -> None:
     QtWidgets.QDialog.exec = lambda self: 0
     window = MainWindow((QtCore, QtGui, QtWidgets, pg))
     window._status_timer.stop()
-    window.steam_panel._sync_timer.stop()
-    window.steam_panel._game_state_timer.stop()
+    window.game_library_panel._library_timer.stop()
+    window.game_library_panel._state_timer.stop()
     window.overlay_config.timer.stop()
     window.overlay_config.refresh_preview()
     window.window.setWindowTitle(
@@ -517,8 +594,13 @@ def render(output_path: Path) -> None:
     window.window.resize(*CAPTURE_SIZE)
     window.window.show()
     app.processEvents()
+    selected_live_game = (
+        _load_live_game_library(window, app, selected_game)
+        if live_game_library
+        else ""
+    )
 
-    auto_uv_view = window.tabs.widget(window.auto_uv_tab_index)
+    auto_uv_view = window.auto_uv_split.widget(0)
     if isinstance(auto_uv_view, QtWidgets.QSplitter):
         auto_uv_view.setSizes([1070, 500])
     window.auto_uv_split.setSizes([585, 285])
@@ -534,7 +616,7 @@ def render(output_path: Path) -> None:
     window.header.set_candidate("Simulation only — the hardware daemon is not used")
     window.log_view.text_edit.clear()
     window.log_view._at_line_start = True
-    _append_log(window, "$ penguin-burner demo-auto-uv --mode adaptive --no-gpu-writes")
+    _append_log(window, "Auto-UV demonstration — simulated events, no GPU writes")
 
     window._handle_scan_event(
         {
@@ -557,11 +639,18 @@ def render(output_path: Path) -> None:
     verify_started = False
     complete_started = False
     profiles_revealed = False
-    steam_revealed = False
+    game_library_revealed = False
     overlay_revealed = False
+    screenshots = {
+        round(15.5 * FPS): "auto-uv-scan.png",
+        round(18.0 * FPS): "profiles-management.png",
+        round(23.0 * FPS): "overlay.png",
+    }
+    if screenshots_dir is not None:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        frame_count = int(round(DURATION_S * FPS))
+        frame_count = round(DURATION_S * FPS)
         for frame_index in range(frame_count):
             elapsed_s = frame_index / FPS
 
@@ -815,44 +904,48 @@ def render(output_path: Path) -> None:
             if elapsed_s >= PROFILES_REVEAL_S and not profiles_revealed:
                 profiles_revealed = True
                 window.profile_list.set_profiles(
-                    [dict(profile) for profile in DEMO_PROFILES],
+                    [dict(profile, gpu_identity={
+                        "name": DEMO_GPU.name, "uuid": DEMO_GPU.uuid,
+                    }) for profile in DEMO_PROFILES],
                     silent_fan_checked=True,
                 )
                 window.tabs.setCurrentIndex(window.profiles_tab_index)
                 window.controls.set_status_text(
-                    "Verified RTX 5080 results — every GPU tunes differently."
+                    "Example RTX 5080 profiles — every GPU tunes differently."
                 )
 
-            if elapsed_s >= STEAM_REVEAL_S and not steam_revealed:
-                steam_revealed = True
-                steam_panel = window.steam_panel
-                steam_panel._live_ready = True
-                steam_panel._compat_tool_live_ready = True
-                steam_panel._selected_app_id = "1771300"
-                steam_panel._populate(_demo_steam_rows())
-                steam_panel.user_label.setText("Steam user: connected")
-                steam_panel.setup_view.setVisible(False)
-                steam_panel.splitter.setVisible(True)
-                steam_panel.splitter.setSizes([480, 1040])
-                compat_index = steam_panel.proton_combo.currentIndex()
-                if compat_index >= 0:
-                    steam_panel.proton_combo.setItemText(
-                        compat_index,
-                        "Proton Experimental",
-                    )
-                current_game = steam_panel.game_list.currentItem()
+            if elapsed_s >= GAME_LIBRARY_REVEAL_S and not game_library_revealed:
+                game_library_revealed = True
+                panel = window.game_library_panel
+                if not live_game_library:
+                    panel._sources = (_demo_steam_source(),)
+                    panel._by_launcher = {
+                        source.launcher_id: source for source in panel._sources
+                    }
+                    panel._scanned = True  # the snapshot stands in for the scan
+                    panel._reload_games()
+                    panel._select_key("steam:1771300")
+                panel.splitter.setSizes([480, 1040])
+                current_game = panel.game_list.currentItem()
                 if current_game is not None:
-                    steam_panel.game_list.scrollToItem(current_game)
-                steam_panel.status_label.setText(
-                    "Current Steam library · per-game tuning ready"
-                )
+                    panel.game_list.scrollToItem(current_game)
+                panel._sync_status("per-game tuning ready")
                 window.header.set_candidate(
-                    "Per-game Adaptive target · overlay · one-click Play"
+                    "Game Library · Adaptive target · overlay · one-click Play"
                 )
-                window.controls.set_status_text(
-                    "Steam integration — real game list, simulated UI tour."
+                # Named from what the panel actually discovered, so the
+                # caption cannot fall behind the launchers PenguinBurner reads.
+                launchers = " + ".join(
+                    str(source.display_name) for source in panel._sources
                 )
-                window.tabs.setCurrentIndex(window.steam_tab_index)
+                library_status = (
+                    f"{launchers} — {selected_live_game} selected from the "
+                    "real host library."
+                    if live_game_library
+                    else "Steam integration — fixed demo snapshot."
+                )
+                window.controls.set_status_text(library_status)
+                window.tabs.setCurrentIndex(window.game_library_tab_index)
 
             if elapsed_s >= OVERLAY_REVEAL_S and not overlay_revealed:
                 overlay_revealed = True
@@ -861,7 +954,7 @@ def render(output_path: Path) -> None:
                     "Overlay: base FPS · frame generation · PC latency"
                 )
                 window.controls.set_status_text(
-                    "In-Game Overlay — representative live telemetry."
+                    "In-Game Overlay — simulated telemetry."
                 )
                 window.tabs.setCurrentIndex(window.overlay_tab_index)
 
@@ -872,13 +965,23 @@ def render(output_path: Path) -> None:
                 app,
                 frame_dir / f"frame-{frame_index:03d}.png",
             )
+            if screenshots_dir is not None and frame_index in screenshots:
+                name = screenshots[frame_index]
+                height = {"profiles-management.png": 430, "overlay.png": 600}.get(
+                    name, CAPTURE_SIZE[1]
+                )
+                window.window.resize(CAPTURE_SIZE[0], height)
+                app.processEvents()
+                if not window.window.grab().save(str(screenshots_dir / name)):
+                    raise RuntimeError(f"Could not save {name}")
+                window.window.resize(*CAPTURE_SIZE)
 
         # GitHub mobile does not autoplay GIFs: the static miniature is the
         # FIRST frame. Open on the scan-complete payoff (all three verified
         # curves) held briefly, so the preview sells the result instead of a
         # single gray baseline curve; the scan story then plays from the top.
         payoff_index = int(PROFILES_REVEAL_S * FPS) - 1
-        hold_frames = int(round(PAYOFF_HOLD_S * FPS))
+        hold_frames = round(PAYOFF_HOLD_S * FPS)
         for index in range(frame_count - 1, -1, -1):
             (frame_dir / f"frame-{index:03d}.png").rename(
                 frame_dir / f"frame-{index + hold_frames:03d}.png"
@@ -906,8 +1009,29 @@ def render(output_path: Path) -> None:
 
 
 def main() -> int:
-    output = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_OUTPUT
-    render(output)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", nargs="?", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--live-game-library",
+        action="store_true",
+        help="Read the installed launcher libraries for the Game Library segment.",
+    )
+    parser.add_argument(
+        "--select-game",
+        default="",
+        help="Select this installed game in a live Game Library capture.",
+    )
+    parser.add_argument(
+        "--screenshots-dir", type=Path,
+        help="Also save the scan, profiles and overlay screenshots here.",
+    )
+    args = parser.parse_args()
+    render(
+        args.output.resolve(),
+        live_game_library=args.live_game_library,
+        selected_game=args.select_game,
+        screenshots_dir=args.screenshots_dir,
+    )
     return 0
 
 

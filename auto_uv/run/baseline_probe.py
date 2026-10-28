@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Callable, cast
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any, cast
 
-from stability.q2rtx.models import Q2RTXStabilityConfig
-
-from auto_uv.domain.types import (
-    AutoUvError,
-    AutoUvProbeSummary,
-    BaseLoadTarget,
-    VfCurveCandidate,
-)
-from auto_uv.domain.console_log import log_benchmark, log_phase
 from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
+    choose_sustained_curve_clock,
     selected_nvidia_light_load_diagnostic,
 )
 from auto_uv.curve.base_load_voltage import derive_loaded_voltage_band
@@ -21,17 +15,39 @@ from auto_uv.curve.base_vf_curve_voltage_bins import (
     lock_voltage_for_target_clock,
     nearest_editable_voltage_bin,
 )
-from auto_uv.curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
 from auto_uv.curve.vf_curve_flattening import (
     build_flatten_target_for_plan,
     build_flattened_plan,
 )
-from auto_uv.persistence.verified_candidate_result_file import write_latest_verified_candidate
-from auto_uv.probes.config import reference_discovery_q2rtx_duration_s
-from auto_uv.probes.runner import AutoUvProbeRunner
-from auto_uv.probes.event_payload import probe_summary_event_payload
+from auto_uv.domain.console_log import log_benchmark, log_phase
 from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import (
+    AutoUvCriticalProbeError,
+    AutoUvError,
+    AutoUvProbeSummary,
+    BaseLoadTarget,
+    FailureKind,
+    FailureSeverity,
+    VfCurveCandidate,
+)
+from auto_uv.persistence.scan_checkpoint import ScanCheckpoint
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
+from auto_uv.persistence.unsafe_voltage_cache import (
+    unsafe_entry_blocks_voltage_candidate,
+    unsafe_entry_clock_floor_mhz,
+)
+from auto_uv.persistence.verified_candidate_result_file import (
+    write_latest_verified_candidate,
+)
+from auto_uv.probes.config import reference_discovery_q2rtx_duration_s
+from auto_uv.probes.event_payload import probe_summary_event_payload
+from auto_uv.probes.runner import AutoUvProbeRunner
+from auto_uv.probes.stability_decision import classify_failed_result
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.shared.positive_int import positive_int
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 
 def retarget_clock_ceiling_for_candidate(
@@ -60,6 +76,7 @@ def run_discovery_probe(
     log: Callable[[str], None],
     event_callback: AutoUvEventCallback | None,
     marker_details: dict | None = None,
+    checkpoint: ScanCheckpoint | None = None,
 ) -> tuple[AutoUvProbeSummary, object]:
     point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
     reference_power_limit_w = baseline_load_reference_power_limit_w(gpu)
@@ -83,22 +100,45 @@ def run_discovery_probe(
         power_limit_w=reference_power_limit_w,
         start_voltage_mv=int(point.voltage_mv),
         baseline_clock_mhz=None,
-        min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=int(short_probe_base_duration_s),
         log=log,
         marker_details=marker_details,
+        checkpoint=checkpoint,
         event_callback=event_callback,
     )
+    return run_discovery_probe_with_runner(
+        base_curve,
+        runner=runner,
+        log=log,
+        event_callback=event_callback,
+    )
+
+
+def run_discovery_probe_with_runner(
+    base_curve: list[dict],
+    *,
+    runner: AutoUvProbeRunner,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    label: str = "base default curve",
+) -> tuple[AutoUvProbeSummary, object]:
+    """Measure a stock baseline with an already configured scan runner.
+
+    Adaptive profiles use this entry point after applying each tier's own
+    power and memory policy, so target derivation and later probes share the
+    exact shipped regime.
+    """
+    point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
     emit_auto_uv_event(
         event_callback,
         "probe_start",
         stage="base-baseline",
         voltage_mv=int(point.voltage_mv),
         clock_mhz=int(point.target_mhz),
-        label="base default curve",
+        label=str(label),
         elapsed_s=0.0,
         target_duration_s=reference_discovery_q2rtx_duration_s(
-            int(short_probe_base_duration_s)
+            int(runner.short_probe_base_duration_s)
         ),
     )
     summary, result = runner.probe_default_curve(
@@ -117,9 +157,17 @@ def run_discovery_probe(
         ),
     )
     log_benchmark(log, phase="discover", probe=summary)
+    if not getattr(result, "success", False):
+        decision = classify_failed_result(
+            str(getattr(result, "reason", "")), log_path=getattr(result, "log_path", None)
+        )
+        if decision.severity is FailureSeverity.CRITICAL:
+            raise AutoUvCriticalProbeError(
+                f"Stock baseline stopped after critical probe failure: {decision.reason}"
+            )
     light_load_diagnostic = selected_nvidia_light_load_diagnostic(
         list(getattr(result, "telemetry_samples", []) or []),
-        power_limit_w=reference_power_limit_w,
+        power_limit_w=runner.power_limit_w,
     )
     if light_load_diagnostic is not None:
         log_phase(log, "discover", light_load_diagnostic)
@@ -128,15 +176,15 @@ def run_discovery_probe(
 
 def baseline_load_reference_power_limit_w(gpu) -> int | None:
     return _positive_power_limit_w(
-        getattr(gpu, "baseline_power_limit_w", None)
-    ) or _positive_power_limit_w(getattr(gpu, "power_limit_w", None))
+        getattr(gpu, "power_limit_w", None)
+    ) or _positive_power_limit_w(getattr(gpu, "baseline_power_limit_w", None))
 
 
 def _positive_power_limit_w(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(cast(Any, value))))
+        power_limit_w = round(float(cast(Any, value)))
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None
@@ -149,13 +197,33 @@ def build_loaded_baseline_candidate(
     discovery_result: object,
     power_limit_w: int | None,
     tail_rise_bins: int = 0,
+    max_clock_mhz: int | None = None,
+    log: Callable[[str], None] | None = None,
+    tier: str = "",
 ) -> tuple[VfCurveCandidate, BaseLoadTarget]:
+    """The flattened curve a tier descends from, locked at or below its clock limit.
+
+    The measured loaded clock stays the reference the probes compare
+    against; only the requested lock moves down, to the highest base-curve
+    step at or below ``max_clock_mhz`` (the tier's table or custom clock).
+    """
     target = choose_base_load_flatten_target(
         base_curve,
         list(getattr(discovery_result, "telemetry_samples", []) or []),
         power_limit_w=power_limit_w,
         fallback_clock_mhz=discovery_summary.avg_core_clock_mhz,
     )
+    if max_clock_mhz is not None and int(target.target_clock_mhz) > int(max_clock_mhz):
+        capped = choose_sustained_curve_clock(base_curve, float(max_clock_mhz))
+        target = replace(target, target_clock_mhz=int(min(capped, target.target_clock_mhz)))
+        if log is not None:
+            log_phase(
+                log,
+                "baseline",
+                f"{tier} stock curve loaded at {float(target.measured_clock_mhz):.0f}MHz "
+                f"above the {int(max_clock_mhz)}MHz clock target; "
+                f"locking the descent at {int(target.target_clock_mhz)}MHz",
+            )
     voltage_band = derive_loaded_voltage_band(
         list(getattr(discovery_result, "telemetry_samples", []) or []),
         power_limit_w=power_limit_w,
@@ -186,43 +254,63 @@ def build_loaded_baseline_candidate(
     )
 
 
-def adjust_baseline_to_measured_clock(
+def probe_loaded_baseline_with_backoff(
     base_curve: list[dict],
     *,
     candidate: VfCurveCandidate,
-    stable_probe: AutoUvProbeSummary,
-    gpu,
-    tail_rise_bins: int = 0,
-) -> VfCurveCandidate:
-    measured_target_mhz = lock_clock_from_probe_loaded_clock(
-        base_curve,
-        probe=stable_probe,
-        previous_lock_clock_mhz=int(candidate.target_mhz),
-    )
-    if int(measured_target_mhz) == int(candidate.target_mhz):
-        return candidate
-    plan = build_flattened_plan(
-        base_curve,
-        lock_clock_mhz=int(measured_target_mhz),
-        candidate_voltage_mv=int(candidate.voltage_mv),
-        tail_rise_bins=int(tail_rise_bins),
-    )
-    if gpu.clock_ceiling is not None:
-        gpu.clock_ceiling.retarget(
-            lock_clock_mhz=int(measured_target_mhz),
-            lock_voltage_mv=int(candidate.voltage_mv),
-            ceiling_clock_mhz=tail_ceiling_for_plan(
-                plan,
-                lock_clock_mhz=int(measured_target_mhz),
-                lock_voltage_mv=int(candidate.voltage_mv),
-            ),
-        )
-    return VfCurveCandidate(
-        label="baseline-measured-clock-adjusted",
-        voltage_mv=int(candidate.voltage_mv),
-        target_mhz=int(measured_target_mhz),
-        flattened_plan=plan,
-    )
+    runner: AutoUvProbeRunner,
+    clock_ceiling,
+    tail_rise_bins: int,
+    probe_history: list[AutoUvProbeSummary],
+    log: Callable[[str], None],
+    profile_tier: str | None = None,
+) -> tuple[VfCurveCandidate, VoltageProbeOutcome]:
+    """Find a passing flattened baseline with at most ten lower-clock probes."""
+    clock_mhz = int(candidate.target_mhz)
+    last_reason = "no positive lower clock remains"
+    for _attempt in range(10):
+        for entry in load_unsafe_voltage_blacklist():
+            if not unsafe_entry_blocks_voltage_candidate(
+                entry, candidate_voltage_mv=candidate.voltage_mv,
+                lock_clock_mhz=clock_mhz, profile_tier=profile_tier,
+            ):
+                continue
+            unsafe_clock = positive_int(entry.get("lock_clock_mhz"))
+            if unsafe_clock is None:
+                raise AutoUvError("baseline flattened curve blocked by cached unsafe voltage")
+            floor = unsafe_entry_clock_floor_mhz(
+                entry, fallback_lock_clock_mhz=unsafe_clock
+            )
+            clock_mhz = min(clock_mhz, ((floor - 1) // 15) * 15)
+            last_reason = "cached unsafe clock band"
+        if clock_mhz <= 0:
+            break
+        if clock_mhz != candidate.target_mhz:
+            log_phase(
+                log, "baseline",
+                f"retreat {candidate.target_mhz}MHz -> {clock_mhz}MHz at "
+                f"{candidate.voltage_mv}mV after {last_reason}",
+            )
+            candidate = replace(
+                candidate,
+                target_mhz=clock_mhz,
+                flattened_plan=build_flattened_plan(
+                    base_curve, lock_clock_mhz=clock_mhz,
+                    candidate_voltage_mv=candidate.voltage_mv,
+                    tail_rise_bins=tail_rise_bins,
+                ),
+            )
+        retarget_clock_ceiling_for_candidate(clock_ceiling, candidate)
+        outcome = runner.probe_baseline_candidate(candidate)
+        if outcome.raw_probe is not None:
+            probe_history.append(outcome.raw_probe)
+        if outcome.decision.failure_kind is FailureKind.USER_STOP:
+            raise KeyboardInterrupt
+        if outcome.decision.passed:
+            return candidate, outcome
+        last_reason = outcome.decision.reason
+        clock_mhz -= 15
+    raise AutoUvError(f"baseline flattened curve failed after clock backoff: {last_reason}")
 
 
 def write_verified_candidate(
@@ -231,6 +319,7 @@ def write_verified_candidate(
     *,
     discovery_summary: AutoUvProbeSummary,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> None:
     effective_tail_rise_bins = int(
         candidate.metadata.get("tail_rise_bins", tail_rise_bins)
@@ -242,6 +331,7 @@ def write_verified_candidate(
         probe=probe,
         base_probe=discovery_summary,
         tail_rise_bins=int(effective_tail_rise_bins),
+        configured_power_limit_w=configured_power_limit_w,
     )
 
 

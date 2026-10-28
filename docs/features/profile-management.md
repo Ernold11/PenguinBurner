@@ -1,48 +1,77 @@
 # Profile Management
 
-> Feature guide — see the [README](../../README.md) for the project overview.
-
-The **Profiles** tab lists every saved undervolt profile and is where you apply,
-verify, tier, export, and clean up curves.
+Use **Profiles** to apply, verify, edit, export, and organize saved curves.
 
 ![Stored undervolt profiles](../assets/profiles-management.png)
 
 ## The table
 
-Each row shows: Date, Profile name, mV, Target MHz, Effective MHz, FPS/W, FPS,
-Power W, and Memory offset. Sort by any column to compare runs.
+Rows show GPU identity, voltage, target and effective clocks, FPS/W, FPS, power,
+and memory offset. Sort columns to compare results. Verified profiles retain
+the GPU UUID so a changed driver index does not move a curve to another card.
 
-## Actions
+**Power** shows measured watts and the percentage relative to the GPU's factory
+power limit; lower values are green. This percentage is not measured savings
+against a stock benchmark. If the matching GPU's default limit is unavailable,
+only watts appear. Other metrics are absolute; tooltips compare each result
+with its own scan baseline, which may use different power or memory settings.
 
-Top bar:
+## Apply a profile
 
-- **Apply** — run the highlighted profile now.
-- **Apply on startup** — also save the applied profile as the boot profile.
-  Off by default: with it unticked, Apply changes the current session only
-  and clears any saved boot profile, so the GPU starts at stock.
-- **Silent fan curve** — use the saved fan curve with the applied profile.
-- **Restore defaults** — return the GPU to stock now and at boot.
+Select a row and click **Apply**. Options:
 
-With **Apply on startup** ticked, Apply saves the selected profile as the
-standing boot state. Restore defaults saves stock as that state instead. The
-`penguin-burnerd` service stays enabled and available in all cases. The toggle
-itself is remembered in `~/.config/PenguinBurner/penguin_burner.toml`
-(`[ui] persist_on_startup`) and survives reinstalls and upgrades.
+- **Apply on startup** — save it for boot as well. Off by default; applying
+  with it off clears that GPU's boot profile and changes only the current session.
+- **Silent fan curve** — apply the saved fan curve too.
+- **Restore defaults** — return the selected GPU to stock now and at boot.
+- **Target GPU** — choose a card and filter profiles; disabled with one GPU.
+- **Main GPU** — on multi-GPU systems, choose which saved startup GPU owns
+  monitoring after boot.
+
+See [multi-GPU profiles](profile-multi-gpu.md) for legacy profiles, missing
+cards, and which GPU receives active monitoring.
+
+## Other actions
 
 Right-click a profile:
 
-- **Edit VF Curve** / **Edit Fan Curve** — open the editors (see
-  [curve-editor.md](./curve-editor.md)).
-- **Apply** / **Verify** — apply the curve, or re-run verification.
-- **Export LACT** — write the curve as a LACT config.
-- **Assign Tier** — Efficiency / Balanced / Performance / None.
-- **Delete** — remove the profile.
+| Action | Purpose |
+| --- | --- |
+| Edit VF Curve / Edit Fan Curve | Open the [curve editors](curve-editor.md). |
+| Verify | Run stability verification again. |
+| Export LACT | Export the curve as a LACT configuration. |
+| Assign Tier | Set Efficiency, Balanced, Performance, or None. |
+| Delete | Remove the profile. |
 
-Apply, Verify, and Delete go through the root hardware service
-(`penguin-burnerd`), so none of them ask for your password; verification runs
-as your regular user.
+To delete several profiles together, **Ctrl-click** individual rows or
+**Shift-click** to select a range. Click the trash button, or right-click any
+selected row and choose **Delete N selected profiles**. One confirmation covers
+the whole selection. Right-clicking an unselected row selects only that profile.
+
+Hardware writes use the root daemon; verification runs as your regular user.
+
+## LACT export
+
+Choose **Export LACT** and review the generated file. Enable **Silent fan
+curve** before export if LACT should manage the fan settings too. To install it:
+
+```bash
+sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
+sudo systemctl restart lactd
+```
+
+## Suspend/resume
+
+An active runtime detects resume, waits for the driver to settle, and restores
+its profile, power limit, clock ceiling, and fan settings. The daemon logs
+`event=resume-reverify-complete` on success, or `event=resume-reverify-gave-up`
+if initial recovery fails; normal drift checks continue afterward.
+
+A deliberately stopped runtime cannot restore settings after sleep. Reapply the
+profile in that case. Laptop runtime power management is covered separately in
+[deep sleep](deep-sleep.md).
 
 ## Where profiles live
 
-Saved profiles are stored under the PenguinBurner user config directory in
-`auto-uv-profiles/`. Only final, verified (or user-edited) curves appear here.
+Profiles are stored in `auto-uv-profiles/` under PenguinBurner's user config
+directory. This includes verified results and user-edited curves.

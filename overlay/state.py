@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import os
-from pathlib import Path
 import pwd
-
+from collections.abc import Mapping
+from pathlib import Path
 
 OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"
 OVERLAY_ENABLE_ENV = "PENGUIN_BURNER_OVERLAY"

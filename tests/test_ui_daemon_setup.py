@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+import runtime.daemon_client as daemon_client_module
 import ui.daemon_setup as daemon_setup_module
 from runtime.daemon_client import DaemonCompatibilityError
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
@@ -93,8 +96,10 @@ def test_daemon_setup_default_check_enforces_protocol_and_capabilities(
     _MessageBox.criticals = []
     handshakes = []
 
-    def fake_require(*capabilities):
-        handshakes.append(capabilities)
+    monkeypatch.setattr(daemon_setup_module, "application_version", lambda: "0.7.9")
+
+    def fake_require(*capabilities, **kwargs):
+        handshakes.append((capabilities, kwargs))
         if len(handshakes) == 1:
             raise DaemonCompatibilityError(
                 "PenguinBurner hardware service protocol mismatch: "
@@ -131,9 +136,12 @@ def test_daemon_setup_default_check_enforces_protocol_and_capabilities(
     # failure shape: scan dies at start against an old daemon), and the
     # post-repair re-check must use the same strict handshake.
     assert ok is True
-    assert handshakes == [("scan-stream-v1",), ("scan-stream-v1",)]
+    assert handshakes == [
+        (("scan-stream-v1",), {"expected_version": "0.7.9"}),
+        (("scan-stream-v1",), {"expected_version": "0.7.9"}),
+    ]
     assert commands == [["repair-daemon"]]
-    assert "needs a newer" in _MessageBox.questions[0][2]
+    assert "needs a matching" in _MessageBox.questions[0][2]
     assert "protocol mismatch" in _MessageBox.questions[0][2]
     assert not _MessageBox.criticals
 
@@ -172,7 +180,7 @@ def test_daemon_setup_repairs_stale_worker_registration(monkeypatch) -> None:
     monkeypatch.setattr(
         daemon_setup_module,
         "require_daemon_capabilities",
-        lambda *capabilities: {"state": "idle"},
+        lambda *capabilities, **kwargs: {"state": "idle"},
     )
 
     def fake_registration_error():
@@ -210,3 +218,45 @@ def test_daemon_setup_repairs_stale_worker_registration(monkeypatch) -> None:
     assert "install or repair" in _MessageBox.questions[0][2]
     assert "spawns scan workers from" in _MessageBox.questions[0][2]
     assert not _MessageBox.criticals
+
+
+def test_daemon_capability_gate_rejects_wrong_release_version(monkeypatch) -> None:
+    monkeypatch.setattr(
+        daemon_client_module,
+        "daemon_status",
+        lambda **_kwargs: {
+            "protocol_major": daemon_client_module.DAEMON_PROTOCOL_MAJOR,
+            "capabilities": ["scan-stream-v1"],
+            "version": "0.7.8",
+        },
+    )
+
+    with pytest.raises(
+        DaemonCompatibilityError,
+        match=r"release mismatch: app=0\.7\.9, daemon=0\.7\.8",
+    ):
+        daemon_client_module.require_daemon_capabilities(
+            "scan-stream-v1",
+            expected_version="0.7.9",
+        )
+
+
+def test_daemon_capability_gate_accepts_matching_release_version(monkeypatch) -> None:
+    status = {
+        "protocol_major": daemon_client_module.DAEMON_PROTOCOL_MAJOR,
+        "capabilities": ["scan-stream-v1"],
+        "version": "0.7.9",
+    }
+    monkeypatch.setattr(
+        daemon_client_module,
+        "daemon_status",
+        lambda **_kwargs: status,
+    )
+
+    assert (
+        daemon_client_module.require_daemon_capabilities(
+            "scan-stream-v1",
+            expected_version="0.7.9",
+        )
+        is status
+    )

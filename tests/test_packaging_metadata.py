@@ -4,11 +4,16 @@ import json
 import os
 import subprocess
 import struct
+import sys
+import tarfile
 import tomllib
 import zlib
 from pathlib import Path
 
 import pytest
+
+# Plain constants module: no Qt import, so it is safe to read here.
+from ui.constants import APP_DISPLAY_NAME
 
 
 def test_base_package_installs_gui_dependencies() -> None:
@@ -40,6 +45,21 @@ def test_native_packages_install_pyqtgraph_colorama_runtime_dependency() -> None
     assert " python3-pyqtgraph (>= 0.13)," in debian_control
     assert "Requires:       python3-colorama >= 0.4" in rpm_spec
     assert "Requires:       python3-pyqtgraph >= 0.13" in rpm_spec
+
+
+def test_native_packages_install_pyyaml_runtime_dependency() -> None:
+    # PyYAML is imported during MainWindow construction (the Lutris library
+    # source), so a package missing it crashes the whole GUI at startup, not
+    # just one tab.
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    assert "PyYAML>=6.0" in set(metadata["project"]["dependencies"])
+    assert "'python-yaml>=6.0'" in arch_pkgbuild
+    assert " python3-yaml (>= 6.0)," in debian_control
+    assert "Requires:       python3-pyyaml >= 6.0" in rpm_spec
 
 
 def test_native_packages_install_pyside6_runtime_dependency() -> None:
@@ -315,11 +335,11 @@ def test_flatpak_startup_repairs_and_verifies_complete_steam_integration(
     shim.write_bytes(b"MZ[pb-nvapi-shim]")
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
-    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
+    monkeypatch.setattr(wrappers, "_host_has_a_launcher", lambda: True)
     monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: manifest)
     monkeypatch.setattr(shim_deploy, "nvapi_shim_artifact", lambda: shim)
 
-    repaired = wrappers.ensure_steam_integration()
+    repaired = wrappers.ensure_host_integration()
 
     assert repaired == bin_dir / "PENGUIN_BURNER"
     assert repaired is not None
@@ -379,11 +399,11 @@ def test_flatpak_startup_rejects_missing_mandatory_payload(
     monkeypatch.setenv(
         "PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(tmp_path / "bin")
     )
-    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
+    monkeypatch.setattr(wrappers, "_host_has_a_launcher", lambda: True)
     monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: None)
 
     with pytest.raises(RuntimeError, match="Vulkan latency layer is missing"):
-        wrappers.ensure_steam_integration()
+        wrappers.ensure_host_integration()
 
 
 def test_flatpak_startup_refuses_foreign_steam_wrapper(
@@ -398,13 +418,13 @@ def test_flatpak_startup_refuses_foreign_steam_wrapper(
     foreign.chmod(0o755)
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
-    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
+    monkeypatch.setattr(wrappers, "_host_has_a_launcher", lambda: True)
 
     with pytest.raises(RuntimeError, match="not owned by PenguinBurner"):
-        wrappers.ensure_steam_integration()
+        wrappers.ensure_host_integration()
 
 
-def test_flatpak_startup_skips_steam_integration_without_steam(
+def test_flatpak_startup_skips_host_integration_without_any_launcher(
     tmp_path, monkeypatch
 ) -> None:
     import common.flatpak_wrappers as wrappers
@@ -412,11 +432,45 @@ def test_flatpak_startup_skips_steam_integration_without_steam(
     bin_dir = tmp_path / "bin"
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
-    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: False)
+    monkeypatch.setattr(wrappers, "_host_has_a_launcher", lambda: False)
 
-    assert wrappers.ensure_steam_integration() is None
-    # A Steam-less host must stay untouched: no wrappers, no manifest.
+    assert wrappers.ensure_host_integration() is None
+    # A host with no launcher must stay untouched: no wrappers, no manifest.
     assert not bin_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("marker", "payload"),
+    [
+        (".steam/steam/steamapps", None),
+        (".local/share/lutris/pga.db", b"sqlite"),
+        (".config/heroic/config.json", b"{}"),
+    ],
+)
+def test_a_launcher_library_on_the_host_asks_for_the_wrapper(
+    tmp_path, monkeypatch, marker, payload
+) -> None:
+    """Every launcher's own installed-here answer reaches the Flatpak startup.
+
+    Not the binary on PATH: the sandbox cannot see the host's, but the host
+    home is mounted, and a machine holding a launcher's library is exactly one
+    whose games may carry our wrapper.
+    """
+    import common.flatpak_wrappers as wrappers
+
+    for variable in ("XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert wrappers._host_has_a_launcher() is False
+
+    path = tmp_path / marker
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if payload is None:
+        path.mkdir()
+    else:
+        path.write_bytes(payload)
+
+    assert wrappers._host_has_a_launcher() is True
 
 
 def test_flatpak_startup_repairs_existing_managed_files_without_steam(
@@ -438,26 +492,15 @@ def test_flatpak_startup_repairs_existing_managed_files_without_steam(
     shim.write_bytes(b"MZ[pb-nvapi-shim]")
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
-    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: False)
+    monkeypatch.setattr(wrappers, "_host_has_a_launcher", lambda: False)
     monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: manifest)
     monkeypatch.setattr(shim_deploy, "nvapi_shim_artifact", lambda: shim)
 
-    repaired = wrappers.ensure_steam_integration()
+    repaired = wrappers.ensure_host_integration()
 
     assert repaired == bin_dir / "PENGUIN_BURNER"
     assert repaired is not None
     assert repaired.is_file()
-
-
-def test_host_has_steam_reads_the_real_steam_root(tmp_path, monkeypatch) -> None:
-    # Exercise the genuine detection wiring (import + default_steam_root),
-    # which every other test stubs out.
-    import common.flatpak_wrappers as wrappers
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert wrappers._host_has_steam() is False
-    (tmp_path / ".local" / "share" / "Steam" / "userdata").mkdir(parents=True)
-    assert wrappers._host_has_steam() is True
 
 
 def test_flatpak_wrapper_installer_registers_user_vulkan_layer(tmp_path) -> None:
@@ -771,12 +814,37 @@ def test_wheel_bundles_rust_daemon_as_package_data() -> None:
     assert "cargo" in setup_py
     assert "--release" in setup_py and "--locked" in setup_py
     assert 'Path(self.build_lib) / "runtime" / "daemon_bin"' in setup_py
+    # Every skip path must consult the REQUIRE gate — a missing crate manifest
+    # once bypassed it silently, shipping a daemon-less wheel under REQUIRE=1.
+    assert "daemon sources are missing" in setup_py
 
     # The sdist carries the crate sources + committed lockfile so a pip install
     # from sdist can cargo-build the daemon into the wheel.
     assert "include burnerd/Cargo.toml" in manifest
     assert "include burnerd/Cargo.lock" in manifest
+    assert "include burnerd/build.rs" in manifest
     assert "recursive-include burnerd/src *.rs" in manifest
+
+
+def test_sdist_contains_complete_rust_daemon_crate(tmp_path: Path) -> None:
+    subprocess.run(
+        [sys.executable, "setup.py", "sdist", "--dist-dir", str(tmp_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    archives = list(tmp_path.glob("penguin_burner-*.tar.gz"))
+    assert len(archives) == 1
+    with tarfile.open(archives[0], "r:gz") as archive:
+        names = archive.getnames()
+    for relative in (
+        "burnerd/Cargo.toml",
+        "burnerd/Cargo.lock",
+        "burnerd/build.rs",
+        "burnerd/src/main.rs",
+    ):
+        assert any(name.endswith(f"/{relative}") for name in names), relative
 
 
 def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
@@ -795,16 +863,17 @@ def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
 def test_daemon_discovery_includes_packaged_site_packages_copy() -> None:
     service = Path("runtime/support/runtime_service.py").read_text(encoding="utf-8")
 
-    # Unit execution is fixed at root-owned /usr/libexec. Install-source discovery
-    # prefers the current wheel payload, then a dev build, with an existing
-    # libexec copy only as the distro-package fallback.
+    # Unit execution is fixed at the root-owned /var/opt target. Install-source
+    # discovery prefers the current wheel payload, then a dev build, then the
+    # native-package source, with the existing canonical copy last.
     assert "def _packaged_daemon_binary" in service
     assert '"daemon_bin"' in service
-    assert "return str(LIBEXEC_DAEMON_BINARY)" in service
+    assert "return str(DAEMON_BINARY)" in service
     packaged = service.index("_packaged_daemon_binary(),")
     dev = service.index("_dev_daemon_binary(program_file),")
-    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n", dev)
-    assert packaged < dev < libexec
+    native = service.index("NATIVE_PACKAGE_DAEMON_BINARY,\n", dev)
+    canonical = service.index("DAEMON_BINARY,\n", native)
+    assert packaged < dev < native < canonical
 
 
 def test_flatpak_build_scripts_install_rust_stable_extension() -> None:
@@ -943,16 +1012,32 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "    stability \\" in rpm_spec
 
 
-def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:
+def test_desktop_launchers_are_english_only_and_consistent() -> None:
     desktop_text = Path(
         "packaging/linux/io.github.jpietek.PenguinBurner.desktop"
     ).read_text(encoding="utf-8")
+    flatpak_desktop_text = Path(
+        "packaging/flatpak/io.github.jpietek.PenguinBurner.desktop"
+    ).read_text(encoding="utf-8")
 
-    assert "Name=NVIDIA GPU Automatic Tuning Tool" in desktop_text
-    assert "GenericName=NVIDIA GPU Automatic Tuning Tool" in desktop_text
-    assert "automatic and adaptive undervolting" in desktop_text
-    assert "MSI Afterburner imports" in desktop_text
-    assert "LACT exports" in desktop_text
+    # Name is the application name and GenericName the category, per the
+    # freedesktop entry spec; the menu still finds the app by "NVIDIA"/"GPU"
+    # through GenericName and Keywords.
+    for text in (desktop_text, flatpak_desktop_text):
+        assert "Name=PenguinBurner" in text
+        assert "GenericName=NVIDIA GPU Tuning Tool" in text
+        assert "Automatic NVIDIA GPU undervolting and overclocking" in text
+        assert "adaptive per-game profiles for Steam, Lutris, Heroic and Faugus" in text
+        assert "Steam;Lutris;Heroic;Faugus;" in text
+    # A native install and a Flatpak install must show the same app name.
+    def entry_lines(text: str, field: str) -> list[str]:
+        return [line for line in text.splitlines() if line.startswith(f"{field}=")]
+
+    for field in ("Name", "GenericName", "Comment", "Keywords"):
+        assert entry_lines(desktop_text, field) == entry_lines(
+            flatpak_desktop_text, field
+        ), field
+    assert APP_DISPLAY_NAME == "PenguinBurner"
     assert "Exec=penguin-burner" in desktop_text
     assert "Icon=penguin-burner" in desktop_text
     assert "Penguin Burner" in desktop_text
@@ -960,6 +1045,64 @@ def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:
     assert "StartupWMClass=io.github.jpietek.PenguinBurner" in desktop_text
     assert "Name[" not in desktop_text
     assert "Comment[" not in desktop_text
+
+
+def test_pypi_summary_matches_readme_positioning() -> None:
+    # The PyPI long description is generated from README.md at build time, so
+    # the one-line summary is the only project blurb that can drift from it.
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    summary = metadata["project"]["description"]
+    keywords = set(metadata["project"]["keywords"])
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert summary.startswith(
+        "Automatic NVIDIA GPU undervolting, overclocking, and per-game tuning"
+    )
+    assert "three verified tiers" in summary
+    assert "Steam, Lutris, Heroic and Faugus" in summary
+    assert "PC latency" in summary
+    assert "Steam, Lutris, Heroic and Faugus" in readme
+    assert {"overclocking", "adaptive", "steam", "lutris", "heroic", "faugus", "overlay"} <= keywords
+
+
+def test_native_package_descriptions_cover_readme_headline_features() -> None:
+    # COPR (rpm), the Ubuntu PPA (deb), the AUR/CachyOS PKGBUILD and the Flatpak
+    # AppStream data each carry their own hand-written blurb: unlike the PyPI
+    # long description, none is generated from README.md, so they drift
+    # silently.
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    metainfo = Path(
+        "packaging/flatpak/io.github.jpietek.PenguinBurner.metainfo.xml"
+    ).read_text(encoding="utf-8")
+
+    short_summary = "NVIDIA GPU undervolting, overclocking"
+    assert f"Summary:        Automatic {short_summary}, and per-game tuning" in rpm_spec
+    assert f"Description: automatic {short_summary} and per-game tuning" in debian_control
+    assert (
+        f"<summary>Automatic {short_summary} and per-game tuning</summary>" in metainfo
+    )
+    # pacman has no long-description field, so pkgdesc is the whole AUR blurb;
+    # namcap wants it under 80 characters.
+    pkgdesc = arch_pkgbuild.split("pkgdesc='", 1)[1].split("'", 1)[0]
+    assert pkgdesc == f"Automatic {short_summary} and adaptive per-game tuning"
+    assert len(pkgdesc) < 80
+
+    for blurb in (rpm_spec, debian_control, metainfo):
+        # Both formats hard-wrap their body, so match on unwrapped prose.
+        prose = " ".join(blurb.split())
+        assert "Auto-UV scan" in prose
+        assert "Efficiency, Balanced and Performance" in prose.replace(
+            "Efficiency, Balanced, and Performance", "Efficiency, Balanced and Performance"
+        )
+        assert "Adaptive undervolting" in prose
+        assert "Steam, Lutris, Heroic and Faugus games into one list" in prose
+        assert "frame-generation FPS" in prose
+        assert "PC latency" in prose
+        assert "MSI Afterburner profile import" in prose
+        assert "LACT config export" in prose
+        assert "penguin-burnerd" in prose
 
 
 def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
@@ -1112,3 +1255,26 @@ def _png_paeth(left: int, up: int, upper_left: int) -> int:
     if up_distance <= upper_left_distance:
         return up
     return upper_left
+
+
+def test_every_importable_package_is_listed_for_install() -> None:
+    """A package the wheel never installs imports fine here and nowhere else.
+
+    The list is written by hand, so a new subpackage is only ever one forgotten
+    line away from a `ModuleNotFoundError` that the whole test suite -- running
+    from the checkout, where every directory is importable -- cannot see.
+    """
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    listed = set(metadata["tool"]["setuptools"]["packages"])
+    roots = {name.split(".", 1)[0] for name in listed}
+
+    missing = set()
+    for root in sorted(roots):
+        for init in Path(root).rglob("__init__.py"):
+            package = ".".join(init.parent.parts)
+            if "__pycache__" in package:
+                continue
+            if package not in listed:
+                missing.add(package)
+
+    assert not missing, f"not installed by the wheel: {sorted(missing)}"

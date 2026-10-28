@@ -524,6 +524,19 @@ def archive_frame_history(
     )
 
 
+def frame_history_app_id(game_key: str) -> str:
+    """The app id a game's rings are stored under, or "" when none are kept.
+
+    The daemon records Steam games only: the ring header holds a numeric app
+    id, and other launchers' ids are arbitrary strings. Mirrors
+    ``steam_app_id`` in ``burnerd/src/frame_history``.
+    """
+    launcher, _, game_id = str(game_key or "").strip().partition(":")
+    if launcher != "steam" or not game_id.isdigit() or int(game_id) <= 0:
+        return ""
+    return game_id
+
+
 def read_frame_history_for_app(
     app_id: str | int,
     *,

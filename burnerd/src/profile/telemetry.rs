@@ -576,8 +576,7 @@ impl OverlayStatePublisher {
             self.last_latency_ns = Some(now_ns);
             return (String::new(), display_latency_ms);
         }
-        let matches = (self.last_latency_ms.is_some()
-            || self.last_display_latency_ms.is_some())
+        let matches = (self.last_latency_ms.is_some() || self.last_display_latency_ms.is_some())
             && self.last_latency_pid.is_some()
             && latency_pid.is_some()
             && self.last_latency_pid == latency_pid;

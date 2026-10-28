@@ -49,9 +49,8 @@ responsibility, not arbitrary line count.
 
 ## Privileged operations use the root daemon
 
-PenguinBurner has one root-owned service, `penguin-burnerd.service`, on
-`/run/penguin-burnerd.sock`. Anything that needs root belongs behind that
-socket API.
+PenguinBurner has one root-owned service, `penguin-burnerd.service`.
+Anything that needs root belongs behind its socket API.
 
 - Never wrap GPU or system actions in `pkexec`, `sudo`, or
   `privileged_command`.
@@ -85,6 +84,17 @@ socket API.
   GUI labels, CLI help, errors, and user docs.
 - When moving code, update imports, package metadata, tests, docs, and
   user-visible command strings in the same change; scan for stale paths.
+- Every new launcher must implement the shared `LauncherSource` contract and
+  inherit `LiveOverlaySource` (through `WrapperLibrarySource` for config-file
+  launchers). Single and bulk overlay changes must use the shared live handler;
+  do not add launcher-specific overlay writers or silently save for next launch.
+  Bulk results must report successfully saved game IDs. Extend the registered
+  launcher contract tests, including unknown/unwrapped sessions and failures.
+- Native and Flatpak variants must use `LauncherInstallation` and the shared
+  installation selector/runtime bridge in `integrations/launchers/`. Discovery,
+  settings, compatibility probes and launch commands must target that same
+  installation. Keep only launcher-specific paths and config formats in adapters;
+  test coexistence, missing executables and sandbox preflight failures.
 - Preserve visible integrations and saved configuration unless removal or
   migration is explicitly part of the request.
 - If overlay-visible fields change, keep Python formatting and the native layer
@@ -150,3 +160,25 @@ run, stop and report the exact blocker.
 8. In the PR body, explain what changed, why, user/developer impact, checks run,
    and any live validation that remains.
 9. Verify the remote result and leave the requested branch/worktree state clean.
+
+## Releases
+
+- Publish only when explicitly requested. Prepare version metadata and release
+  notes, pass the required checks, and merge the release commit to `main` first.
+- Use `scripts/release.sh VERSION` for GitHub/tag, PyPI, AUR, COPR, Ubuntu PPA,
+  and Flatpak/Pages. See [the release guide](docs/releasing.md) for prerequisites
+  and retry behavior. Do not substitute a partial manual publication.
+- Releases must run noninteractively. Check signing and credentials before
+  building; never put private keys, passphrases, or tokens in the repository.
+- Keep instructions portable: use repository-relative commands and documented
+  environment variables, not workstation-specific checkout or credential paths.
+- Keep the generated artifacts and completion receipts for retries. Never
+  overwrite a published tag or replace mismatched release artifacts.
+- Verify public versions, artifact hashes, and remote build/deployment results
+  before reporting completion. A local host upgrade is a separate action.
+- Use the containerized package checks for Arch/CachyOS, supported Fedora,
+  Ubuntu, and Flatpak. Check the built daemon, Vulkan layer, and NVAPI shim,
+  not just package metadata. Commands and scenarios are in the release guide.
+- Set `PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1` only when the same checks already
+  passed for the exact source and packaging being released. Record the CI run
+  or local evidence. Rawhide/devel are drift checks, not stable-release gates.

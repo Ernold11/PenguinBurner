@@ -190,15 +190,24 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
         voltage_mv=935,
         probe=_summary(clock_mhz=2830),
         final_verification_probe=_summary(clock_mhz=2888),
+        q2rtx_resolution="1080p",
         base_probe=_summary(voltage_mv=1025, clock_mhz=2754),
         fan_curve_payload={"fan": {"curve": [[45.0, 0.0], [90.0, 100.0]]}},
         memory_offset_mhz=500,
         power_limit_w=360,
         tail_rise_bins=2,
+        gpu_identity={
+            "name": "NVIDIA RTX 5090",
+            "uuid": "GPU-final-a",
+            "pci_bus_id": "00000000:01:00.0",
+            "pci_device_id": "0x2B8510DE",
+            "index": 0,
+        },
     )
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
 
     assert profile_path.parent == tmp_path / "auto-uv-profiles"
+    assert payload["q2rtx_resolution"] == "1080p"
     assert payload["final_verified"] is True
     assert payload["memory_offset_mhz"] == 500
     assert payload["power_limit_w"] == 360
@@ -208,6 +217,13 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert payload["final_verification_metrics"] is True
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
+    assert payload["gpu_identity"] == {
+        "name": "NVIDIA RTX 5090",
+        "uuid": "GPU-final-a",
+        "pci_bus_id": "00000000:01:00.0",
+        "pci_device_id": "0x2B8510DE",
+        "index_at_verification": 0,
+    }
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()
 
 
@@ -260,3 +276,40 @@ def test_verified_candidate_payload_rejects_malformed_plan_point() -> None:
             plan=[], lock_clock_mhz=2700, voltage_mv=900,
             probe=None, reason="r", label="l",
         )
+
+
+def test_verified_candidate_payload_records_power_regime() -> None:
+    from auto_uv.persistence.verified_candidate_result_file import (
+        verified_candidate_payload,
+    )
+
+    point = {
+        "index": 12,
+        "voltage_mv": 900,
+        "base_mhz": 2500,
+        "target_mhz": 2700,
+        "new_offset_mhz": 200,
+    }
+    capped = verified_candidate_payload(
+        plan=[point],
+        lock_clock_mhz=2700,
+        voltage_mv=900,
+        probe=None,
+        reason="r",
+        label="l",
+        configured_power_limit_w=503,
+    )
+    unrecorded = verified_candidate_payload(
+        plan=[point],
+        lock_clock_mhz=2700,
+        voltage_mv=900,
+        probe=None,
+        reason="r",
+        label="l",
+    )
+
+    # Crash recovery reads this to re-establish the measurement regime; the
+    # explicit None distinguishes "no cap" from a pre-regime cache entry
+    # only by absence of the key in truly old files.
+    assert capped["configured_power_limit_w"] == 503
+    assert unrecorded["configured_power_limit_w"] is None

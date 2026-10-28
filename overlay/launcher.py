@@ -2,24 +2,34 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
 import re
 import stat
 import sys
+from pathlib import Path
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
-from .native_layer import LATENCY_LAYER_NAME
-from .native_layer import native_layer_dirs
-from .shim_deploy import deploy_nvapi_shim, spawn_refront_watcher
-from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
+from .native_layer import LATENCY_LAYER_NAME, native_layer_dirs
+from .shim_deploy import (
+    deploy_nvapi_shim,
+    nvapi_shim_artifact,
+    prefix_system32,
+    spawn_refront_watcher,
+)
 from .state import (
-    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
+    OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_STATE_ENV,
     clear_overlay_override,
     overlay_state_path,
 )
+from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
+from .wrapper_tokens import (
+    GAME_KEY_ENV,
+    GAME_KEY_FLAG_PREFIX,
+    LEGACY_LUTRIS_ID_FLAG_PREFIX,
+    game_key_from_flag,
+)
 
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
@@ -76,7 +86,19 @@ def main(argv: list[str] | None = None) -> int:
     # Wine reports a Windows PID while the Vulkan layer reports the host PID.
     # Both producers inherit this wrapper/session identity so the daemon can
     # merge their complementary samples without mistaking them for two games.
-    env[TELEMETRY_SESSION_ENV] = str(os.getpid())
+    host_pid: int | None = os.getpid()
+    if env.get("FLATPAK_ID"):
+        from runtime.daemon_client import client_host_pid
+
+        try:
+            host_pid = client_host_pid()
+            env[TELEMETRY_SESSION_ENV] = str(host_pid)
+        except (RuntimeError, OSError, ValueError):
+            # A disconnected daemon must not prevent a Flatpak game starting.
+            host_pid = None
+            env[TELEMETRY_SESSION_ENV] = str(os.getpid())
+    else:
+        env[TELEMETRY_SESSION_ENV] = str(os.getpid())
     args = _consume_wrapper_flags(args, env)
     # Every launch starts from its own launch-time overlay setting: a live
     # override left behind by a previous session must not leak into this one.
@@ -89,40 +111,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    shim_active = configure_penguin_burner_environment(env, command_args=args)
-    if _overlay_enabled(env):
-        # Two overlays on one swapchain conflict, so MangoHud is stripped
-        # unless the overlay is explicitly off (PB_OVERLAY=0 — what the Steam
-        # tab writes for an unchecked overlay toggle). "auto" keeps the
-        # historical strip: the config file may enable the overlay mid-game.
-        _remove_mangohud_environment(env)
-    _prepare_overlay_paths(env)
-    _apply_steam_game_profile(env)
-    if shim_active:
-        # Proton clobbers our pre-exec shim during prefix setup; this detached
-        # watcher re-fronts it across that window and survives the exec below.
-        # Spawn it before _route_trace_to_fifo so the watcher inherits the
-        # console stderr -- not the marker FIFO that fd 2 is about to become,
-        # which would feed its diagnostics into the bridge as bogus markers.
-        spawn_refront_watcher(
-            _session_helper_environment(env, session_helper_pythonpath)
-        )
-    if ingame_latency_enabled(env):
-        # The FIFO must always have a drainer for as long as it can have
-        # writers, or the 64 KB pipe fills and the shim's marker write (and any
-        # stderr write) blocks the game. The drainer's lifetime is tied to this
-        # pid (the exec below turns it into the Proton session) plus the FIFO's
-        # writer count -- NOT to the app, which may be closed the whole time.
-        # Same stderr caveat as the watcher: spawn before the redirect.
-        _sweep_stale_marker_fifos(env)
-        if _create_marker_fifo(env):
-            spawn_detached_drainer(
-                _session_helper_environment(env, session_helper_pythonpath),
-                trace_fifo_path(env),
-                session_pid=os.getpid(),
+    from integrations.launchers.session import begin_session, report_session
+
+    session_id, registered_pid = begin_session(env)
+    host_pid = registered_pid or host_pid
+    profile_applied = False
+    try:
+        shim_active = configure_penguin_burner_environment(env, command_args=args)
+        if _overlay_enabled(env):
+            # Two overlays on one swapchain conflict, so MangoHud is stripped
+            # unless the overlay is explicitly off (PB_OVERLAY=0 — what the Steam
+            # tab writes for an unchecked overlay toggle). "auto" keeps the
+            # historical strip: the config file may enable the overlay mid-game.
+            _remove_mangohud_environment(env)
+        _prepare_overlay_paths(env)
+        # Never send a namespace-local PID to a host daemon that came back midway
+        # through launch. Observation can recover later; skipped GPU writes cannot.
+        profile_applied = bool(_apply_game_profile(env)) if host_pid is not None else False
+        if shim_active:
+            # Proton clobbers our pre-exec shim during prefix setup; this detached
+            # watcher re-fronts it across that window and survives the exec below.
+            # Spawn it before _route_trace_to_fifo so the watcher inherits the
+            # console stderr -- not the marker FIFO that fd 2 is about to become,
+            # which would feed its diagnostics into the bridge as bogus markers.
+            spawn_refront_watcher(
+                _session_helper_environment(env, session_helper_pythonpath)
             )
-        _route_trace_to_fifo(env)
-    os.execvpe(args[0], args, env)
+        if ingame_latency_enabled(env):
+            # The FIFO must always have a drainer for as long as it can have
+            # writers, or the 64 KB pipe fills and the shim's marker write (and any
+            # stderr write) blocks the game. The drainer's lifetime is tied to this
+            # pid (the exec below turns it into the Proton session) plus the FIFO's
+            # writer count -- NOT to the app, which may be closed the whole time.
+            # Same stderr caveat as the watcher: spawn before the redirect.
+            _sweep_stale_marker_fifos(env)
+            if _create_marker_fifo(env):
+                spawn_detached_drainer(
+                    _session_helper_environment(env, session_helper_pythonpath),
+                    trace_fifo_path(env),
+                    session_pid=os.getpid(),
+                )
+            _route_trace_to_fifo(env)
+        report_session(session_id, phase="running", profile_applied=profile_applied)
+        os.execvpe(args[0], args, env)
+    except Exception:
+        report_session(session_id, phase="failed", profile_applied=profile_applied)
+        raise
     return 127
 
 
@@ -131,9 +165,12 @@ def _session_helper_environment(
 ) -> dict[str, str]:
     """Give detached Python helpers the Flatpak package path without leaking
     it into Proton or the game process."""
-    if not package_path:
-        return env
     helper_env = dict(env)
+    # Helpers can outlive the game while draining telemetry. They are not game
+    # successors and must never keep a recovered launch session alive.
+    helper_env.pop("PENGUIN_BURNER_SESSION_ID", None)
+    if not package_path:
+        return helper_env
     existing = str(helper_env.get("PYTHONPATH") or "").strip()
     helper_env["PYTHONPATH"] = (
         f"{package_path}{os.pathsep}{existing}" if existing else package_path
@@ -144,34 +181,73 @@ def _session_helper_environment(
 def _consume_wrapper_flags(args: list[str], env: dict[str, str]) -> list[str]:
     """Strip leading --pb-* wrapper flags off the command.
 
-    The Steam tab injects the per-game overlay switch as a flag rather than a
+    The tabs inject the per-game overlay switch as a flag rather than a
     PB_OVERLAY=x env token, because launchers that exec their child directly
     (gamescope after its "--") cannot start an env assignment as a program.
     The flag carries the same meaning, so it lands in the same env vars.
+
+    The library tab also injects the game identity here. Steam publishes
+    SteamAppId in the environment, but Lutris regenerates LUTRIS_GAME_UUID on
+    every launch and Heroic publishes nothing, so the key those launchers
+    store their settings under has to travel as a flag we wrote ourselves.
     """
-    while args and args[0].startswith("--pb-overlay="):
-        value = args.pop(0).partition("=")[2].strip()
-        if value in _TRUTHY | _FALSEY:
-            env[OVERLAY_ENABLE_ENV_ALIAS] = value
-            env[OVERLAY_ENABLE_ENV] = value
+    while args and args[0].startswith(
+        (
+            "--pb-overlay=",
+            "--pb-ingame-latency=",
+            GAME_KEY_FLAG_PREFIX,
+            LEGACY_LUTRIS_ID_FLAG_PREFIX,
+        )
+    ):
+        flag = args.pop(0)
+        name, _, value = flag.partition("=")
+        value = value.strip()
+        if name == "--pb-overlay":
+            if value in _TRUTHY | _FALSEY:
+                env[OVERLAY_ENABLE_ENV_ALIAS] = value
+                env[OVERLAY_ENABLE_ENV] = value
+        elif name == "--pb-ingame-latency":
+            # Lands in the same env vars the assignment form sets, so
+            # everything downstream reads one opt-in and not two.
+            if value in _TRUTHY | _FALSEY:
+                env[INGAME_LATENCY_ENV_ALIAS] = value
+                env[INGAME_LATENCY_ENV] = value
+        else:
+            # Either spelling of the identity flag, including the Lutris-only
+            # one sitting in prefix_commands configured by earlier versions.
+            key = game_key_from_flag(flag)
+            if key:
+                env[GAME_KEY_ENV] = key
     return args
 
 
-def _apply_steam_game_profile(env: dict[str, str]) -> None:
-    # Per-game Auto-UV preset (Steam tab): the root daemon applies it and
-    # watches this PID -- the exec below makes it the game session's PID, so
-    # the daemon restores the standing profile when the game exits. Runs
-    # before exec, outside pressure-vessel, so the daemon socket is reachable.
-    # Any failure is only reported: it must never block a game launch.
+def _apply_game_profile(env: dict[str, str]) -> bool:
+    # Per-game Auto-UV preset: the root daemon applies it and watches this PID
+    # -- the exec below makes it the game session's PID, so the daemon restores
+    # the standing profile when the game exits. Runs before exec, outside
+    # pressure-vessel, so the daemon socket is reachable. Any failure is only
+    # reported: it must never block a game launch.
+    #
+    # A launch belongs to exactly one launcher: the game key only exists when
+    # the library tab wrote it onto argv, and Steam's app id only when Steam
+    # set it in the environment.
     try:
+        game_key = str(env.get(GAME_KEY_ENV) or "").strip()
+        if game_key and not game_key.startswith("steam:"):
+            from integrations.launchers.runtime_profile import apply_game_key_profile
+
+            if env.get("FLATPAK_ID"):
+                return apply_game_key_profile(game_key, watch_pid=int(env[TELEMETRY_SESSION_ENV]))
+            return apply_game_key_profile(game_key)
         from integrations.steam.game_runtime import apply_game_runtime_profile
 
-        apply_game_runtime_profile(env)
-    except Exception as error:
+        return apply_game_runtime_profile(env)
+    except Exception as error:  # noqa: BLE001
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
             file=sys.stderr,
         )
+        return False
 
 
 SHIM_OUTPUT_ENV = "PENGUIN_BURNER_SHIM_OUTPUT"
@@ -218,8 +294,9 @@ def _create_marker_fifo(env: dict[str, str]) -> bool:
 def _sweep_stale_marker_fifos(env: dict[str, str]) -> None:
     """Unlink leftover per-launch marker FIFOs that no drainer reads anymore.
 
-    The drainer unlinks its own FIFO on exit; this catches the crash/SIGKILL
-    leftovers. A non-blocking write-only open of a FIFO fails with ENXIO
+    The drainer unlinks its own FIFO on exit, including when it is signalled;
+    this catches what is left when it cannot -- SIGKILL, a machine losing
+    power. A non-blocking write-only open of a FIFO fails with ENXIO
     exactly when it has no reader -- a live drainer means skip it.
     """
     current = trace_fifo_path(env)
@@ -316,15 +393,30 @@ def _configure_dxvk_nvapi_marker_output(
     # bridge drains -- no trace, no marker-log, no dxvk-nvapi fork. When there is
     # no prefix to front, in-game latency falls back to the Vulkan layer's own
     # vkSetLatencyMarkerNV tap (which covers the single-swapchain / non-FG case).
-    if deploy_nvapi_shim(env):
-        # The shim's default write to fd 2 silently fails in a GUI game process
-        # (msvcrt's std fd 2 isn't a writable handle for our loaded DLL: _write(2)
-        # returns EBADF with no syscall). Hand it the FIFO's wine path so it
-        # _open()s a fresh, valid fd. A user-set SHIM_OUTPUT (debug file) wins.
-        env.setdefault(SHIM_OUTPUT_ENV, _fifo_wine_path(env))
-        return True
+    fronted = deploy_nvapi_shim(env) is not None
+    if not fronted and (
+        nvapi_shim_artifact(env) is None or prefix_system32(env) is None
+    ):
+        # Nothing to front, or nowhere to front it: the layer's own tap is the
+        # marker source and no watcher would have anything to guard.
+        return False
 
-    return False
+    # Reached with the shim either already fronted, or frontable but not right
+    # now. The second case is a launch that landed inside prefix setup: umu and
+    # Proton REMOVE system32\nvapi64.dll before copying their own dxvk-nvapi in,
+    # and a wrapper running in that window finds nothing to park. Observed on
+    # Lutris + umu, where every launch hit it. Treating that as "no shim" is
+    # backwards -- it disarms the re-front watcher, which is the one thing that
+    # would have fronted the DLL the moment it reappeared.
+    #
+    # The shim's default write to fd 2 silently fails in a GUI game process
+    # (msvcrt's std fd 2 isn't a writable handle for our loaded DLL: _write(2)
+    # returns EBADF with no syscall). Hand it the FIFO's wine path so it
+    # _open()s a fresh, valid fd. A user-set SHIM_OUTPUT (debug file) wins.
+    # Pinned in both cases: a shim fronted later by the watcher is loaded by the
+    # same game process, which reads this env once, at start.
+    env.setdefault(SHIM_OUTPUT_ENV, _fifo_wine_path(env))
+    return True
 
 
 def _apply_overlay_enable_alias(env: dict[str, str]) -> None:
@@ -338,7 +430,7 @@ def _apply_overlay_enable_alias(env: dict[str, str]) -> None:
 def _remove_mangohud_environment(env: dict[str, str]) -> None:
     for key in tuple(env):
         upper = key.upper()
-        if upper.startswith("MANGOHUD") or upper.startswith("MANGOAPP"):
+        if upper.startswith(("MANGOHUD", "MANGOAPP")):
             env.pop(key, None)
 
     preload = str(env.get("LD_PRELOAD") or "").strip()

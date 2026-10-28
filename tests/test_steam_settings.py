@@ -2,17 +2,20 @@ from pathlib import Path
 import json
 
 from integrations.steam.settings import (
+    SteamGameSetting,
+    load_steam_game_settings,
+    remove_steam_game_setting,
+    steam_game_setting,
+    store_steam_game_setting,
+)
+from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_NONE,
     GAME_MODE_STOCK,
-    SteamGameSetting,
-    load_steam_game_settings,
+    game_mode_uses_latency_markers,
     normalize_game_mode,
     normalize_game_target_fps,
-    remove_steam_game_setting,
-    steam_game_setting,
-    store_steam_game_setting,
 )
 
 
@@ -61,6 +64,12 @@ def test_normalize_game_mode_accepts_tier_aliases() -> None:
     assert normalize_game_mode(None) == GAME_MODE_DEFAULT
 
 
+def test_only_adaptive_mode_uses_hidden_latency_markers() -> None:
+    assert game_mode_uses_latency_markers(GAME_MODE_ADAPTIVE)
+    assert not game_mode_uses_latency_markers("balanced")
+    assert not game_mode_uses_latency_markers(GAME_MODE_STOCK)
+
+
 def test_setting_active_property() -> None:
     assert not SteamGameSetting().active
     assert SteamGameSetting(enabled=True).active
@@ -71,6 +80,16 @@ def test_target_fps_roundtrip(tmp_path: Path) -> None:
     setting = SteamGameSetting(enabled=True, target_fps=120.0)
     store_steam_game_setting("78675700", "1089130", setting, path=path)
     assert steam_game_setting("78675700", "1089130", path=path) == setting
+
+
+def test_gpu_uuid_roundtrip(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+    setting = SteamGameSetting(enabled=True, gpu_uuid="GPU-stable-a")
+    store_steam_game_setting("78675700", "1089130", setting, path=path)
+
+    assert steam_game_setting("78675700", "1089130", path=path) == setting
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["format_version"] == 2
 
 
 def test_target_fps_stays_unset_by_default(tmp_path: Path) -> None:
@@ -121,3 +140,35 @@ def test_legacy_hidden_mode_loads_as_adaptive(tmp_path: Path) -> None:
     assert setting is not None
     assert setting.enabled is True
     assert setting.mode == GAME_MODE_ADAPTIVE
+
+
+def test_a_settings_file_that_cannot_be_read_is_kept_before_it_is_replaced(
+    tmp_path: Path,
+) -> None:
+    """This file holds every account's presets and is rewritten whole.
+
+    Read as empty, one game's save would take all of them with it -- so the
+    unreadable file is moved aside and stays recoverable.
+    """
+    path = tmp_path / "steam-game-settings.json"
+    corrupt = '{"accounts": {"78675700": {"games": {"1089130": {"enab'
+    path.write_text(corrupt, encoding="utf-8")
+
+    store_steam_game_setting(
+        "78675700", "570", SteamGameSetting(enabled=True), path=path
+    )
+
+    (backup,) = sorted(tmp_path.glob("steam-game-settings.json.corrupt-*"))
+    assert backup.read_text(encoding="utf-8") == corrupt
+    assert steam_game_setting("78675700", "570", path=path) is not None
+
+
+def test_an_absent_settings_file_is_simply_empty(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+
+    store_steam_game_setting(
+        "78675700", "570", SteamGameSetting(enabled=True), path=path
+    )
+
+    assert load_steam_game_settings(path)["78675700"]["570"].enabled is True
+    assert sorted(tmp_path.glob("steam-game-settings.json.corrupt-*")) == []

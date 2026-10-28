@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
 from auto_uv.curve.vf_curve_flattening import FlatteningRules, snap_target_clock
+
 from .settings import AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS
 
 
@@ -38,6 +39,38 @@ def build_auto_oc_ladder(
     if start_voltage == endpoint_voltage and start_clock == endpoint_clock:
         return []
 
+    # Power-bound savings tiers have already found their lowest stable
+    # voltage. Reclaim the clock headroom created by that undervolt without
+    # walking voltage upward again.
+    if start_voltage == endpoint_voltage:
+        step_count = max(1, int(max_steps))
+        seen_clocks: set[int] = set()
+        steps: list[AutoOcStep] = []
+        for raw_index in range(1, step_count + 1):
+            ratio = float(raw_index) / float(step_count)
+            requested_clock_mhz = round(
+                    float(start_clock)
+                    + (float(endpoint_clock - start_clock) * ratio)
+                )
+            target_mhz = bounded_clock(
+                requested_clock_mhz,
+                start_clock_mhz=start_clock,
+                endpoint_clock_mhz=endpoint_clock,
+                clock_step_mhz=int(clock_step_mhz),
+            )
+            if target_mhz <= start_clock or target_mhz in seen_clocks:
+                continue
+            seen_clocks.add(target_mhz)
+            steps.append(
+                AutoOcStep(
+                    index=len(steps) + 1,
+                    voltage_mv=int(start_voltage),
+                    target_mhz=int(target_mhz),
+                    ratio=ratio,
+                )
+            )
+        return steps
+
     voltages = [
         int(voltage)
         for voltage in sorted(editable_voltage_bins(base_curve))
@@ -57,9 +90,7 @@ def build_auto_oc_ladder(
             endpoint_voltage_mv=endpoint_voltage,
             ratio=ratio,
         )
-        requested_clock_mhz = int(
-            round(float(start_clock) + (float(endpoint_clock - start_clock) * ratio))
-        )
+        requested_clock_mhz = round(float(start_clock) + (float(endpoint_clock - start_clock) * ratio))
         target_mhz = bounded_clock(
             requested_clock_mhz,
             start_clock_mhz=start_clock,
@@ -67,6 +98,16 @@ def build_auto_oc_ladder(
             clock_step_mhz=int(clock_step_mhz),
         )
         voltage_key = int(voltage_mv)
+        if ratio == 1.0 and steps and steps[-1].voltage_mv == voltage_key:
+            # A sparse grid may reach the endpoint voltage before the final
+            # clock. Keep one probe per voltage, but test the full endpoint.
+            steps[-1] = AutoOcStep(
+                index=steps[-1].index,
+                voltage_mv=voltage_key,
+                target_mhz=int(target_mhz),
+                ratio=ratio,
+            )
+            continue
         if voltage_key <= start_voltage or voltage_key in seen_voltages:
             continue
         seen_voltages.add(voltage_key)

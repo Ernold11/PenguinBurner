@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ui.features.integrations.afterburner_import import afterburner_profile_entries
-from ui.features.integrations.afterburner_import import configured_afterburner_root
-from ui.features.integrations.afterburner_import import entry_curve_points
+from ui.features.integrations.afterburner_import import (
+    afterburner_profile_entries,
+    configured_afterburner_root,
+    entry_curve_points,
+)
+
 from ..components.curve_plot import CurvePlot
 from ..components.table_sizing import set_header_fit_column_widths
 
@@ -28,7 +31,7 @@ def select_afterburner_import(
     browse_button = QtWidgets.QToolButton()
     standard_pixmap = getattr(QtWidgets.QStyle, "StandardPixmap", QtWidgets.QStyle)
     browse_button.setIcon(
-        dialog.style().standardIcon(getattr(standard_pixmap, "SP_DirOpenIcon"))
+        dialog.style().standardIcon(standard_pixmap.SP_DirOpenIcon)
     )
     browse_button.setToolTip("Choose Afterburner Directory")
     browse_button.setAccessibleName("Choose Afterburner Directory")
@@ -139,7 +142,7 @@ def select_afterburner_import(
             return
         try:
             entries.extend(afterburner_profile_entries(root_text))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             status_label.setText(str(exc))
             return
         if not entries:

@@ -4,16 +4,25 @@
 
 # PenguinBurner CLI
 
-PenguinBurner is an NVIDIA Auto-UV tuning tool. The default app entrypoints,
+PenguinBurner is an automatic NVIDIA GPU undervolting, overclocking, and
+per-game tuning tool for Linux: one Auto-UV scan saves three verified tiers
+(Efficiency, Balanced, Performance) that the adaptive runtime switches between
+while you play. The default app entrypoints,
 `penguin-burner` and `pburn`, start the Qt GUI. The explicit CLI entrypoints,
 `penguin-burner-cli` and `pburn-cli`, are for Auto-UV scans, profile
 verification, and applying saved Auto-UV profiles as daemon runtime.
 
 Privileged GPU writes are performed by the root hardware service
 (`penguin-burnerd.service`, a compiled Rust daemon); the CLI itself and Auto-UV
-scans run as your regular user and talk to it over a local socket. `sudo` is
+scans run as your regular user and talk to it over a local socket. Root is
 only needed to install, repair, migrate, or explicitly uninstall the root
-service. Runtime/profile and boot-profile changes use the running daemon.
+service; run those commands as your regular user and the CLI asks for
+authorization itself (pkexec/sudo). Session profile changes use the running
+daemon; setting a saved profile as the boot profile from the CLI goes through
+the service-install command (see Profiles And Runtime below), while
+`--restore-stock` resets the boot state to stock and the GUI's **Apply on
+startup** workflow persists a profile — both through the daemon socket
+without a password.
 
 ## Install
 
@@ -29,10 +38,11 @@ Start the GUI:
 
 One-time setup: install the root hardware service so profile application and
 scans can reach the GPU (the GUI offers the same setup automatically on the
-first privileged action):
+first privileged action). Run it as your regular user; it asks for
+authorization (pkexec/sudo) when not run as root:
 
 ```bash
-sudo ~/.local/bin/penguin-burner-cli --migrate-to-daemon-service
+~/.local/bin/penguin-burner-cli --migrate-to-daemon-service
 ```
 
 Run the CLI from an installed package:
@@ -57,24 +67,62 @@ be installed and running (see one-time setup above). Start a scan with:
 ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
-The CLI scan options mirror the GUI Auto-UV tuning dialog. Start with
+After a successful interactive scan, the CLI asks whether to start the profile
+and save it for startup. Each successful action prints a confirmation. After
+the final answer, the CLI prints its completion message and exits, returning
+to your shell prompt; the root daemon manages any requested runtime.
+
+The common CLI scan options mirror the GUI Auto-UV setup dialog. Start with
 `--auto-uv-voltage-scan`, then choose the same preset family shown in the GUI
-with `--auto-uv-mode efficiency|balanced|performance`.
+with `--auto-uv-mode efficiency|balanced|performance|adaptive` (`adaptive` runs all tiers).
+
+Clock-loss percentage cutoffs have been removed. The scan still measures loaded
+clocks and rejects workload failures, lost load, and FPS regressions. Confirmed
+power limits can stop an ineffective clock climb.
+
+Default targets suit most GPUs. Change them only if you understand GPU tuning
+and the risk of instability.
 
 Common scan controls, shown for every GUI preset:
 
 - `--gpu-index N`: select the NVIDIA GPU used for scan, verification, and runtime.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed. For known GPUs the default follows the selected preset; unknown GPUs use `12.5`. On RTX 5080 the defaults are about `11.1` for Efficiency, `6.0` for Balanced, and `5.4` for Performance.
 - `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
 - `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
+
+CLI-only controls (independent of the profile tier):
+
+- `--auto-uv-boost standard|aggressive`: Standard Boost uses 2 rising tail bins (+30 MHz nominal); Aggressive Boost uses 4 (+60 MHz nominal). Standard is the default. Applies to every scanned tier, including full scans. Actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze`: off by default. When you explicitly resume after a reboot, allow the interrupted climb to retry at higher voltage. Failed points remain blacklisted; prediction margins, floor caution and voltage headroom stay unchanged. Further freezes may require further reboots.
+
+Use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost` for a custom tail.
+Resume with the same options. See [boost and freeze recovery](docs/features/auto-uv.md#cli-only-boost-and-freeze-recovery).
+
+```bash
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-boost aggressive
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-retry-after-freeze
+```
 
 Full-scan (`--auto-uv-mode adaptive`) per-tier overrides — each tier of the
 combined run can carry its own limits, mirroring the GUI's per-profile
 Advanced pages (`<tier>` is `efficiency`, `balanced`, or `performance`):
 
-- `--auto-uv-<tier>-max-clock-drop-pct N`: that tier's maximum loaded clock drop. Absent tiers fall back to `--auto-uv-max-clock-drop-pct`, then the GPU table.
-- `--auto-uv-<tier>-power-limit-w N`: that tier's power limit, applied at its final verification and saved with its profile.
+- `--auto-uv-<tier>-power-limit-w N`: that tier's power limit, applied before its baseline and kept through search, verification, and saving.
 - `--auto-uv-<tier>-memory-offset-mhz N`: that tier's memory V/F offset, applied for its descent and saved with its profile.
+
+Custom targets work in both single-tier and full scans:
+
+- `--auto-uv-<tier>-target-voltage-mv N`: voltage target for that tier.
+- `--auto-uv-<tier>-target-clock-mhz N`: clock target for that tier.
+
+Clock ranges use GPU table defaults: Efficiency −15% through Balanced;
+Balanced from Efficiency through Performance; Performance from Balanced
+through Performance +5% (rounded to the nearest MHz). Unknown GPUs keep Auto
+unless a hardware range is available. See [custom targets](docs/features/auto-uv.md#custom-tier-targets) for details.
+
+A lower custom clock is tested after the normal voltage sweep, at the sweep's
+stable voltage, with no second voltage-down pass. The voltage anchor may
+remain above the requested voltage target if the initial sweep stops earlier.
+See [custom tier targets](docs/features/auto-uv.md#custom-tier-targets).
 
 Efficiency preset controls:
 
@@ -84,14 +132,14 @@ Efficiency preset controls:
 Balanced preset controls:
 
 - `--auto-uv-mode balanced`: use the GUI Balanced preset path.
-- `--auto-uv-tail-rise-bins 4`: the GUI Balanced preset shape. The CLI fills this in automatically when omitted.
+- `--auto-uv-tail-rise-bins 2`: the GUI Balanced preset shape. The CLI fills this in automatically when omitted.
 
 Performance preset controls:
 
 - `--auto-uv-mode performance`: use the GUI Performance preset path.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage target.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock target.
-- `--auto-uv-tail-rise-bins 6`: the GUI Performance preset shape. The runtime fills this in automatically when omitted.
+- `--auto-uv-tail-rise-bins 2`: the GUI Performance preset shape. The runtime fills this in automatically when omitted.
 
 Examples:
 
@@ -106,7 +154,6 @@ Balanced with all common GUI knobs made explicit:
 ```bash
 ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode balanced \
-  --auto-uv-max-clock-drop-pct 6.0 \
   --auto-uv-memory-offset-mhz 500 \
   --auto-uv-power-limit-w 390
 ```
@@ -116,7 +163,7 @@ Balanced with the preset shape made explicit:
 ```bash
 ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode balanced \
-  --auto-uv-tail-rise-bins 4
+  --auto-uv-tail-rise-bins 2
 ```
 
 Efficiency with explicit GUI knobs:
@@ -125,7 +172,6 @@ Efficiency with explicit GUI knobs:
 ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode efficiency \
   --auto-uv-min-voltage-mv 850 \
-  --auto-uv-max-clock-drop-pct 10 \
   --auto-uv-memory-offset-mhz 500 \
   --auto-uv-power-limit-w 390
 ```
@@ -144,7 +190,7 @@ Performance with a custom Auto-OC target:
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
-  --auto-uv-tail-rise-bins 6
+  --auto-uv-tail-rise-bins 2
 ```
 
 Performance with common scan limits too:
@@ -154,7 +200,6 @@ Performance with common scan limits too:
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
-  --auto-uv-max-clock-drop-pct 5.4 \
   --auto-uv-memory-offset-mhz 500 \
   --auto-uv-power-limit-w 390
 ```
@@ -182,21 +227,31 @@ Apply the latest saved Auto-UV profile as a daemon after a final curve exists:
 ./penguin_burner.sh --daemonize --auto-uv-profile latest
 ```
 
-Persist the latest verified Auto-UV profile for boot through the installed daemon:
+Make the latest verified Auto-UV profile the boot profile for the selected
+GPU. This command always performs the full service install — it refreshes the
+daemon binary at the canonical
+`/var/opt/penguin-burner/libexec/penguin-burnerd` path, rewrites the systemd
+unit, and restarts the service before saving the boot profile — so it needs
+root:
 
 ```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
 ```
 
 Persist it with the saved silent fan curve too:
 
 ```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
 
-If the daemon has not had its one-time installation yet, use the migration
-command from the Install section first; changing the boot profile afterward
-does not reinstall the service or ask for another password.
+Without profile options the same command reinstalls or repairs the service
+and keeps any existing boot profile. Reinstalling every time is deliberate:
+skipping the install when a daemon already answered used to leave a stale
+daemon binary running behind a success message. To change the boot profile
+without a password, tick **Apply on startup** in the GUI and then apply the
+profile (the boot entry is written at apply time);
+`--daemonize --auto-uv-profile latest` applies for the current session only
+and never changes the boot profile.
 
 Remove the persistent boot-time service:
 
@@ -225,10 +280,10 @@ Adaptive Auto-UV can switch between saved verified profile tiers:
 ./penguin_burner.sh --daemonize --adaptive-auto-uv
 ```
 
-For persistent adaptive boot autostart:
+For persistent adaptive boot autostart (full service install, root required):
 
 ```bash
-./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
+sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 Generated Efficiency, Balanced, and Performance scans are tiered automatically.

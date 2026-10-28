@@ -1,0 +1,30 @@
+flowchart TB
+  accTitle: Upward clock search and a single backoff after instability
+  accDescr: AutoOC uses finite rungs and higher-voltage retries. Any fresh or cached unsafe point allows at most one lower-clock ceiling backoff, then ends the climb.
+  INPUT([OC / clock reclaim<br/>or a higher custom target]) --> LADDER["Build ≤10 unique main rungs<br/>Editable V; fixed target ceilings"]
+  LADDER --> NEXT{"Another legal main rung?"}
+  NEXT -->|No| PICK
+  NEXT -->|Yes| CACHE{"Fresh blacklist<br/>blocks this pair?"}
+  CACHE -->|Yes| BACKOFF
+  CACHE -->|No| PROBE["Apply / read back<br/>Probe the complete curve"]
+  PROBE --> OUTCOME{"Outcome"}
+  OUTCOME -->|Pass| WALL{"Confirmed power wall?"}
+  WALL -->|No: keep passing evidence| NEXT
+  WALL -->|Yes: end climb| PICK
+  OUTCOME -->|Fresh UNSAFE| BACKOFF["At most one backoff candidate<br/>Earlier passing MHz<br/>Highest allowed ladder voltage<br/>Probe only an allowed pair"]
+  BACKOFF -->|Any ordinary outcome: end climb| PICK
+  OUTCOME -->|RECOVERABLE rejection| RETRY["Retry same MHz at next higher V<br/>Finite bins below the ceiling<br/>Recheck cache; apply and probe"]
+  RETRY -->|Probe result| OUTCOME
+  RETRY -->|Cached UNSAFE| BACKOFF
+  RETRY -->|None remain| NEXT
+  OUTCOME -->|Critical error / user stop| HALT([Stop probing<br/>Keep completed profiles])
+  BACKOFF -->|Critical error / user stop| HALT
+  PICK([End climb<br/>Select an eligible passing curve<br/>Continue to final selection])
+  classDef setup fill:#19334b,stroke:#84c7f5,color:#edf5fa,stroke-width:1.5px
+  classDef work fill:#18382f,stroke:#80d9ac,color:#edf5fa,stroke-width:1.5px
+  classDef gate fill:#302c20,stroke:#e9bd76,color:#fff0d8,stroke-width:1.5px
+  classDef stop fill:#40252a,stroke:#ef9595,color:#fff0f0,stroke-width:1.5px
+  class INPUT,LADDER setup
+  class PROBE,PICK work
+  class NEXT,CACHE,OUTCOME,WALL,BACKOFF,RETRY gate
+  class HALT stop

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 AUTO_UV_TIER_ORDER = ("efficiency", "balanced", "performance")
 
 _TIER_LABELS = {

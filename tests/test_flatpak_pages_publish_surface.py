@@ -1,9 +1,32 @@
-from pathlib import Path
 import subprocess
+from html.parser import HTMLParser
+from pathlib import Path
 
 
 PUBLISH_SCRIPT = Path("scripts/publish-flatpak-pages.sh")
 WORKFLOW = Path(".github/workflows/deploy-flatpak-pages.yml")
+AMD_RDNA_RESEARCH_PAGE = Path("docs/pages/amd-rdna-undervolting/index.html")
+
+
+class _ResearchPageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids: list[str] = []
+        self.fragment_links: list[str] = []
+        self.external_assets: list[str] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attributes = dict(attrs)
+        if element_id := attributes.get("id"):
+            self.ids.append(element_id)
+        if tag == "a" and (href := attributes.get("href", "")).startswith("#"):
+            self.fragment_links.append(href[1:])
+        if tag in {"img", "script"} and (source := attributes.get("src")):
+            self.external_assets.append(source)
+        if tag == "link" and attributes.get("rel") == "stylesheet":
+            self.external_assets.append(attributes.get("href", ""))
 
 
 def test_flatpak_pages_publish_script_has_valid_bash_syntax() -> None:
@@ -50,3 +73,27 @@ def test_flatpak_pages_workflow_pins_and_validates_actions() -> None:
     assert "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e" in workflow
     assert "flatpak_pages_artifact.py check-tag" in workflow
     assert "flatpak_pages_artifact.py extract" in workflow
+
+
+def test_flatpak_pages_workflow_adds_research_without_replacing_snapshot() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert AMD_RDNA_RESEARCH_PAGE.is_file()
+    assert str(AMD_RDNA_RESEARCH_PAGE) in workflow
+    assert 'target_page="site/amd-rdna-undervolting/index.html"' in workflow
+    assert 'install -Dm0644 "$source_page" "$target_page"' in workflow
+    assert "flatpak_pages_artifact.py validate site" in workflow
+    assert 'target_page="site/index.html"' not in workflow
+
+
+def test_amd_rdna_research_page_is_standalone_and_internally_linked() -> None:
+    page = AMD_RDNA_RESEARCH_PAGE.read_text(encoding="utf-8")
+    parser = _ResearchPageParser()
+    parser.feed(page)
+
+    assert not parser.external_assets
+    assert len(parser.ids) == len(set(parser.ids))
+    assert set(parser.fragment_links) <= set(parser.ids)
+    assert "https://jpietek.github.io/PenguinBurner/amd-rdna-undervolting/" in page
+    assert "VoltageOffsetPerZoneBoundary" in page
+    assert "GlobalOffset" in page
+    assert "ZoneBoundaryOffsets" in page

@@ -1,89 +1,76 @@
 # Adaptive Undervolting
 
-> Feature guide — see the [README](../../README.md) for the project overview and
-> [auto-uv.md](./auto-uv.md) for how the underlying profiles are produced.
+Adaptive switches between saved Efficiency, Balanced, and Performance profiles
+to meet your game's FPS target while reducing power use when there is headroom.
+Create profiles with [Auto-UV](auto-uv.md), then enable Adaptive per game in
+[Game Library](game-library.md).
 
-Adaptive Undervolting is PenguinBurner's standout runtime feature. Instead of
-locking your GPU to a single saved curve, it keeps several saved Auto-UV
-profiles on hand, assigns each one a **tier**, and lets the daemon switch
-between tiers automatically based on how the game is actually pacing frames.
-
-![Profiles with the Assign Tier menu](../assets/profiles-management.png)
+![Stored Efficiency, Balanced and Performance profiles](../assets/profiles-management.png)
 
 ## Tiers
 
-Every saved profile can be tagged with one of three tiers from the **Profiles**
-tab (right-click a profile → **Assign Tier**) or from the CLI:
+| Tier | Goal |
+| --- | --- |
+| Efficiency | Best measured FPS per watt. |
+| Balanced | Balance performance and power savings. |
+| Performance | Higher clock target with Auto-OC. |
 
-| Tier | Intent | Auto-UV tail-rise bins |
-| --- | --- | --- |
-| **Efficiency** | Lowest practical power, flat post-lock curve | `0` |
-| **Balanced** | Moderate clock tail | `≥ 4` |
-| **Performance** | Preserve clock, highest headroom | `≥ 6` |
+Auto-UV assigns tiers when saving profiles. To change one, right-click a
+profile in **Profiles → Assign Tier**; **None** removes the assignment.
+All three scan presets default to two rising tail bins;
+[CLI Aggressive Boost](auto-uv.md#cli-only-boost-and-freeze-recovery) uses four.
 
-Choose **None** to remove a tier assignment. The tier of a freshly generated
-profile is inferred from the scan's performance-bias preset, so a normal
-Efficiency / Balanced / Performance scan already lands in the matching tier.
-
-CLI tier assignment uses profile ids from `--list-auto-uv-profiles`:
-
-```bash
-./penguin_burner.sh --assign-auto-uv-tier <eff-profile-id> efficiency
-./penguin_burner.sh --assign-auto-uv-tier <bal-profile-id> balanced
-./penguin_burner.sh --assign-auto-uv-tier <perf-profile-id> performance
-./penguin_burner.sh --assign-auto-uv-tier <profile-id> none
-```
+Adaptive needs at least two usable tiers to switch. With one tier, it runs
+that profile. Verify imported or edited curves before relying on them.
 
 ## How runtime switching works
 
-Enable it from the Profiles tab with **Apply Adaptive**, or on the command line
-with `--adaptive-auto-uv` in runtime/daemon mode:
+Set a game's **Auto-UV mode** to **Adaptive**. Its target defaults to the
+system-wide value, initially 60 FPS. Enable **Per-game target** to override it.
+
+- Sustained headroom lets Adaptive move toward Efficiency.
+- A missed target can promote to a higher tier; a clearly severe slowdown can
+  jump to the highest tier when supported by the timing evidence.
+- CPU saturation can hold back promotion when more GPU clock is unlikely to help.
+- A recognized frame cap lets Adaptive ease down while preserving that cadence.
+
+Decisions use base-frame p95 timing: the slower end of recent frame times,
+converted to FPS. Reflex/NVAPI markers take priority; present pacing is the
+fallback. Known frame generation requires usable base timing so generated
+frames do not drive promotion. See [FPS measurement details](latency-fg.md).
+
+## Frame caps and idle periods
+
+For a missed target with low GPU use and no CPU saturation, Adaptive waits for
+three capped-looking readings before treating the game as externally capped.
+It then steps down using the normal demotion delays. The cap reference is
+released if pacing changes beyond its tolerance, its timing source changes,
+or GPU use becomes high.
+
+With no frame telemetry and GPU use at or below 20%, Adaptive can ease down
+after 60 idle seconds. Missing utilization data holds the tier. New frames
+clear idle history, so a new session is judged on its own measurements.
+
+Promotion and demotion confirmation use elapsed time rather than overlay
+refresh ticks. Longer waits between demotions prevent rapid switching.
+
+## One-word tuning: responsiveness
+
+Most users should keep the defaults. For faster or calmer reactions, use
+`PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS=eager` or `relaxed`.
+See the [tuning reference](adaptive-tuning.md) for all thresholds and timing
+settings, including the exact meaning of confirmation windows.
+
+## CLI
 
 ```bash
-./penguin_burner.sh --daemonize --adaptive-auto-uv
+pburn-cli --daemonize --adaptive-auto-uv
+pburn-cli --assign-auto-uv-tier <profile-id> efficiency
 ```
 
-For persistent boot autostart:
+Use `balanced`, `performance`, or `none` for other assignments. Profile IDs
+come from `pburn-cli --list-auto-uv-profiles`.
 
-```bash
-./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
-```
-
-PenguinBurner watches the **base present-frame p95 pacing** and compares it to a
-target FPS. When frames are comfortably ahead of target it shifts toward a more
-efficient tier (less power, quieter); when pacing falls behind it shifts toward
-a higher tier to protect frame rate.
-
-The target defaults to **60 FPS**. Override it for the service through the
-environment variable (30, 50, 60, 120, etc.):
-
-```bash
-PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=120
-```
-
-The same value can be set under `[adaptive] target_fps` in the runtime config
-file, and the **Target FPS** control in the Overlay tab reflects it.
-
-## Example
-
-Say you keep three profiles (Efficiency, Balanced, Performance) and a 60 FPS
-target:
-
-- In a menu or a light scene, frames sit well above 60, so PenguinBurner runs
-  the **Efficiency** profile: lowest power, quietest fans.
-- The action picks up and frames start hovering near 60, so it moves to
-  **Balanced** to hold the target.
-- A heavy effect pushes frames below 60, so it jumps to **Performance** for the
-  extra clock until the scene clears, then eases back down.
-
-You set it once and play; the tier follows the frame rate.
-
-## Requirements and safety
-
-- Adaptive UV needs **at least two usable profile tiers** to have anything to
-  switch between. With a single tier it simply runs that one profile.
-- Deleting a profile that would drop you below two usable tiers triggers a
-  warning, because it disables adaptive switching for the autostart entry.
-- All per-tier curves still went through Auto-UV's stability and final
-  verification before they could be saved, so every tier the daemon can pick is
-  a previously verified curve.
+The system-wide target is `[adaptive] target_fps` in runtime configuration,
+overridden by `PENGUIN_BURNER_ADAPTIVE_TARGET_FPS`. The Overlay tab's
+**Target FPS** control shows the same setting.

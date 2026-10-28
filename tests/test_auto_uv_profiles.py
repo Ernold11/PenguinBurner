@@ -19,6 +19,7 @@ import ui.features.curves.fan_profiles as ui_app
 from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
 from profiles.uv.profile_store import (
     archive_auto_uv_profile,
+    bind_auto_uv_profile_gpu_identity,
     delete_auto_uv_profile_paths,
     delete_auto_uv_profiles,
     format_profile_table,
@@ -91,14 +92,14 @@ from ui.features.profiles.profiles import (
 )
 from ui.features.tuning.verify import elapsed_from_line as _verify_elapsed_from_line
 from ui.features.tuning.verify import progress_percent as _verify_progress_percent
+from ui.features.tuning.gpu_selection import GpuChoice
 from ui.components.profile_list import (
     PROFILE_SORTABLE_COLUMNS,
     ProfileList,
     _format_number,
-    _format_profile_metric_with_delta,
     _metric_delta_percent,
     _profile_base_metric,
-    _profile_metric_delta_color,
+    _profile_metric_tooltip,
     _profile_sort_values,
     _profile_source_label,
     _profile_tier_label,
@@ -131,6 +132,11 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
         "avg_core_clock_mhz": 2605.25,
         "efficiency_fps_per_w": 0.81234,
         "profile_source": "profile-store",
+        "gpu_identity": {
+            "name": "RTX 5090",
+            "uuid": "GPU-A",
+            "pci_bus_id": "00000000:01:00.0",
+        },
     }
 
     rendered = format_profile_table([profile])
@@ -138,6 +144,7 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
     assert "2026-04-27 12:00:00" in rendered
     assert "20260427-120000-000000-875mv-2610mhz" in rendered
     assert "Balanced" in rendered
+    assert "RTX 5090 (01:00.0)" in rendered
     assert "2610 MHz 875 mV" in rendered
     # 500 MT/s transfer-rate offset -> 250 MHz realized memory clock.
     assert "+250 MHz" in rendered
@@ -197,59 +204,37 @@ def test_profile_summary_keeps_base_metrics_for_profile_table_delta() -> None:
     assert summary["base_efficiency_fps_per_w"] == 0.50
 
 
-def test_profile_metric_delta_text_and_color_vs_base() -> None:
+def test_profile_metric_tooltip_identifies_its_scan_baseline() -> None:
     assert _metric_delta_percent(0.75, 0.50) == 50.0
-    assert _format_profile_metric_with_delta(0.75, 0.50, precision=2) == (
-        "0.75 (+50.00%)"
+    assert _profile_metric_tooltip(240.0, 300.0, label="Power W") == (
+        "Power W: 240.00\n"
+        "-20.00% vs this scan's baseline: 300.00.\n"
+        "Baselines differ between scans; these percentages do not compare profiles."
     )
-    assert _profile_metric_delta_color(0.75, 0.50) == "#55d27a"
-    assert _format_profile_metric_with_delta(67.161, 64.228, precision=2) == (
-        "67.16 (+4.57%)"
+    assert "+4.57% vs this scan's baseline: 64.23" in _profile_metric_tooltip(
+        67.161, 64.228, label="FPS"
     )
-
-    assert (
-        _format_profile_metric_with_delta(
-            875,
-            1000,
-            precision=0,
-            lower_is_better=True,
-        )
-        == "875 (-12.50%)"
+    assert "baseline: 0.2043" in _profile_metric_tooltip(
+        0.242340, 0.204326, label="FPS/W", precision=4
     )
-    assert (
-        _format_profile_metric_with_delta(
-            2600.0,
-            2650.0,
-            precision=2,
-        )
-        == "2600.00 (-1.89%)"
-    )
-    assert (
-        _format_profile_metric_with_delta(
-            240.0,
-            300.0,
-            precision=2,
-            lower_is_better=True,
-        )
-        == "240.00 (-20.00%)"
-    )
-    assert _profile_metric_delta_color(240.0, 300.0, lower_is_better=True) == "#55d27a"
-    assert _profile_metric_delta_color(330.0, 300.0, lower_is_better=True) == "#ff6b6b"
+    for current, baseline in ((None, 300), (240, None), (240, 0)):
+        assert _profile_metric_tooltip(current, baseline, label="Power W") == ""
 
 
 def test_profile_table_headers_and_sorting_scope() -> None:
-    assert ProfileList.COLUMNS[2] == "mV"
-    assert ProfileList.COLUMNS[3] == "Target MHz"
-    assert ProfileList.COLUMNS[4] == "Effective MHz"
-    assert ProfileList.COLUMNS[5] == "FPS/W"
-    assert ProfileList.COLUMNS[7] == "Power W"
-    assert ProfileList.COLUMNS[8] == "Mem"
-    assert ProfileList.COLUMNS[9] == "Tier"
+    assert ProfileList.COLUMNS[2] == "GPU"
+    assert ProfileList.COLUMNS[3] == "mV"
+    assert ProfileList.COLUMNS[4] == "Target MHz"
+    assert ProfileList.COLUMNS[5] == "Effective MHz"
+    assert ProfileList.COLUMNS[6] == "FPS/W"
+    assert ProfileList.COLUMNS[8] == "Power W"
+    assert ProfileList.COLUMNS[9] == "Mem"
+    assert ProfileList.COLUMNS[10] == "Tier"
     assert "Autostart" not in ProfileList.COLUMNS
     assert "Voltage vs base" not in ProfileList.COLUMNS
     assert "FPS/W vs base" not in ProfileList.COLUMNS
     assert "Power vs base" not in ProfileList.COLUMNS
-    assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7})
+    assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7, 8})
 
 
 def test_existing_profile_uses_matching_latest_long_verification_clock(
@@ -387,16 +372,17 @@ def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     )
 
     assert sort_values[1] == ""
-    assert sort_values[4] == pytest.approx(2605.25)
-    assert sort_values[5] == pytest.approx(0.80)
-    assert sort_values[6] == pytest.approx(160.0)
-    assert sort_values[7] == pytest.approx(200.0)
-    assert sort_values[8] == ""
+    assert sort_values[2] == "unassigned (legacy)"
+    assert sort_values[5] == pytest.approx(2605.25)
+    assert sort_values[6] == pytest.approx(0.80)
+    assert sort_values[7] == pytest.approx(160.0)
+    assert sort_values[8] == pytest.approx(200.0)
     assert sort_values[9] == ""
     assert sort_values[10] == ""
+    assert sort_values[11] == ""
 
 
-def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
+def test_profile_table_keeps_plain_metrics_and_regular_font_for_highlight() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -433,20 +419,20 @@ def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
 
     assert (
         profile_list.table.item(0, profile_list.VOLTAGE_COLUMN).text()
-        == "875 (-12.50%)"
+        == "875"
     )
     assert (
         profile_list.table.item(0, profile_list.EFFECTIVE_MHZ_COLUMN).text()
-        == "2605.25 (-1.69%)"
+        == "2605.25"
     )
     assert profile_list.table.item(0, profile_list.FPSW_COLUMN).text() == (
-        "0.80 (+60.00%)"
+        "0.8000"
     )
     assert profile_list.table.item(0, profile_list.FPS_COLUMN).text() == (
-        "160.00 (+6.67%)"
+        "160.00"
     )
     assert profile_list.table.item(0, profile_list.POWER_COLUMN).text() == (
-        "200.00 (-20.00%)"
+        "200.00"
     )
     # The stored offset is an NVML transfer-rate value (MT/s); the table shows
     # the realized memory clock in MHz (half of it) with a unit suffix.
@@ -457,9 +443,10 @@ def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
         item = profile_list.table.item(0, column)
         assert item is not None
         assert not item.font().bold()
+        assert item.foreground().style() == QtCore.Qt.BrushStyle.NoBrush
 
 
-def test_profile_table_recalculates_relative_text_and_colors_from_long_values() -> None:
+def test_profile_table_keeps_scan_deltas_in_tooltips_and_sorts_absolute_values() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -484,26 +471,64 @@ def test_profile_table_recalculates_relative_text_and_colors_from_long_values() 
 
     expected = {
         profile_list.EFFECTIVE_MHZ_COLUMN: (
-            "2888.06 (+5.27%)",
-            "#55d27a",
+            "2888.06",
+            "+5.27%",
         ),
         profile_list.FPSW_COLUMN: (
-            "0.21 (+15.51%)",
-            "#55d27a",
+            "0.2118",
+            "+15.51%",
         ),
         profile_list.FPS_COLUMN: (
-            "67.16 (+4.57%)",
-            "#55d27a",
-        ),
-        profile_list.POWER_COLUMN: (
-            "317.10 (-9.47%)",
-            "#55d27a",
+            "67.16",
+            "+4.57%",
         ),
     }
-    for column, (text, color) in expected.items():
+    for column, (text, delta) in expected.items():
         item = profile_list.table.item(0, column)
         assert item.text() == text
-        assert item.foreground().color().name() == color
+        assert delta in item.toolTip()
+        assert "vs this scan's baseline:" in item.toolTip()
+        assert item.foreground().style() == QtCore.Qt.BrushStyle.NoBrush
+    power_item = profile_list.table.item(0, profile_list.POWER_COLUMN)
+    assert power_item.text() == "317.10"
+    assert "unavailable" in power_item.toolTip()
+    profile_list.set_profiles(
+        [
+            {
+                "profile_id": "efficiency",
+                "gpu_identity": {"uuid": "GPU-A"},
+                "avg_power_w": 247.895,
+                "base_avg_power_w": 300.129,
+                "avg_fps": 60.075,
+                "base_avg_fps": 61.324,
+            },
+            {
+                "profile_id": "balanced",
+                "gpu_identity": {"uuid": "GPU-A"},
+                "avg_power_w": 252.228,
+                "base_avg_power_w": 354.089,
+                "avg_fps": 61.933,
+                "base_avg_fps": 63.018,
+            },
+        ],
+        default_power_limits_w={"gpu-a": 360.0},
+    )
+    profile_list.table.sortItems(
+        profile_list.POWER_COLUMN, QtCore.Qt.SortOrder.AscendingOrder
+    )
+    power_items = [profile_list.table.item(row, profile_list.POWER_COLUMN) for row in range(2)]
+    assert [item.text() for item in power_items] == ["247.90 (-31.14%)", "252.23 (-29.94%)"]
+    for item in power_items:
+        assert "factory/default power limit (360.00 W)" in item.toolTip()
+        assert "not measured stock power savings" in item.toolTip()
+        assert "scan's baseline" not in item.toolTip()
+        assert item.foreground().color().name() == "#55d27a"
+    profile_list.table.sortItems(
+        profile_list.FPS_COLUMN, QtCore.Qt.SortOrder.DescendingOrder
+    )
+    assert [
+        profile_list.table.item(row, profile_list.FPS_COLUMN).text() for row in range(2)
+    ] == ["61.93", "60.08"]
 
 
 def test_profile_table_defaults_to_newest_date_first() -> None:
@@ -606,6 +631,227 @@ def test_profile_list_uses_one_apply_button() -> None:
 
     profile_list.select_profile("profile-a")
     assert profile_list.daemonize_button.isEnabled()
+
+
+def test_profile_list_single_gpu_keeps_clean_apply_and_legacy_profile() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "legacy", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(
+        profiles,
+        [GpuChoice(0, "NVIDIA RTX 5090", "00000000:01:00.0", "GPU-A")],
+    )
+    profile_list.select_profile("legacy")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_label.isEnabled()
+    assert not profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
+    assert profile_list.daemonize_button.text() == "Apply"
+    assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.main_gpu_checkbox.isHidden()
+    assert profile_list.target_gpu_index() == 0
+    assert profile_list.table.item(0, profile_list.GPU_COLUMN).text() == (
+        "Unassigned (legacy)"
+    )
+
+
+def test_profile_list_stale_configured_index_does_not_fake_multiple_gpus() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "legacy", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(
+        profiles,
+        [
+            GpuChoice(0, "NVIDIA RTX 5090", "00000000:01:00.0", "GPU-A"),
+            GpuChoice(5, "NVIDIA GPU"),
+        ],
+        preferred_index=5,
+    )
+
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
+    assert profile_list.target_gpu_index() == 0
+    assert not profile_list.target_gpu_label.isEnabled()
+    assert not profile_list.target_gpu_combo.isEnabled()
+
+
+def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX 5090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.select_profile("profile-b")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_label.isEnabled()
+    assert profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_index() is None
+    assert not profile_list.daemonize_button.isEnabled()
+    assert not profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isHidden()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.target_gpu_uuid() == "GPU-B"
+    assert profile_list.target_gpu_index() == 1
+    assert profile_list.daemonize_button.text() == "Apply to GPU 1"
+    assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
+    assert profile_list.table.isRowHidden(0)
+    assert not profile_list.table.isRowHidden(1)
+
+    profile_list.set_main_gpu_state(checked=True, has_boot_profile=True)
+
+    assert profile_list.main_gpu_checkbox.isEnabled()
+    assert profile_list.main_gpu_checkbox.isChecked()
+
+
+def test_profile_list_multiple_hardware_gpus_one_profile_group_keeps_selector_visible() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        }
+    ]
+    choices = [
+        GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.select_profile("profile-b")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_index() is None
+    assert not profile_list.daemonize_button.isEnabled()
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.target_gpu_index() == 1
+    assert profile_list.daemonize_button.text() == "Apply to GPU 1"
+    assert profile_list.daemonize_button.isEnabled()
+
+
+def test_profile_list_target_filter_keeps_legacy_profiles_visible() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 4090", "uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        },
+        {
+            "profile_id": "legacy",
+            "final_verified": True,
+            # Profile summaries normalize missing legacy identity to an empty
+            # mapping. It must not become the literal UUID string "None".
+            "gpu_identity": {},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+
+    assert not profile_list.table.isRowHidden(0)
+    assert profile_list.table.isRowHidden(1)
+    assert not profile_list.table.isRowHidden(2)
+
+
+def test_profile_filter_deselects_rows_hidden_by_gpu_switch() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-B"},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX A", uuid="GPU-A"),
+        GpuChoice(1, "RTX B", uuid="GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+    profile_list.select_profile("profile-a")
+    assert profile_list.selected_profile_ids() == ["profile-a"]
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.selected_profile_ids() == []
 
 
 def test_profile_list_boot_toggle_defaults_off_and_survives_reloads() -> None:
@@ -924,6 +1170,53 @@ def test_mark_auto_uv_profile_verified_promotes_user_edited_draft(
     assert payload["avg_power_w"] == 240.0
     assert payload["efficiency_fps_per_w"] == 0.50625
     assert payload["base_avg_fps"] == 100.0
+
+
+def test_bind_legacy_profile_identity_preserves_verified_payload(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [],
+        }
+    )
+
+    bind_auto_uv_profile_gpu_identity(
+        stored_path,
+        {
+            "name": "NVIDIA RTX 5090",
+            "uuid": "GPU-A",
+            "pci_bus_id": "00000000:01:00.0",
+            "pci_device_id": "0x2B8510DE",
+            "index": 0,
+        },
+    )
+
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["final_verified"] is True
+    assert payload["gpu_identity"]["uuid"] == "GPU-A"
+    assert payload["gpu_identity"]["pci_bus_id"] == "00000000:01:00.0"
+
+
+def test_binding_cannot_silently_move_profile_to_another_gpu(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-A", "name": "RTX 5090"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        bind_auto_uv_profile_gpu_identity(stored_path, {"uuid": "GPU-B"})
 
 
 def test_mark_auto_uv_profile_verified_preserves_existing_metrics(
@@ -1393,6 +1686,17 @@ def test_profile_verification_promotes_verified_profile(
         def refresh_points(self) -> None:
             pass
 
+        def capabilities(self):
+            return SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=0,
+                    name="NVIDIA RTX 5090",
+                    uuid="GPU-verify-a",
+                    pci_bus_id="00000000:01:00.0",
+                    pci_device_id="0x2B8510DE",
+                )
+            )
+
     config = SimpleNamespace(abort_callback=None)
     result = SimpleNamespace(
         success=True,
@@ -1416,6 +1720,7 @@ def test_profile_verification_promotes_verified_profile(
     baseline_calls = []
 
     def fake_baseline_probe(*_args, **kwargs):
+        assert _args[0].auto_uv_q2rtx_resolution == "1080p"
         baseline_calls.append(kwargs)
         return {
             "avg_core_clock_mhz": 2500.0,
@@ -1427,7 +1732,7 @@ def test_profile_verification_promotes_verified_profile(
     monkeypatch.setattr(
         profile_verification_runner,
         "apply_verify_auto_uv_profile",
-        lambda *_args, **_kwargs: ("auto-UV:2600MHz@900mV", None, plan),
+        lambda *_args, **_kwargs: ("auto-UV:2600MHz@900mV", None, plan, "1080p"),
     )
     monkeypatch.setattr(
         profile_verification_runner,
@@ -1435,12 +1740,16 @@ def test_profile_verification_promotes_verified_profile(
         fake_baseline_probe,
     )
 
+    def build_config(args, **_kwargs):
+        assert args.auto_uv_q2rtx_resolution == "1080p"
+        return config
+
     deps = profile_verification_runner.ProfileVerificationDependencies(
         stop_existing_penguin_burner_runtime=lambda **_kwargs: None,
         gpu_client_factory=lambda **_kwargs: FakeGpuClient(),
         backup_current_offsets=lambda *_args, **_kwargs: None,
         restore_offsets=lambda *_args, **_kwargs: None,
-        build_stability_config=lambda *_args, **_kwargs: config,
+        build_stability_config=build_config,
         build_long_stability_test_config=lambda stability_config, **_kwargs: (
             stability_config
         ),
@@ -1472,10 +1781,128 @@ def test_profile_verification_promotes_verified_profile(
     assert payload["base_avg_fps"] == 100.0
     assert payload["base_avg_power_w"] == 250.0
     assert payload["base_efficiency_fps_per_w"] == 0.4
+    assert payload["gpu_identity"] == {
+        "name": "NVIDIA RTX 5090",
+        "uuid": "GPU-verify-a",
+        "pci_bus_id": "00000000:01:00.0",
+        "pci_device_id": "0x2B8510DE",
+        "index_at_verification": 0,
+    }
     assert baseline_calls
     assert baseline_calls[0]["base_plan"][0]["target_mhz"] == 2500
     assert baseline_calls[0]["base_plan"][0]["new_offset_mhz"] == 0
     assert resolve_auto_uv_profile(str(stored_path)) is not None
+
+
+def test_profile_verification_wires_live_telemetry_events_when_target_known(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    # A GUI listening on stdout can only plot the live GPU position if this
+    # is wired with the profile's own target voltage/clock, not left unset.
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "base_avg_core_clock_mhz": 2500.0,
+            "base_avg_fps": 100.0,
+            "base_avg_power_w": 250.0,
+            "base_efficiency_fps_per_w": 0.4,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    class FakeGpuClient:
+        def refresh_points(self) -> None:
+            pass
+
+        def capabilities(self):
+            return SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=0,
+                    name="NVIDIA RTX 5090",
+                    uuid="GPU-verify-a",
+                    pci_bus_id="00000000:01:00.0",
+                    pci_device_id="0x2B8510DE",
+                )
+            )
+
+    config = SimpleNamespace(abort_callback=None)
+    result = SimpleNamespace(
+        success=True,
+        reason="ok",
+        log_path=tmp_path / "verify.log",
+        benchmark_summary=SimpleNamespace(fps_avg=120.0),
+        telemetry_summary=lambda: {"core_clock_avg": 2580.0, "power_avg": 240.0},
+    )
+    plan = [
+        {
+            "index": 0,
+            "voltage_mv": 900,
+            "base_mhz": 2500,
+            "target_mhz": 2600,
+            "new_offset_mhz": 100,
+        }
+    ]
+    monkeypatch.setattr(
+        profile_verification_runner,
+        "apply_verify_auto_uv_profile",
+        lambda *_args, **_kwargs: (
+            "auto-UV:2600MHz@900mV",
+            {"lock_voltage_mv": 900, "lock_clock_mhz": 2600},
+            plan,
+            None,
+        ),
+    )
+
+    telemetry_calls = []
+
+    def fake_attach_telemetry(stability_config, *, target_voltage_mv, target_clock_mhz):
+        telemetry_calls.append(
+            {"target_voltage_mv": target_voltage_mv, "target_clock_mhz": target_clock_mhz}
+        )
+        return stability_config
+
+    deps = profile_verification_runner.ProfileVerificationDependencies(
+        stop_existing_penguin_burner_runtime=lambda **_kwargs: None,
+        gpu_client_factory=lambda **_kwargs: FakeGpuClient(),
+        backup_current_offsets=lambda *_args, **_kwargs: None,
+        restore_offsets=lambda *_args, **_kwargs: None,
+        build_stability_config=lambda *_args, **_kwargs: config,
+        build_long_stability_test_config=lambda stability_config, **_kwargs: (
+            stability_config
+        ),
+        attach_stdout_progress=lambda _config: None,
+        attach_stdout_telemetry_events=fake_attach_telemetry,
+        run_q2rtx_stability_test=lambda _config: result,
+        print_q2rtx_stability_result=lambda _result: None,
+    )
+
+    profile_verification_runner.run_profile_verification(
+        SimpleNamespace(
+            auto_uv_profile=str(stored_path),
+            stability_seconds=600,
+            stability_stop_request_file="",
+        ),
+        gpu_index=0,
+        config_path=tmp_path / "runtime.ini",
+        auto_uv_runtime_options={},
+        dependencies=deps,
+    )
+
+    assert telemetry_calls == [{"target_voltage_mv": 900, "target_clock_mhz": 2600}]
 
 
 def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -> None:
@@ -2091,8 +2518,8 @@ def test_final_choice_candidate_table_helpers_show_metrics_and_default() -> None
     }
 
     assert _candidate_number(candidate["candidate_voltage_mv"], precision=0) == "865"
-    assert _candidate_number(candidate["efficiency_fps_per_w"], precision=4) == "0.73"
-    assert _format_number(candidate["efficiency_fps_per_w"], precision=4) == "0.73"
+    assert _candidate_number(candidate["efficiency_fps_per_w"], precision=4) == "0.7312"
+    assert _format_number(candidate["efficiency_fps_per_w"], precision=4) == "0.7312"
     assert _candidate_status_text(candidate, True) == "Best FPS/W | Passed short probe"
     assert (
         _candidate_status_text(candidate, True, auto_uv_mode="performance")

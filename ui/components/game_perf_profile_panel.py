@@ -297,10 +297,11 @@ class GamePerfProfilePanel:
             cell.addWidget(value_label)
             stats.addWidget(cell_widget, index // 4, index % 4)
             self._stat_values[key] = value_label
-        # Latency has no spoke and no placeholder: the cell exists only
-        # while there is a real measurement to show.
-        self._latency_cell = cell_widget
-        self._latency_key = key_label
+            if key == "LATENCY":
+                # Latency has no spoke and no placeholder: the cell exists
+                # only while there is a real measurement to show.
+                self._latency_cell = cell_widget
+                self._latency_key = key_label
         self._latency_cell.setVisible(False)
         stats.setColumnStretch(4, 1)
         # The mock's tab-top centers the stats against the fingerprint.

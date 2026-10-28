@@ -1,6 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from profiles import game_profile
 
 import integrations.steam.game_runtime as game_runtime
 from integrations.steam.game_runtime import (
@@ -8,12 +12,21 @@ from integrations.steam.game_runtime import (
     game_account_id,
     game_app_id,
     game_runtime_profile_argv,
+)
+from integrations.steam.identity import (
+    steam_app_id_from_game_key,
+    steam_game_key,
+)
+from profiles.game_profile import (
+    game_gpu_target,
     profile_argv_for_setting,
 )
 from integrations.steam.settings import (
-    GAME_MODE_NONE,
     SteamGameSetting,
     store_steam_game_setting,
+)
+from profiles.game_profile import (
+    GAME_MODE_NONE,
 )
 from integrations.steam.users import STEAMID64_BASE
 
@@ -34,6 +47,25 @@ def steam_home(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return tmp_path
+
+
+def test_the_daemon_identity_of_a_steam_game_is_namespaced() -> None:
+    """One identity format across launchers, so the daemon's registry of
+    running games cannot confuse a Lutris game 570 with Steam app 570."""
+    assert steam_game_key("570") == "steam:570"
+    assert steam_game_key(" 570 ") == "steam:570"
+    assert steam_game_key("") == ""
+
+
+def test_a_daemon_key_reads_back_as_a_steam_app_id() -> None:
+    assert steam_app_id_from_game_key("steam:570") == "570"
+    # What a wrapper from before the namespace registered, still running.
+    assert steam_app_id_from_game_key("570") == "570"
+    # Not this launcher's, and not an id at all.
+    assert steam_app_id_from_game_key("lutris:570") == ""
+    assert steam_app_id_from_game_key("steam:") == ""
+    assert steam_app_id_from_game_key("heroic:Turkey") == ""
+    assert steam_app_id_from_game_key("") == ""
 
 
 def test_game_app_id_prefers_steam_app_id() -> None:
@@ -62,27 +94,25 @@ def test_profile_argv_for_explicit_stock_pins_factory_state() -> None:
     assert argv == ["--auto-uv-profile", "__stock__"]
 
 
-def test_profile_argv_appends_the_telemetry_opt_out() -> None:
-    argv = profile_argv_for_setting(
-        SteamGameSetting(enabled=True, mode="stock", telemetry=False)
-    )
-    assert argv == ["--auto-uv-profile", "__stock__", "--no-game-telemetry"]
-    # Default stays flag-free: capture is on unless the user opted out.
-    assert "--no-game-telemetry" not in (
-        profile_argv_for_setting(SteamGameSetting(enabled=True, mode="stock")) or []
-    )
-
-
 def _stub_adaptive_profiles(monkeypatch) -> None:
-    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(
-        game_runtime,
+        game_profile,
         "resolve_profile_tier_profiles",
-        lambda profiles: {
+        lambda profiles, **kwargs: {
             "efficiency": {"profile_id": "efficiency-profile"},
             "balanced": {"profile_id": "balanced-profile"},
             "performance": {"profile_id": "performance-profile"},
         },
+    )
+    monkeypatch.setattr(
+        DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-primary", name="RTX Test")
+            ]
+        ),
     )
 
 
@@ -118,9 +148,9 @@ def test_profile_argv_for_non_adaptive_ignores_target_fps() -> None:
 
 
 def test_profile_argv_for_fixed_tier_resolves_profile(monkeypatch) -> None:
-    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(
-        game_runtime,
+        game_profile,
         "resolve_profile_tier_profiles",
         lambda profiles: {"balanced": {"profile_id": "profile-123"}},
     )
@@ -129,9 +159,9 @@ def test_profile_argv_for_fixed_tier_resolves_profile(monkeypatch) -> None:
 
 
 def test_profile_argv_for_unresolved_tier_is_none(monkeypatch) -> None:
-    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(
-        game_runtime,
+        game_profile,
         "resolve_profile_tier_profiles",
         lambda profiles: {"balanced": None},
     )
@@ -156,9 +186,79 @@ def test_game_runtime_profile_argv_reads_setting(
         env, home=steam_home, settings_path=settings_path
     )
     assert resolved is not None
-    argv, app_id = resolved
-    assert app_id == "1089130"
+    argv, game_key = resolved
+    # Namespaced like every other launcher's: the daemon keys running games by
+    # one opaque string, and a Lutris game 1089130 is not this game.
+    assert game_key == "steam:1089130"
     assert "--adaptive-auto-uv" in argv
+
+
+def test_game_runtime_profile_argv_appends_the_telemetry_opt_out(
+    steam_home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    _stub_adaptive_profiles(monkeypatch)
+    settings_path = tmp_path / "steam-game-settings.json"
+    env = {"SteamAppId": "1089130", "SteamUser": "jan_pietek"}
+
+    def argv_for(setting: SteamGameSetting) -> list[str]:
+        store_steam_game_setting(ACCOUNT_ID, "1089130", setting, path=settings_path)
+        resolved = game_runtime_profile_argv(
+            env, home=steam_home, settings_path=settings_path
+        )
+        assert resolved is not None
+        return resolved[0]
+
+    opted_out = argv_for(SteamGameSetting(enabled=True, mode="adaptive", telemetry=False))
+    assert opted_out[-1] == "--no-game-telemetry"
+    # Default stays flag-free: capture is on unless the user opted out.
+    assert "--no-game-telemetry" not in argv_for(
+        SteamGameSetting(enabled=True, mode="adaptive")
+    )
+
+
+def test_game_runtime_profile_argv_keeps_legacy_profile_on_single_gpu(
+    steam_home: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(enabled=True, mode="balanced"),
+        path=settings_path,
+    )
+    monkeypatch.setattr(
+        game_profile,
+        "read_auto_uv_profiles",
+        lambda: [
+            {
+                "profile_id": "legacy-balanced",
+                "final_verified": True,
+                "profile_tier": "balanced",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-only", name="RTX Test")
+            ]
+        ),
+    )
+
+    resolved = game_runtime_profile_argv(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+    )
+
+    assert resolved == (
+        ["--auto-uv-profile", "legacy-balanced", "--gpu-index", "0"],
+        "steam:1089130",
+    )
 
 
 def test_game_runtime_profile_argv_none_without_setting(
@@ -208,9 +308,11 @@ def test_apply_calls_daemon_with_own_pid(
                 "--auto-uv-profile",
                 "performance-profile",
                 "--adaptive-auto-uv",
+                "--gpu-index",
+                "0",
             ],
             "watch_pid": os.getpid(),
-            "app_id": "1089130",
+            "app_id": "steam:1089130",
         }
     ]
 
@@ -296,6 +398,93 @@ def test_apply_soft_fails_when_daemon_unreachable(
     assert "skipped" in capsys.readouterr().err
 
 
+def test_apply_reports_when_another_game_owns_runtime(
+    steam_home: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _stub_adaptive_profiles(monkeypatch)
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(enabled=True, mode="adaptive"),
+        path=settings_path,
+    )
+    import runtime.daemon_client as daemon_client
+
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda *args, **kwargs: {
+            "started": False,
+            "ignored": True,
+            "reason": "first-game-runtime-active",
+        },
+    )
+
+    assert not apply_game_runtime_profile(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+    )
+    assert "first-game-runtime-active" in capsys.readouterr().err
+
+
+def test_game_gpu_target_requires_choice_with_multiple_gpus() -> None:
+    identities = [
+        SimpleNamespace(index=0, uuid="GPU-a"),
+        SimpleNamespace(index=1, uuid="GPU-b"),
+    ]
+
+    assert game_gpu_target(SteamGameSetting(), identities) is None
+    assert game_gpu_target(
+        SteamGameSetting(gpu_uuid="GPU-b"), identities
+    ) == ("GPU-b", 1)
+
+
+def test_profile_argv_filters_tiers_by_gpu_uuid(monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(
+        game_profile,
+        "resolve_profile_tier_profiles",
+        lambda profiles, *, gpu_uuid="", **_kwargs: seen.append(gpu_uuid)
+        or {"balanced": {"profile_id": "profile-b"}},
+    )
+
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="balanced", gpu_uuid="GPU-b"),
+        gpu_index=2,
+    )
+
+    assert seen == ["GPU-b"]
+    assert argv == ["--auto-uv-profile", "profile-b", "--gpu-index", "2"]
+
+
+def test_profile_argv_keeps_legacy_tiers_on_unambiguous_single_gpu(
+    monkeypatch,
+) -> None:
+    legacy = {
+        "profile_id": "legacy-balanced",
+        "final_verified": True,
+        "profile_tier": "balanced",
+    }
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [legacy])
+
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="balanced"),
+        gpu_index=0,
+        gpu_uuid="GPU-only",
+        include_legacy_profiles=True,
+    )
+
+    assert argv == [
+        "--auto-uv-profile",
+        "legacy-balanced",
+        "--gpu-index",
+        "0",
+    ]
+
+
 def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
     import runtime.runtime_spec as runtime_spec
@@ -341,16 +530,18 @@ def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -
 
 def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
-    monkeypatch.setattr(process.shutil, "which", lambda name: "/usr/bin/steam")
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/usr/bin/steam")
     launched = []
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "Popen",
         lambda command, **kwargs: launched.append(command),
     )
     from integrations.steam.process import launch_steam_game
+    monkeypatch.setattr("integrations.steam.process.steam_matches_installation", lambda home: True)
 
     assert launch_steam_game("3606110")
     assert launched == [["/usr/bin/steam", "-applaunch", "3606110"]]
@@ -358,43 +549,16 @@ def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     assert len(launched) == 1
 
 
-def test_steam_game_running_matches_reaper_session(monkeypatch) -> None:
-    import integrations.steam.process as process
-
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return process.subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
-
-    assert process.steam_game_running("3606110")
-    # [S] keeps the pattern from matching a command line carrying the pattern
-    # itself (the flatpak-spawn helper, a sibling checker).
-    assert calls == [
-        ["/usr/bin/pgrep", "-f", r"[S]teamLaunch AppId=3606110([^0-9]|$)"]
-    ]
-    import re
-
-    pattern = calls[0][2]
-    assert re.search(pattern, "reaper SteamLaunch AppId=3606110 -- /game/bin")
-    assert not re.search(pattern, f"pgrep -f {pattern}")
-    assert not re.search(pattern, "reaper SteamLaunch AppId=36061100 -- /game/bin")
-    assert not process.steam_game_running("rm -rf /")
-    assert len(calls) == 1
-
-
 def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return process.subprocess.CompletedProcess(
+        return host.subprocess.CompletedProcess(
             command,
             0,
             stdout=(
@@ -405,7 +569,7 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
             stderr="",
         )
 
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
 
     # One subprocess returns every running game's id.
     assert process.running_steam_game_ids() == frozenset({"3606110", "228980"})
@@ -413,9 +577,9 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
 
     # returncode 1 = ran fine, no games -> empty set (NOT a failure).
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "run",
-        lambda command, **kwargs: process.subprocess.CompletedProcess(
+        lambda command, **kwargs: host.subprocess.CompletedProcess(
             command, 1, stdout="", stderr=""
         ),
     )
@@ -424,18 +588,19 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
     # A timeout / non-0/1 exit is "couldn't tell" -> None, so a poller holds
     # state instead of reading it as every game having exited.
     def boom(command, **kwargs):
-        raise process.subprocess.TimeoutExpired(command, 3.0)
+        raise host.subprocess.TimeoutExpired(command, 3.0)
 
-    monkeypatch.setattr(process.subprocess, "run", boom)
+    monkeypatch.setattr(host.subprocess, "run", boom)
     assert process.running_steam_game_ids() is None
 
 
 def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: True)
     monkeypatch.setattr(
-        process.shutil,
+        host.shutil,
         "which",
         lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
     )
@@ -443,16 +608,16 @@ def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if command[-3:] == ["/usr/bin/sh", "-c", "command -v steam"]:
-            return process.subprocess.CompletedProcess(
+        if command[-5:] == ["/usr/bin/sh", "-c", 'command -v "$1"', "sh", "steam"]:
+            return host.subprocess.CompletedProcess(
                 command, 0, stdout="/usr/bin/steam\n", stderr=""
             )
-        return process.subprocess.CompletedProcess(command, 0)
+        return host.subprocess.CompletedProcess(command, 0)
 
     launched = []
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "Popen",
         lambda command, **kwargs: launched.append((command, kwargs)),
     )
@@ -481,10 +646,42 @@ def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
 
 def test_flatpak_steam_control_fails_closed_without_host_bridge(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
-    monkeypatch.setattr(process.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(host.shutil, "which", lambda _name: None)
 
     assert not process.steam_running()
     assert not process.steam_available()
     assert not process.launch_steam_game("3606110")
+
+
+def test_steam_shutdown_helper_waits_for_kernel_exit_without_polling():
+    import json
+    import subprocess
+    import sys
+
+    from integrations.steam.process import _STEAM_SHUTDOWN
+
+    # Use a distinct test-only comm value so the real Steam client is untouched.
+    code = "import ctypes, sys; ctypes.CDLL(None).prctl(15, b'pb-test-steam', 0, 0, 0); print('ready', flush=True); sys.stdin.readline()"
+    with subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert child.stdout.readline().strip() == 'ready'
+            script = _STEAM_SHUTDOWN.replace("== 'steam'", "== 'pb-test-steam'")
+            # A command that leaves the client alive must never confirm exit.
+            noop = [sys.executable, '-c', 'pass']
+            refused = subprocess.run([sys.executable, '-c', script, json.dumps(noop), '0.01'],
+                                     capture_output=True, timeout=5)
+            assert refused.returncode != 0
+            assert child.poll() is None
+            terminate = [sys.executable, '-c', f'import os, signal; os.kill({child.pid}, signal.SIGTERM)']
+            result = subprocess.run([sys.executable, '-c', script, json.dumps(terminate), '2'],
+                                    capture_output=True, timeout=5)
+            assert result.returncode == 0, result.stderr
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)

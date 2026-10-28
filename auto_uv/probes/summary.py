@@ -11,16 +11,18 @@ from pathlib import Path
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING
+
 from ..curve.base_load_telemetry import (
-    derive_active_power_floor_w,
     decision_samples,
+    derive_active_power_floor_w,
     sample_is_loaded,
     saturated_tail_samples,
 )
 from ..shared.probe_data_fields import read_field
 
-
-_SW_POWER_DOMINANT_SAMPLE_FRACTION = 0.5
+POWER_CAP_BUSY_SAMPLE_FRACTION = 0.5
+POWER_CAP_MIN_REASON_SAMPLES = 3
+POWER_CAP_MIN_REASON_COVERAGE = 0.5
 
 
 def mean(values: Sequence[float | int | None]) -> float | None:
@@ -96,6 +98,7 @@ def summarize_perf_cap_reason(
 ) -> str | None:
     counts: Counter[str] = Counter()
     reason_sample_count = 0
+    power_reason_sample_count = 0
     saw_none = False
     for sample in samples:
         reason_text = read_field(sample, "perf_cap_reason")
@@ -113,19 +116,35 @@ def summarize_perf_cap_reason(
             counts[reason] += 1
         if sample_reasons:
             reason_sample_count += 1
+            if any(_perf_cap_reason_indicates_power(reason) for reason in sample_reasons):
+                power_reason_sample_count += 1
+    power_reason_vote_qualified = (
+        reason_sample_count >= POWER_CAP_MIN_REASON_SAMPLES
+        and reason_sample_count
+        >= POWER_CAP_MIN_REASON_COVERAGE * len(samples)
+        and power_reason_sample_count / reason_sample_count
+        >= POWER_CAP_BUSY_SAMPLE_FRACTION
+    )
     if (
         require_sw_power_dominant
-        and reason_sample_count > 0
-        and counts.get("sw-power", 0) / reason_sample_count
-        <= _SW_POWER_DOMINANT_SAMPLE_FRACTION
+        and not power_reason_vote_qualified
     ):
-        counts.pop("sw-power", None)
+        for reason in tuple(counts):
+            if _perf_cap_reason_indicates_power(reason):
+                counts.pop(reason, None)
         saw_none = True
     if not counts:
         return "none" if saw_none else None
 
     ordered_reasons = sorted(counts, key=lambda reason: (-counts[reason], reason))
     return "+".join(ordered_reasons[:3])
+
+
+def _perf_cap_reason_indicates_power(reason_text: object) -> bool:
+    reason = str(reason_text or "").lower()
+    return any(
+        "power" in token.strip() for token in reason.replace(",", "+").split("+")
+    )
 
 
 def summarize_loaded_perf_cap_reason(
@@ -157,6 +176,29 @@ def summarize_loaded_perf_cap_reason(
     )
 
 
+def count_hw_power_brake_samples(samples: Sequence) -> int:
+    """Samples where the power-delivery hardware asserted its brake.
+
+    Counted over whatever window the caller passes — the probe summary reports
+    it across the probe's telemetry, the stability decision across the busy
+    window — so read the paired total before comparing two coverage figures.
+
+    ``hw-power-brake`` is not the configured power limit doing its job — it is
+    an external protection signal (EDPp/OCP) from the board's power delivery.
+    Report it per probe so a brake-heavy scan is visible in the log, events,
+    and saved result.
+    """
+    brake = 0
+    for sample in samples:
+        reason = str(read_field(sample, "perf_cap_reason") or "").lower()
+        if any(
+            "power-brake" in token
+            for token in reason.replace(",", "+").split("+")
+        ):
+            brake += 1
+    return brake
+
+
 def loaded_telemetry_samples(
     telemetry_samples: list,
     *,
@@ -174,9 +216,6 @@ def loaded_telemetry_samples(
         use_power_limit_floor=use_power_limit_floor,
         rules=AUTO_UV_METRIC_TUNING,
     )
-    if active_power_floor_w is None:
-        return [], None
-
     active_samples = [
         sample
         for sample in samples
@@ -216,11 +255,8 @@ def loaded_telemetry_means(
         use_power_limit_floor=use_power_limit_floor,
         skip_elapsed_warmup=skip_elapsed_warmup,
     )
-    if active_power_floor_w is None and not active_samples:
-        return None, None, None, None, None, 0, None
-
     if not active_samples:
-        return None, None, None, None, None, 0, float(active_power_floor_w)
+        return None, None, None, None, None, 0, active_power_floor_w
 
     return (
         mean([read_field(sample, "power_w") for sample in active_samples]),
@@ -362,6 +398,9 @@ def summarize_q2rtx_cuda_probe(
         use_power_limit_floor=use_power_limit_floor,
         skip_elapsed_warmup=skip_elapsed_warmup,
     )
+    hw_power_brake_samples = count_hw_power_brake_samples(
+        [*q2rtx_samples, *companion_samples]
+    )
     max_power_w = max_or_none(
         [telemetry.get("power_max"), sample_max(companion_samples, "power_w")]
     )
@@ -476,6 +515,8 @@ def summarize_q2rtx_cuda_probe(
         loaded_qualified_sample_count=int(loaded_qualified_sample_count),
         observed_vdroop_mv=observed_vdroop_mv,
         perf_cap_reason=perf_cap_reason,
+        hw_power_brake_samples=int(hw_power_brake_samples),
+        telemetry_sample_count=len(q2rtx_samples) + len(companion_samples),
         fps_stddev=fps_stddev,
         fps_variance_pct=fps_variance_pct,
     )

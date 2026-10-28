@@ -8,13 +8,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..shared.probe_data_fields import read_field
 from .base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,
     derive_active_power_floor_w,
     sample_is_loaded,
 )
-from ..shared.probe_data_fields import read_field
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,11 +36,9 @@ def derive_loaded_voltage_band(
         use_power_limit_floor=use_power_limit_floor,
         rules=telemetry_rules,
     )
-    if active_power_floor_w is None:
-        return LoadedVoltageBand(None)
 
     voltages = sorted(
-        int(round(float(read_field(sample, "voltage_mv"))))
+        round(float(read_field(sample, "voltage_mv")))
         for sample in samples
         if read_field(sample, "voltage_mv") is not None
         and sample_is_loaded(
@@ -53,5 +51,5 @@ def derive_loaded_voltage_band(
         return LoadedVoltageBand(None)
 
     return LoadedVoltageBand(
-        average_mv=int(round(sum(voltages) / float(len(voltages)))),
+        average_mv=round(sum(voltages) / float(len(voltages))),
     )

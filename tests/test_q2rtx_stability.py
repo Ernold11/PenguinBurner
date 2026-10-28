@@ -1,49 +1,101 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+import io
+import json
 import sys
 import tarfile
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import stability.q2rtx.assets as q2rtx_assets
+import stability.q2rtx.config as q2rtx_workload_config
 import stability.q2rtx.downloader as q2rtx_downloader
 import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
+import stability.q2rtx.identity as q2rtx_identity
 import stability.q2rtx.install as q2rtx_install
 import stability.q2rtx.runtime as q2rtx_runtime
-import stability.q2rtx.assets as q2rtx_assets
 from stability.q2rtx.assets import resolve_q2rtx_executable
-import stability.q2rtx.config as q2rtx_workload_config
 from stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
     PB_Q2RTX_ASSET_SUFFIX,
     Q2RTX_REQUIRED_DATA_FILES,
 )
 from stability.q2rtx.install import (
-    clear_q2rtx_stability_logs,
     _download_file_from_urls,
     _emit_dependency_progress,
     _extract_q2rtx_archive,
     _extract_q2rtx_data_files,
     _q2rtx_release_asset_urls,
+    clear_q2rtx_stability_logs,
     fetch_latest_q2rtx_release_metadata,
 )
-from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.models import (
     Q2RTXBenchmarkSummary,
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
+    TelemetrySample,
 )
 from stability.q2rtx.output import (
     _benchmark_summary_from_events,
     _format_live_progress_state,
     _scan_output_for_fatal_patterns,
+    attach_stdout_telemetry_events,
 )
+from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import build_benchmark_command
 from stability.q2rtx.telemetry import _xid_message_is_at_or_after
+
+
+def test_q2rtx_callback_failures_are_logged_and_nonfatal() -> None:
+    log_file = io.StringIO()
+
+    def fail(_state):
+        raise RuntimeError("callback broke")
+
+    q2rtx_runtime._notify_progress(fail, {"elapsed_s": 1}, log_file=log_file)
+    abort_reason = q2rtx_runtime._request_abort(
+        fail,
+        {"elapsed_s": 1},
+        log_file=log_file,
+    )
+
+    assert abort_reason is None
+    assert log_file.getvalue().count("callback broke") == 2
+
+
+def test_q2rtx_subprocess_identity_uses_native_popen_parameters(monkeypatch) -> None:
+    monkeypatch.setattr(
+        q2rtx_identity,
+        "_resolve_q2rtx_run_identity",
+        lambda: {
+            "user_name": "player",
+            "uid": 1000,
+            "gid": 100,
+            "env": {"HOME": "/home/player"},
+        },
+    )
+    monkeypatch.setattr(
+        q2rtx_identity.os,
+        "getgrouplist",
+        lambda user_name, gid: [gid, 44, 109],
+    )
+
+    child_env, popen_identity, user_name = (
+        q2rtx_identity._prepare_q2rtx_subprocess_env({"PATH": "/usr/bin"})
+    )
+
+    assert child_env == {"PATH": "/usr/bin", "HOME": "/home/player"}
+    assert popen_identity == {
+        "user": 1000,
+        "group": 100,
+        "extra_groups": (100, 44, 109),
+    }
+    assert user_name == "player"
 
 
 def _write_tar(path: Path, members: dict[str, bytes]) -> None:
@@ -682,6 +734,53 @@ def test_cuda_companion_progress_is_labeled_as_cuda() -> None:
     assert "elapsed=512.0s" in line
 
 
+def test_attach_stdout_telemetry_events_prints_load_telemetry_json(capsys) -> None:
+    config = Q2RTXStabilityConfig(duration_s=1, log_dir=Path("/tmp"))
+    previous_calls = []
+    config.progress_callback = previous_calls.append
+
+    attach_stdout_telemetry_events(
+        config,
+        target_voltage_mv=925,
+        target_clock_mhz=2950,
+    )
+    sample = TelemetrySample(
+        elapsed_s=12.0,
+        gpu_util_pct=99.0,
+        power_w=280.0,
+        core_clock_mhz=2940.0,
+        temperature_c=62.0,
+        voltage_mv=923.0,
+        fan_speed_pct=50.0,
+    )
+    config.progress_callback({"elapsed_s": 12.0, "latest_sample": sample})
+
+    printed = capsys.readouterr().out.strip()
+    payload = json.loads(printed)
+    assert payload == {
+        "event": "load_telemetry",
+        "voltage_mv": 925,
+        "clock_mhz": 2950,
+        "measured_voltage_mv": 923,
+        "measured_clock_mhz": 2940,
+    }
+    # The wrapped config still chains to whatever callback was set before.
+    assert previous_calls == [{"elapsed_s": 12.0, "latest_sample": sample}]
+
+
+def test_attach_stdout_telemetry_events_skips_missing_sample(capsys) -> None:
+    config = Q2RTXStabilityConfig(duration_s=1, log_dir=Path("/tmp"))
+
+    attach_stdout_telemetry_events(
+        config,
+        target_voltage_mv=925,
+        target_clock_mhz=2950,
+    )
+    config.progress_callback({"elapsed_s": 0.0, "latest_sample": None})
+
+    assert capsys.readouterr().out.strip() == ""
+
+
 def test_fatal_output_abort_reason_uses_active_workload() -> None:
     assert (
         q2rtx_runtime._fatal_output_abort_reason(["device lost"], running="q2rtx")
@@ -933,9 +1032,9 @@ def test_frame_watchdog_threshold_zero_disables() -> None:
     assert watchdog.tripped(1_000.0) is False
 
 
-def test_hang_watchdog_reason_classifies_as_critical_gpu_hang() -> None:
-    from auto_uv.probes.stability_decision import classify_failed_result
+def test_hang_watchdog_reason_classifies_as_unsafe_gpu_hang() -> None:
     from auto_uv.domain.types import FailureKind, FailureSeverity
+    from auto_uv.probes.stability_decision import classify_failed_result
 
     decision = classify_failed_result(
         q2rtx_runtime.FRAME_HANG_WATCHDOG_REASON,
@@ -943,4 +1042,74 @@ def test_hang_watchdog_reason_classifies_as_critical_gpu_hang() -> None:
     )
     assert decision.passed is False
     assert decision.failure_kind == FailureKind.GPU_HANG
-    assert decision.severity == FailureSeverity.CRITICAL
+    assert decision.severity == FailureSeverity.UNSAFE
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize(
+    "failure_line,expected_severity",
+    [
+        ("verify verification mismatch idx=123 expected=1 got=2", "unsafe"),
+        ("cuInit failed rc=100: no CUDA-capable device is detected", "critical"),
+    ],
+)
+def test_combined_cuda_failure_keeps_evidence_for_auto_uv_classification(
+    tmp_path, monkeypatch, concurrent, failure_line, expected_severity,
+):
+    from auto_uv.probes.stability_decision import classify_failed_result
+
+    monkeypatch.setattr(q2rtx_runtime, "DaemonGpuClient", lambda _index: None)
+    monkeypatch.setattr(q2rtx_runtime, "_query_selected_nvidia_gpu", lambda _index: None)
+    monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        q2rtx_runtime, "_prepare_q2rtx_subprocess_env", lambda env: (env, {}, None)
+    )
+    # Exercise the actual combined-process wrapper with harmless Python children.
+    # No benchmark binary, CUDA, GPU reads, or daemon calls are involved.
+    result = q2rtx_runtime._run_benchmark_process(
+        config=Q2RTXStabilityConfig(
+            duration_s=1,
+            log_dir=tmp_path,
+            companion_concurrent=concurrent,
+            companion_command=(
+                sys.executable, "-c", f"print({failure_line!r}); raise SystemExit(1)",
+            ),
+        ),
+        command=[sys.executable, "-c", "import time; time.sleep(5)" if concurrent else "pass"],
+        workdir=tmp_path,
+        log_path=tmp_path / "combined.log",
+        section_name="test",
+        workload_name="test",
+        runtime_env={},
+    )
+
+    assert result.exit_reason == "cuda-bruteforce-failed exit=1"
+    assert failure_line in result.output_tail
+    decision = classify_failed_result(
+        result.exit_reason, log_path=tmp_path / "combined.log", output=result.output_tail
+    )
+    assert not decision.passed
+    assert decision.severity.value == expected_severity
+
+
+def test_q2rtx_runtime_env_exports_target_uuid_for_patched_benchmark() -> None:
+    env = q2rtx_runtime._apply_nvidia_render_offload_env(
+        {},
+        selected_gpu={
+            "uuid": "GPU-3675cb07-a528-1d90-6ed0-2b9c5eb84caf",
+            "index": "0",
+        },
+    )
+
+    # NVML "GPU-<hex-with-dashes>" must be normalized to the 32-hex form the
+    # Vulkan deviceUUID exposes; a patched Q2RTX (Q2RTX-headless) pins to it.
+    assert env["Q2RTX_TARGET_UUID"] == "3675cb07a5281d906ed02b9c5eb84caf"
+
+
+def test_q2rtx_runtime_env_omits_target_uuid_without_identity() -> None:
+    env = q2rtx_runtime._apply_nvidia_render_offload_env(
+        {},
+        selected_gpu={"index": "0"},
+    )
+
+    assert "Q2RTX_TARGET_UUID" not in env

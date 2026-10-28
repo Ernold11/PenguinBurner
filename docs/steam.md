@@ -1,120 +1,89 @@
-# Steam Integration
+# Steam in Game Library
 
-PenguinBurner's **Steam** tab turns undervolting into per-game automation:
-discover your installed library, pick how the GPU should behave for each game,
-and let PenguinBurner apply it automatically when that game launches — no manual
-profile switching.
+Native and Flatpak installations share the same integration. When both have a
+configured library, PenguinBurner prefers native while its executable is
+available; otherwise it selects Flatpak. Library discovery, settings, Play and
+compatibility tools follow that choice. **Rescan** refreshes it after a launcher
+installation changes. Flatpak games receive a sandbox-local PenguinBurner runtime;
+restart the launcher after first enabling wrapping so it receives filesystem access.
 
-![Steam tab](assets/steam-tab.png)
+Flatpak Steam uses `~/.var/app/com.valvesoftware.Steam/.local/share/Steam`.
+Live settings and Proton selection refuse to connect to a different running
+Steam installation. Close the other client before using these controls.
 
-## Why it matters
+Use [Game Library](features/game-library.md) to set a GPU profile, Adaptive FPS
+target, and overlay for each Steam game alongside your Lutris, Heroic and Faugus
+libraries.
 
-The system-wide profile is one setting for everything. Steam integration lets a
-single library hold **different behavior per game**: a light indie title runs
-dead-silent on Efficiency while a demanding shooter gets Performance or adapts
-live. It is also the only way to get the **adaptive, per-game pre-frame-generation
-FPS target** (below) and the in-game overlay, because both are delivered through
-the launch wrapper.
+## Setup
 
-## Setup (one scan of your library)
+1. Open **Game Library** and click **Scan my Steam library** if prompted.
+2. Restart Steam if the tab shows **Restart Steam to finish**.
+3. Select a game and enable **Wrap this game**.
+4. Choose its mode and other [per-game settings](features/game-library.md#per-game-settings).
 
-1. Open the **Steam** tab. If PenguinBurner has not seen your library yet, click
-   **Scan my Steam library**. This is safe and non-destructive: every game is
-   listed, all left **disabled**, and no launch options are changed.
-2. Restart Steam once if prompted (this connects live apply).
-3. Select a game and toggle **Enable PenguinBurner per-game profiles**. Only then
-   does PenguinBurner add its launch-options wrapper to that one game.
+Scanning does not change launch options. Enabling a game adds the wrapper to
+that game's options and preserves the existing command. Settings are stored
+per Steam account in `~/.config/PenguinBurner/steam-game-settings.json`. If
+that file is ever damaged and cannot be read, PenguinBurner keeps it as
+`steam-game-settings.json.corrupt-<timestamp>` beside it and starts a new one,
+so the old presets stay recoverable.
 
-Nothing is forced. Enablement is strictly per game and per Steam account, stored
-in `~/.config/PenguinBurner/steam-game-settings.json`.
+## When edits are available
 
-## Per-game options
+Steam caches launch options while running. The status line shows how
+PenguinBurner can update them:
 
-The per-game editor exposes:
+| Status | Meaning |
+| --- | --- |
+| live apply | Steam is running and connected; edits go through Steam. |
+| Steam stopped | PenguinBurner can write the saved options directly. |
+| read-only until initialized | Complete the scan or restart requested beside Rescan. |
 
-- **Compatibility tool** — Steam's current per-game override, or its effective
-  default Proton when no override was saved. PenguinBurner reads the effective
-  tool from Steam's live per-app details API; it does not infer "native" from a
-  missing config entry. Only games Steam explicitly reports as native Linux
-  have this selector disabled and visibly grayed out.
-- **Auto-UV mode** — one of:
-  - **Adaptive** — starts from your newest profile and switches between saved
-    tiers using live present-frame pacing (see below).
-  - **Efficiency / Balanced / Performance** — pin one saved tier for this game.
-  - **Stock (factory GPU state)** — run this game at the factory curve while your
-    system-wide profile stays tuned.
-- **Adaptive target FPS** — the per-game base-present FPS the adaptive engine
-  aims for (15–1000, default 60). It decides when to promote toward more clock or
-  demote toward more efficiency. This is **per game**, so a 60 Hz story game and a
-  144 Hz competitive shooter each get their own target.
-- **Enable In-Game overlay** — the live readout (latency, pre-frame-gen FPS,
-  clocks, power, tier) for this game.
+PenguinBurner detects Steam's live connection on both IPv4 and IPv6 loopback.
+If another local service occupies the IPv4 port, it also checks IPv6 before
+marking Steam read-only.
 
-The tuning and overlay controls stay grayed out until the game's PenguinBurner
-toggle is on. The compatibility selector is independent of that toggle; it is
-grayed out only for a Steam-confirmed native Linux runtime or when live Steam
-control is unavailable.
+Mode, target FPS, and overlay visibility can update a running wrapped game.
+Changing **Graphics card** requires a relaunch. Compatibility selection is
+independent of wrapping and is disabled for Steam-confirmed native Linux games
+or while live Steam control is unavailable.
 
-## Bulk actions ("All games")
+## Launch and restore
 
-Next to the library sort control, the **All games** menu applies an action across
-your whole library in one confirmed step:
+Use **Play / Stop** in Game Library or launch normally from Steam. The wrapper
+applies the game profile through the root daemon without an admin prompt.
+When the wrapped session ends, it restores the standing profile. For a different target GPU, it first
+restores that card's saved state, or stock if none is known.
 
-- **Enable / Disable PenguinBurner for all games** — add or remove the wrapper
-  everywhere. Enabling keeps the overlay off and leaves each game's saved mode
-  intact; disabling restores every game's original Steam launch options.
-- **Show / Hide In-Game overlay for enabled games.**
+Steam, Lutris, Heroic and Faugus share session tracking. If the wrapper hands off to a
+child process, the game profile remains active until the final tracked process
+exits. Restoration and relaunch no longer wait for a fixed three-second grace.
+If you retry an unconfirmed launch, the library keeps unresolved attempts
+pending; distinct wrapper sessions and their exit events resolve them. A game
+confirmed running while the retry dialog is open cancels that retry.
 
-Each action confirms first and shows the game count. Directions that would change
-nothing (for example "enable all" when everything is already enabled) gray out, so
-the menu doubles as a state readout. Bulk enable also spells out its two side
-effects: the overlay stays off, and MangoHud is disabled inside wrapped games.
+If the daemon is unavailable, the game still starts. A second concurrent game
+can start too, but its runtime request does not replace the first game's
+monitoring ownership.
 
-## Play / Stop
-
-The per-game editor's button is a single Steam-style control that reflects the
-live session: green **Play** → **Starting…** → red **Stop** while running →
-**Stopping…** → back to Play. It can never be in a state that disagrees with the
-game — transitional states are unclickable, and a launch or stop that stalls
-always resolves back to a usable button.
-
-## How it applies (no password prompts)
-
-Enabling a game splices the `PENGUIN_BURNER` wrapper into its Steam launch
-options. At launch the wrapper resolves the game and account, then asks the
-already-root daemon to apply that game's profile over the socket — no elevation,
-no per-game password. When the game exits, the daemon restores your standing
-profile automatically. If the daemon is unreachable, the wrapper soft-fails and
-the game launches normally; PenguinBurner never blocks a launch.
-
-Adaptive mode additionally passes the per-game target FPS, and a live change to
-a running game is re-applied in place without a relaunch.
-
-## Compatibility
-
-- The **GPU profile** (undervolt, clocks, power, adaptive tiers) is graphics-API
-  agnostic: native Linux, every Proton version, and DirectX 8–12 all work.
-- The **overlay and frame-pacing telemetry** are a Vulkan layer, so they cover
-  anything presenting through Vulkan (DXVK for DX8–11, vkd3d-proton for DX12,
-  native Vulkan). Native OpenGL titles get the profile but no overlay, and
-  adaptive mode simply holds its initial tier when there is no present-pacing
-  signal to react to.
+For games that start EA app, Ubisoft Connect or another client,
+[fully exit that launcher too](features/game-library.md#games-that-start-another-launcher)
+to return to stopped/Play after quitting the game.
 
 ## Manual launch options
 
-You do not have to use the tab — the wrapper works from any launch-options
-string:
+For manually managed Steam launch options:
 
 ```text
 PENGUIN_BURNER %command%
 ```
 
-Add the overlay flag to show the readout immediately:
+To show the overlay:
 
 ```text
 PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
-See the [overlay guide](features/overlay.md) and
-[latency / frame-generation FPS](features/latency-fg.md) for the overlay's
-sources and fallbacks.
+See [Game Library](features/game-library.md) for bulk actions and graphics-API
+compatibility, or the [overlay guide](features/overlay.md) for HUD controls.

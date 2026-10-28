@@ -24,7 +24,7 @@ from ui.features.tuning.tuning import (
     auto_uv_nvml_info_text,
     auto_uv_performance_preset_label,
     auto_uv_performance_preset_tooltip,
-    auto_uv_performance_target_default,
+    auto_uv_target_default,
     auto_uv_power_limit_default,
     auto_uv_scan_estimate_minutes,
     auto_uv_scan_estimate_text,
@@ -83,42 +83,92 @@ def test_gpu_choices_from_nvml_identities_skips_bad_rows_and_dupes() -> None:
     assert choices[1].pci_bus_id == ""
 
 
-def test_detected_gpu_choices_empty_without_nvml_identities(monkeypatch) -> None:
+def test_detected_gpu_choices_empty_without_daemon_capabilities(monkeypatch) -> None:
     monkeypatch.setattr(
-        gpu_selection.DaemonGpuClient, "discover_identities", lambda: []
+        gpu_selection.DaemonGpuClient, "discover_capabilities", lambda: []
     )
     assert gpu_selection.detected_gpu_choices() == []
 
 
-def test_detected_gpu_choices_reads_nvml_identities(monkeypatch) -> None:
+def test_detected_gpu_choices_keeps_default_power_with_gpu_identity(monkeypatch) -> None:
     monkeypatch.setattr(
         gpu_selection.DaemonGpuClient,
-        "discover_identities",
+        "discover_capabilities",
         lambda: [
             SimpleNamespace(
-                index=2,
-                name="RTX 5090",
-                pci_bus_id="00000000:03:00.0",
-                uuid="GPU-test",
+                identity=SimpleNamespace(
+                    index=2,
+                    name="RTX 5090",
+                    pci_bus_id="00000000:03:00.0",
+                    uuid="GPU-test",
+                ),
+                power=SimpleNamespace(default_w=575.0, current_w=450.0),
             )
         ],
     )
     assert gpu_selection.detected_gpu_choices() == [
-        GpuChoice(2, "RTX 5090", "00000000:03:00.0", "GPU-test")
+        GpuChoice(2, "RTX 5090", "00000000:03:00.0", "GPU-test", power_limit_default_w=575.0)
     ]
 
 
-def test_gpu_choices_with_fallback_synthesizes_when_none_detected() -> None:
+def test_gpu_choices_with_fallback_does_not_invent_an_undetected_gpu() -> None:
     choices, selected = gpu_choices_with_fallback(selected_index=2, choices=[])
     assert selected == 2
-    assert choices == [GpuChoice(index=2, name="NVIDIA GPU")]
+    assert choices == []
 
 
-def test_gpu_choices_with_fallback_appends_missing_selected() -> None:
-    detected = [GpuChoice(0, "A"), GpuChoice(1, "B")]
+def test_gpu_choices_with_fallback_selects_a_real_gpu_when_saved_index_is_missing() -> None:
+    detected = [GpuChoice(2, "A"), GpuChoice(3, "B")]
     choices, selected = gpu_choices_with_fallback(selected_index=5, choices=detected)
-    assert selected == 5
-    assert [c.index for c in choices] == [0, 1, 5]
+    assert selected == 2
+    assert choices == detected
+
+
+def test_gpu_choices_preserve_a_detected_selection() -> None:
+    detected = [GpuChoice(0, "A"), GpuChoice(1, "B")]
+    choices, selected = gpu_choices_with_fallback(selected_index=1, choices=detected)
+    assert selected == 1
+    assert choices == detected
+
+
+def test_stale_saved_gpu_does_not_create_a_phantom_or_rewrite_config(tmp_path) -> None:
+    config = tmp_path / "config.toml"
+    original = '[gpu]\nindex = 1\n[ui]\npersist_on_startup = true\n'
+    config.write_text(original)
+    gpu = GpuChoice(0, "RTX 5080", uuid="GPU-real")
+
+    choices, selected = gpu_choices_with_fallback(config_path=config, choices=[gpu])
+
+    assert choices == [gpu]
+    assert selected == 0
+    assert config.read_text() == original
+
+
+def test_scan_dialog_cannot_start_without_a_detected_gpu(qapp, monkeypatch) -> None:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    monkeypatch.setattr(gpu_selection, "detected_gpu_choices", lambda: [])
+    monkeypatch.setattr(
+        scan_tuning, "DaemonGpuClient", lambda *_: pytest.fail("Undetected GPU queried")
+    )
+
+    def inspect_dialog(dialog):
+        combo = dialog.findChild(QtWidgets.QComboBox, "gpuSelector")
+        assert combo.count() == 0
+        assert not combo.isEnabled()
+        info = dialog.findChild(QtWidgets.QLabel, "gpuNvmlInfo")
+        assert "No NVIDIA GPU detected" in info.text()
+        buttons = dialog.findChild(QtWidgets.QDialogButtonBox)
+        start = next(button for button in buttons.buttons() if button.text().startswith("Start"))
+        assert not start.isEnabled()
+        # A programmatic acceptance must not produce an invalid scan either.
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", inspect_dialog)
+    assert scan_tuning.select_scan_tuning(
+        QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, parent=None, gpu_index=1
+    ) is None
 
 
 def test_runtime_gpu_index_reads_config_and_defaults(tmp_path, monkeypatch) -> None:
@@ -175,7 +225,7 @@ def test_persist_runtime_gpu_index_never_rewrites_an_unreadable_config(
 
 def test_performance_preset_label_and_tooltip() -> None:
     assert auto_uv_performance_preset_label() == "Performance"
-    assert "4-bin tail curve" in auto_uv_performance_preset_tooltip()
+    assert "2-bin tail curve" in auto_uv_performance_preset_tooltip()
     assert "Performance Auto-OC ladder" in auto_uv_performance_preset_tooltip()
 
 
@@ -197,7 +247,7 @@ def test_power_limit_default_caps_efficiency_from_stock_tgp() -> None:
     assert default.watts == 300
 
 
-def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
+def test_power_limit_default_balanced_keeps_stock_board_power() -> None:
     default = auto_uv_power_limit_default(
         max_w=390.0,
         min_w=300.0,
@@ -205,10 +255,10 @@ def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
         gpu_name="NVIDIA GeForce RTX 5080",
         preset_id="balanced",
     )
-    # Balanced is the midpoint of the reduced efficiency cap (77.44%) and 100%.
-    assert default.pct == pytest.approx(88.72)
-    # 360 W * 88.72% = 319.4 -> 319 W.
-    assert default.watts == 319
+    # Balanced keeps the stock budget so the full scan's balanced descent
+    # stays donatable to the performance tier.
+    assert default.pct == pytest.approx(100.0)
+    assert default.watts == 360
 
 
 def test_power_limit_default_performance_keeps_stock_board_power() -> None:
@@ -269,7 +319,7 @@ def test_power_limit_default_unlisted_gpu_defaults_stock_power() -> None:
 
 
 def test_performance_target_default_for_unknown_gpu() -> None:
-    target = auto_uv_performance_target_default(gpu_name="totally-unknown-gpu-9999")
+    target = auto_uv_target_default(gpu_name="totally-unknown-gpu-9999")
     assert target.preset_matched is False
     assert target.voltage_mv is None
     assert target.gpu_name == "totally-unknown-gpu-9999"
@@ -316,35 +366,6 @@ def test_auto_uv_nvml_info_text_summarizes_long_clock_lists() -> None:
     assert text == "Supported memory clocks: 1000-6000 MHz (6 steps)"
 
 
-def test_power_limit_set_supported_uses_daemon_probe(monkeypatch) -> None:
-    from runtime import daemon_client
-
-    calls = []
-    monkeypatch.setattr(
-        daemon_client,
-        "probe_power_limit_support",
-        lambda gpu_index, **kwargs: (
-            calls.append((gpu_index, kwargs)) or {"supported": True}
-        ),
-    )
-
-    assert tuning.power_limit_set_supported(2) is True
-    assert calls == [(2, {"timeout_s": 1.0})]
-
-
-def test_power_limit_set_supported_returns_false_when_daemon_probe_fails(
-    monkeypatch,
-) -> None:
-    from runtime import daemon_client
-
-    def fail_probe(*_args, **_kwargs):
-        raise RuntimeError("daemon down")
-
-    monkeypatch.setattr(daemon_client, "probe_power_limit_support", fail_probe)
-
-    assert tuning.power_limit_set_supported(0) is False
-
-
 def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     monkeypatch,
 ) -> None:
@@ -352,22 +373,9 @@ def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     # probe must not run and support stays unknown (None).
     monkeypatch.setattr(
         tuning,
-        "_fixed_power_limit_excluded_by_gpu_identity",
-        lambda _gpu_index: False,
-    )
-    monkeypatch.setattr(
-        tuning,
         "DaemonGpuClient",
         lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("daemon down")),
     )
-    monkeypatch.setattr(
-        tuning,
-        "power_limit_set_supported",
-        lambda _gpu_index: (_ for _ in ()).throw(
-            AssertionError("setter probe should not run")
-        ),
-    )
-
     info = tuning.read_auto_uv_nvml_info(0)
 
     assert info.power_limit_set_supported is None
@@ -375,12 +383,11 @@ def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     assert info.power_limit_max_w is None
 
 
-def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
+def test_read_auto_uv_nvml_info_grays_power_controls_from_setter_probe(
     monkeypatch,
 ) -> None:
-    # A mobile GPU with a fixed board power limit reports support=False by
-    # identity and never runs the power-limit setter probe, no matter what
-    # the daemon snapshot would offer.
+    # RTX 2050 mobile GPUs can expose readable limits under a desktop-like
+    # name. The setter probe, not identity strings, must disable the controls.
     power = SimpleNamespace(
         management_enabled=True,
         current_w=43.0,
@@ -398,6 +405,8 @@ def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
         telemetry=telemetry,
     )
 
+    probe_calls: list[bool] = []
+
     class FakeDaemonClient:
         def __init__(self, _gpu_index):
             pass
@@ -405,24 +414,17 @@ def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
         def snapshot(self, *, refresh=False):
             return snapshot
 
-    monkeypatch.setattr(
-        tuning,
-        "_fixed_power_limit_excluded_by_gpu_identity",
-        lambda _gpu_index: True,
-    )
+        def power_limit_set_supported(self) -> bool:
+            probe_calls.append(True)
+            return False
+
     monkeypatch.setattr(tuning, "DaemonGpuClient", FakeDaemonClient)
-    monkeypatch.setattr(
-        tuning,
-        "power_limit_set_supported",
-        lambda _gpu_index: (_ for _ in ()).throw(
-            AssertionError("mobile setter probe must not run")
-        ),
-    )
 
     info = tuning.read_auto_uv_nvml_info(0)
 
     assert info.power_draw_w == 42.0
     assert info.power_limit_set_supported is False
+    assert probe_calls == [True]
 
 
 class _FakeController:
@@ -478,12 +480,12 @@ def test_voltage_floor_range_knee_from_curve(monkeypatch) -> None:
     assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1200)
 
 
-def test_voltage_floor_range_falls_back_without_curve(monkeypatch) -> None:
+def test_voltage_floor_range_stays_automatic_without_curve(monkeypatch) -> None:
     def fail_client(*, gpu_index):
         raise RuntimeError(f"GPU {gpu_index} unavailable")
 
     monkeypatch.setattr(tuning, "DaemonGpuClient", fail_client)
-    assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1250)
+    assert auto_uv_voltage_floor_range_mv(gpu_index=0) is None
 
 
 def test_tuning_uses_shared_runtime_gpu_index() -> None:

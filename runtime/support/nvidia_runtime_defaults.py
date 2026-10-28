@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from runtime.daemon_client import gpu_reset_defaults
 
@@ -54,6 +54,7 @@ def reset_nvidia_runtime_defaults(
         ) from exc
 
     gpu_name = str(result.get("gpu_name") or "").strip() or None
+    pci_device_id = str(result.get("pci_device_id") or "").strip() or None
     power_limits = result.get("power_limits")
     power_limits = power_limits if isinstance(power_limits, dict) else {}
     default_power_limit_w = power_limits.get("power_limit_default_w")
@@ -68,7 +69,9 @@ def reset_nvidia_runtime_defaults(
     return {
         "plan": plan,
         "gpu_name": gpu_name,
+        "pci_device_id": pci_device_id,
         "power_limits": power_limits,
         "power_limit_w": power_limit_w,
+        "power_limit_set_supported": result.get("power_limit_set_supported"),
         "source": "runtime-defaults",
     }

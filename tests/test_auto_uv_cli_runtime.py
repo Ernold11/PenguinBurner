@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -403,8 +406,10 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
     )
 
     assert prompts[0] == (
-        "Use adaptive Auto-UV instead of the single discovered profile "
-        "for runtime/autostart?",
+        (
+            "Use adaptive Auto-UV instead of the single discovered profile "
+            "for runtime/autostart?"
+        ),
         False,
     )
     assert prompts[1] == ("Start PenguinBurner runtime now with adaptive Auto-UV?", True)
@@ -467,8 +472,10 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_one_tier_exist
     )
 
     assert prompts[0] == (
-        "Use adaptive Auto-UV instead of the single discovered profile "
-        "for runtime/autostart?",
+        (
+            "Use adaptive Auto-UV instead of the single discovered profile "
+            "for runtime/autostart?"
+        ),
         False,
     )
     assert applied[0][0]["adaptive_auto_uv"] is True
@@ -518,6 +525,43 @@ def test_auto_uv_foreground_command_applies_through_daemon_without_root() -> Non
     assert applied[0][0]["profile_selector"] == "875mv-2700mhz"
     assert applied[0][1]["persist_on_startup"] is False
     assert "pkexec" not in "\n".join(logs)
+
+
+@pytest.mark.parametrize("answers, succeeded", [("y\ny\n", True), ("n\nn\n", False)])
+def test_auto_uv_post_scan_prompts_exit_to_calling_shell(answers, succeeded) -> None:
+    script = textwrap.dedent("""
+        from types import SimpleNamespace
+        from auto_uv.run.cli_runtime import (
+            AutoUvForegroundDependencies, maybe_prompt_post_scan_runtime_actions,
+        )
+        from cli.interactive_terminal_prompt import prompt_yes_no
+
+        maybe_prompt_post_scan_runtime_actions(
+            SimpleNamespace(success=True, final_voltage_mv=910, lock_clock_mhz=2955),
+            args=SimpleNamespace(json_events=False),
+            interactive=True,
+            program_file="penguin_burner.py",
+            journal_hours=4,
+            prompt_yes_no=prompt_yes_no,
+            dependencies=AutoUvForegroundDependencies(
+                read_auto_uv_profiles=lambda: [],
+                apply_runtime_intent=lambda *args, **kwargs: None,
+                log=print,
+            ),
+        )
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        input=answers,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert ("Runtime profile started successfully." in completed.stdout) is succeeded
+    assert ("Startup profile saved successfully." in completed.stdout) is succeeded
+    assert completed.stdout.endswith("Auto-UV CLI finished. Returning to the terminal.\n")
 
 
 def test_auto_uv_optional_runtime_failure_mentions_burnerd() -> None:

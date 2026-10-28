@@ -5,26 +5,31 @@ It converts the raw workload result into the strict Auto-UV stability decision.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
+from auto_uv.domain.events import AutoUvEventCallback
+from auto_uv.domain.types import (
+    AutoUvCriticalProbeError,
+    AutoUvProbeSummary,
+    FailureSeverity,
+    VfCurveCandidate,
+)
+from auto_uv.persistence.scan_checkpoint import ScanCheckpoint
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
-from .stability_decision import StabilityThresholds, evaluate_stable_run
-from .voltage_probe import probe_voltage_candidate
-from .voltage_probe import companion_duration_s_from_command
 from .config import (
     q2rtx_cuda_probe_config_for_voltage_band,
     q2rtx_only_probe_config_for_voltage_band,
     reference_discovery_q2rtx_probe_config,
 )
-from auto_uv.domain.events import AutoUvEventCallback
 from .events import (
     emit_voltage_probe_finished,
     emit_voltage_probe_started,
 )
-from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from .stability_decision import evaluate_stable_run
+from .voltage_probe import companion_duration_s_from_command, probe_voltage_candidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,11 +41,11 @@ class AutoUvProbeRunner:
     power_limit_w: int | None
     start_voltage_mv: int
     baseline_clock_mhz: float | None
-    min_performance_core_clock_pct: float
     short_probe_base_duration_s: int
     log: Callable[[str], None]
     marker_details: dict | None = None
     event_callback: AutoUvEventCallback | None = None
+    checkpoint: ScanCheckpoint | None = None
 
     def probe_default_curve(
         self,
@@ -49,7 +54,7 @@ class AutoUvProbeRunner:
         label_voltage_mv: int,
         label_clock_mhz: int,
     ) -> tuple[AutoUvProbeSummary, object]:
-        return probe_voltage_candidate(
+        return self._probe(
             reader=self.reader,
             candidate_plan=base_curve,
             candidate_voltage_mv=int(label_voltage_mv),
@@ -64,7 +69,6 @@ class AutoUvProbeRunner:
             log=self.log,
             phase_label="discover",
             power_limit_w=self.power_limit_w,
-            enforce_target_core_clock_floor=False,
             show_candidate_target=False,
             summarize_saturated_tail=True,
             use_power_limit_floor=True,
@@ -77,15 +81,19 @@ class AutoUvProbeRunner:
         self,
         candidate: VfCurveCandidate,
     ) -> VoltageProbeOutcome:
-        return self.probe_candidate(
+        outcome = self.probe_candidate(
             candidate,
             stable_history=[],
             phase_label="baseline",
-            enforce_target_core_clock_floor=False,
             summarize_saturated_tail=True,
             use_power_limit_floor=True,
             use_companion_load=False,
         )
+        if outcome.decision.severity is FailureSeverity.CRITICAL:
+            raise AutoUvCriticalProbeError(
+                f"Baseline stopped after critical probe failure: {outcome.decision.reason}"
+            )
+        return outcome
 
     def probe_sweep_candidate(
         self,
@@ -93,13 +101,11 @@ class AutoUvProbeRunner:
         *,
         stable_history: list[AutoUvProbeSummary],
         phase_label: str = "candidate",
-        enforce_target_core_clock_floor: bool = True,
     ) -> VoltageProbeOutcome:
         return self.probe_candidate(
             candidate,
             stable_history=stable_history,
             phase_label=phase_label,
-            enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
             summarize_saturated_tail=False,
             use_power_limit_floor=False,
             use_companion_load=True,
@@ -111,7 +117,6 @@ class AutoUvProbeRunner:
         *,
         stable_history: list[AutoUvProbeSummary],
         phase_label: str,
-        enforce_target_core_clock_floor: bool,
         summarize_saturated_tail: bool,
         use_power_limit_floor: bool,
         use_companion_load: bool,
@@ -131,10 +136,9 @@ class AutoUvProbeRunner:
             self.event_callback,
             candidate,
             stage=str(phase_label),
-            max_clock_drop_pct=self.max_clock_drop_pct,
             target_duration_s=probe_ui_target_duration_s(config),
         )
-        summary, result = probe_voltage_candidate(
+        summary, result = self._probe(
             reader=self.reader,
             candidate_plan=candidate.flattened_plan,
             candidate_voltage_mv=int(candidate.voltage_mv),
@@ -147,10 +151,8 @@ class AutoUvProbeRunner:
             phase_label=str(phase_label),
             initial_target_voltage_mv=int(self.start_voltage_mv),
             power_limit_w=self.power_limit_w,
-            enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
             summarize_saturated_tail=bool(summarize_saturated_tail),
             use_power_limit_floor=bool(use_power_limit_floor),
-            min_performance_core_clock_pct=float(self.min_performance_core_clock_pct),
             reset_plan=self.runtime_default_plan,
             marker_details=probe_runner_marker_details(self.marker_details, candidate),
             event_callback=self.event_callback,
@@ -160,20 +162,27 @@ class AutoUvProbeRunner:
             result,
             stable_history=stable_history,
             q2rtx_config=config,
-            enforce_core_clock_floor=bool(enforce_target_core_clock_floor),
         )
+        if self.checkpoint is not None and outcome.decision.passed:
+            self.checkpoint.note_pass(candidate, summary)
         emit_voltage_probe_finished(
             self.event_callback,
             candidate,
             outcome,
             stage=str(phase_label),
-            max_clock_drop_pct=self.max_clock_drop_pct,
         )
         return outcome
 
-    @property
-    def max_clock_drop_pct(self) -> float:
-        return max(0.0, 100.0 - float(self.min_performance_core_clock_pct))
+    def _probe(self, **kwargs):
+        if self.checkpoint is None:
+            return probe_voltage_candidate(**kwargs)
+        key = {
+            name: value for name, value in kwargs.items()
+            if name not in {"reader", "nvml_session", "log", "event_callback", "stable_history"}
+        }
+        return self.checkpoint.probe(
+            {"probe": key}, lambda: probe_voltage_candidate(**kwargs),
+        )
 
     def outcome_from_probe_result(
         self,
@@ -182,12 +191,8 @@ class AutoUvProbeRunner:
         *,
         stable_history: list[AutoUvProbeSummary],
         q2rtx_config: Q2RTXStabilityConfig | None = None,
-        enforce_core_clock_floor: bool = True,
     ) -> VoltageProbeOutcome:
         baseline_probe = stable_history[0] if stable_history else None
-        baseline_core_clock_mhz = self.baseline_clock_mhz
-        if baseline_core_clock_mhz is None and baseline_probe is not None:
-            baseline_core_clock_mhz = baseline_probe.avg_core_clock_mhz
         effective_config = q2rtx_config or self.q2rtx_config
         cuda_required = bool(getattr(effective_config, "companion_command", None))
         decision = evaluate_stable_run(
@@ -203,23 +208,11 @@ class AutoUvProbeRunner:
                 and baseline_probe.avg_power_w is not None
                 else None
             ),
-            baseline_core_clock_mhz=(
-                float(baseline_core_clock_mhz)
-                if baseline_core_clock_mhz is not None
-                else None
-            ),
             power_limit_w=self.power_limit_w,
             cuda_required=cuda_required,
             companion_result={"success": True} if cuda_required else None,
             fatal_output_found=bool(getattr(result, "fatal_output_matches", [])),
             xid_found=bool(getattr(result, "xid_messages", [])),
-            thresholds=StabilityThresholds(
-                min_core_clock_pct=(
-                    float(self.min_performance_core_clock_pct)
-                    if bool(enforce_core_clock_floor)
-                    else 0.0
-                )
-            ),
         )
         return VoltageProbeOutcome(
             decision=decision,
@@ -253,6 +246,8 @@ def probe_runner_marker_details(
     metadata = getattr(candidate, "metadata", {}) or {}
     if isinstance(metadata, dict):
         for key in (
+            "custom_target",
+            "auto_oc",
             "tail_rise_bins",
             "auto_uv_mode",
             "auto_uv_requested_mode",

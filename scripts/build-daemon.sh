@@ -2,8 +2,8 @@
 
 # Build the PenguinBurner root daemon (Rust crate in burnerd/) for local/dev
 # use. The elevated service setup copies this release build atomically to the
-# root-owned /usr/libexec/penguin-burnerd path; the unit never executes the
-# checkout copy directly.
+# root-owned /var/opt/penguin-burner/libexec/penguin-burnerd path; the unit
+# never executes the checkout copy directly.
 
 set -euo pipefail
 

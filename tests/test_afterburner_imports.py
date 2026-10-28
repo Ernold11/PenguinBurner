@@ -127,6 +127,27 @@ def _patch_afterburner_import_io(monkeypatch, tmp_path: Path) -> tuple[dict, Pat
         lambda **_kwargs: _FakeVfCurveReader(),
     )
     monkeypatch.setattr(ui_app, "archive_auto_uv_profile", archive)
+    monkeypatch.setattr(
+        ui_app.DaemonGpuClient,
+        "capabilities",
+        lambda self: type(
+            "Caps",
+            (),
+            {
+                "identity": type(
+                    "Identity",
+                    (),
+                    {
+                        "index": 0,
+                        "uuid": "GPU-import-test",
+                        "name": "RTX Import Test",
+                        "pci_bus_id": "0000:01:00.0",
+                        "pci_device_id": "0x1234",
+                    },
+                )()
+            },
+        )(),
+    )
     return captured_payload, profile_path
 
 
@@ -274,6 +295,13 @@ def test_gui_afterburner_import_persists_selected_profile(
     result = _persist_afterburner_import_selection(entry)
 
     assert result["afterburner_root"] == str(managed_root)
+    assert captured_payload["gpu_identity"] == {
+        "name": "RTX Import Test",
+        "uuid": "GPU-import-test",
+        "pci_bus_id": "0000:01:00.0",
+        "pci_device_id": "0x1234",
+        "index_at_verification": 0,
+    }
     assert result["section"] == "Profile1"
     assert result["profile_path"] == str(profile_path)
     assert (managed_root / result["device_profile_relative_path"]).is_file()

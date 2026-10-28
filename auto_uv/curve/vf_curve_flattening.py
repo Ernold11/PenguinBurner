@@ -130,7 +130,7 @@ def build_flattened_plan(
                 int(flattened_clock_mhz),
                 max(
                     int(original_target_mhz),
-                    snap_target_clock(int(round(interpolated_mhz)), rules=rules),
+                    snap_target_clock(round(interpolated_mhz), rules=rules),
                 ),
             )
         if not point.get("preserve_base") and voltage_mv < int(candidate_voltage_mv):

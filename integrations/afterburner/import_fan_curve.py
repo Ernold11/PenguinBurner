@@ -1,23 +1,21 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import math
 import os
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
 )
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+
 from .fan_curve import (
     highest_point_temperature_at_or_below_speed,
     highest_zero_speed_temperature,
     temperature_for_speed,
     validate_afterburner_fan_settings,
 )
-
 
 DEFAULT_EMERGENCY_AUTO_OVERRIDE_TEMP_C = 80.0
 DEFAULT_EMERGENCY_AUTO_RESUME_TEMP_C = 75.0
@@ -77,7 +75,7 @@ def load_config(config_path: Path):
 def query_device_fan_limits(gpu_index: int):
     try:
         fan = DaemonGpuClient(int(gpu_index)).capabilities().fan
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None, None
     minimum = fan.minimum_speed_pct
     maximum = fan.maximum_speed_pct

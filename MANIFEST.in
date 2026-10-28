@@ -17,4 +17,5 @@ recursive-include overlay/native/nvapi_shim/src *.cpp
 # `pip install` from the sdist can cargo-build the daemon into the wheel.
 include burnerd/Cargo.toml
 include burnerd/Cargo.lock
+include burnerd/build.rs
 recursive-include burnerd/src *.rs

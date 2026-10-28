@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from importlib.resources import files
 from pathlib import Path
-import re
 
 from ..constants import APP_ICON_NAME
 

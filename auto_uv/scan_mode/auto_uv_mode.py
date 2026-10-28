@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 AUTO_UV_MODE_EFFICIENCY = "efficiency"
 AUTO_UV_MODE_BALANCED = "balanced"
 AUTO_UV_MODE_PERFORMANCE = "performance"
@@ -26,9 +25,10 @@ ADAPTIVE_TIER_MODES = (
 # payload, daemon whitelist, worker CLI) derives its key list from these so
 # a new option cannot silently go missing in one layer.
 ADAPTIVE_TIER_OPTION_SUFFIXES = (
-    "max_clock_drop_pct",
     "power_limit_w",
     "memory_offset_mhz",
+    "target_voltage_mv",
+    "target_clock_mhz",
 )
 
 

@@ -1,0 +1,30 @@
+flowchart TB
+  accTitle: Auto-UV lifecycle and the next-tier loop
+  accDescr: Setup and first baseline lead to finite tier searches and automatic final verification. Ordinary tier errors continue; hard exits retain already completed profiles.
+  START([User starts one tier or all three]) --> SETUP["Prepare through the daemon<br/>Validate workloads + editable V/F<br/>Consume markers; reset stock offsets"]
+  SETUP --> RESUME{"Saved checkpoint<br/>selected for recovery?"}
+  RESUME -->|Yes| RESTORE["Restore checkpoint + power policy<br/>Skip fresh baseline / descent"]
+  RESUME -->|No| FIRST["02 · First passing baseline<br/>Stock + bounded clock retreat"]
+  FIRST -->|Pass| TIER["Prepare the current tier<br/>Efficiency → Balanced → Performance<br/>Apply policy; reuse / measure baseline"]
+  FIRST -->|No passing baseline| ERROR([No new result; report the error])
+  TIER --> UV["03 · Finite voltage descent<br/>Performance may reuse<br/>matching Balanced descent"]
+  UV --> CLOCK["04 · Tier / custom clock search<br/>Exact plans; fresh blacklist"]
+  RESTORE --> CLOCK
+  CLOCK --> FINAL["05 · Select → verify → save<br/>Retry safer tested points<br/>Pass or exhaust the finite pool"]
+  FINAL -->|Profile saved| MORE{"More requested tiers?"}
+  TIER -->|Ordinary baseline error| SKIP["Skip tier; keep completed profiles"]
+  CLOCK -->|No eligible target candidate| SKIP
+  FINAL -->|Retries exhausted| SKIP
+  SKIP --> MORE
+  MORE -->|Yes: next tier| TIER
+  MORE -->|No| ANY{"Any profile<br/>completed?"}
+  ANY -->|Yes| DONE([Finish with completed profiles])
+  ANY -->|No| ERROR
+  classDef setup fill:#19334b,stroke:#84c7f5,color:#edf5fa,stroke-width:1.5px
+  classDef work fill:#18382f,stroke:#80d9ac,color:#edf5fa,stroke-width:1.5px
+  classDef gate fill:#302c20,stroke:#e9bd76,color:#fff0d8,stroke-width:1.5px
+  classDef stop fill:#40252a,stroke:#ef9595,color:#fff0f0,stroke-width:1.5px
+  class START,RESTORE,UV,CLOCK,FINAL,DONE work
+  class SETUP,FIRST,TIER setup
+  class RESUME,SKIP,MORE,ANY gate
+  class ERROR stop

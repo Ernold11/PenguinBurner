@@ -1,28 +1,33 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Any, cast
 
-from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
-
-from auto_uv.domain.types import AutoUvProbeSummary
-from auto_uv.domain.console_log import log_phase
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.domain.console_log import log_phase
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.persistence.auto_uv_persisted_json_files import final_choice_request_path
 from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
-from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from auto_uv.persistence.unsafe_voltage_cache import adaptive_scan_payload
+from auto_uv.persistence.unsafe_voltage_blacklist_file import (
+    load_unsafe_voltage_blacklist,
+)
+from auto_uv.persistence.unsafe_voltage_cache import (
+    adaptive_scan_payload,
+    unsafe_voltage_block_reason,
+)
+from auto_uv.probes.event_payload import probe_summary_event_payload
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_ADAPTIVE,
     AUTO_UV_MODE_PERFORMANCE,
 )
 from auto_uv.shared.positive_int import positive_int
+from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
 from ui.features.auto_uv.candidate_choice import candidate_plan_from_record
-from auto_uv.probes.event_payload import probe_summary_event_payload
-from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 
 
 class CrashCacheEntries(list):
@@ -297,7 +302,7 @@ def explicit_profile_tier(payload: dict) -> str:
 
 def _int_or_none(value: object) -> int | None:
     try:
-        return int(value)
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return None
 
@@ -492,9 +497,52 @@ def probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary | No
         ),
         observed_vdroop_mv=_float_or_none(record.get("observed_vdroop_mv")),
         perf_cap_reason=str(record.get("perf_cap_reason") or "") or None,
+        hw_power_brake_samples=int(record.get("hw_power_brake_samples") or 0),
         fps_stddev=_float_or_none(record.get("fps_stddev")),
         fps_variance_pct=_float_or_none(record.get("fps_variance_pct")),
+        tested_plan=candidate_plan_from_record(record) or None,
     )
+
+
+def recovery_probe_history(
+    records: list[dict], *, selected_record: dict, profile_tier: str,
+) -> list[AutoUvProbeSummary]:
+    """Restore tested fallback curves from the already selected failed-run block."""
+    regime_fields = (
+        "configured_power_limit_w", "tail_rise_bins",
+        "base_candidate_voltage_mv", "base_lock_clock_mhz", "base_avg_core_clock_mhz",
+    )
+    selected_plan = candidate_plan_from_record(selected_record)
+    if not selected_plan:
+        return []
+    base_points = [
+        (p.get("index"), p.get("voltage_mv"), p.get("base_mhz")) for p in selected_plan
+    ]
+    unsafe = load_unsafe_voltage_blacklist()
+    history: list[AutoUvProbeSummary] = []
+    for record in records:
+        if any(record.get(field) != selected_record.get(field) for field in regime_fields):
+            continue
+        if generated_profile_tier(record) != generated_profile_tier(selected_record):
+            continue
+        try:
+            plan = candidate_plan_from_record(record)
+            if not plan or [
+                (p.get("index"), p.get("voltage_mv"), p.get("base_mhz")) for p in plan
+            ] != base_points:
+                continue
+            probe = probe_summary_from_candidate_record(record)
+        except (ValueError, TypeError, KeyError):
+            continue
+        if probe is None or unsafe_voltage_block_reason(
+            unsafe,
+            candidate_voltage_mv=probe.candidate_voltage_mv,
+            lock_clock_mhz=probe.lock_clock_mhz,
+            profile_tier=profile_tier,
+        ):
+            continue
+        append_unique_probe_summary(history, probe)
+    return history
 
 
 def base_probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary | None:
@@ -542,6 +590,9 @@ def base_probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary
         ),
         observed_vdroop_mv=_float_or_none(record.get("base_observed_vdroop_mv")),
         perf_cap_reason=str(record.get("base_perf_cap_reason") or "") or None,
+        hw_power_brake_samples=int(
+            record.get("base_hw_power_brake_samples") or 0
+        ),
         fps_stddev=_float_or_none(record.get("base_fps_stddev")),
         fps_variance_pct=_float_or_none(record.get("base_fps_variance_pct")),
     )
@@ -579,7 +630,7 @@ def replay_recovered_resume_probe_rows(
 
 def _float_or_negative_infinity(value: object) -> float:
     try:
-        return float(value)
+        return float(cast(Any, value))
     except (TypeError, ValueError):
         return float("-inf")
 
@@ -589,7 +640,7 @@ def _float_or_none(*values: object) -> float | None:
         if value in (None, ""):
             continue
         try:
-            return float(value)
+            return float(cast(Any, value))
         except (TypeError, ValueError):
             continue
     return None
