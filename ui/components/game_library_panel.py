@@ -574,21 +574,19 @@ class GameLibraryPanel:
         self.metadata_label.setWordWrap(True)
         info_column.addWidget(self.metadata_label)
         hero.addLayout(info_column, 1)
-        self.play_button = self.QtWidgets.QPushButton("Play")
-        self.play_button.setObjectName("gamePlayButton")
-        self.play_button.setProperty("playState", "idle")
-        self.play_button.clicked.connect(self._play_stop_clicked)
-        hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
-        # The fingerprint parks in the header's right corner: Play stays beside
-        # the game's info block, the badge anchors the opposite edge.
+        # The fingerprint sits beside Play, which keeps the header's corner.
         self.perf_profile_badge = GamePerfProfileBadge(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
             parent=page_widget,
         )
-        hero.addWidget(self.perf_profile_badge.caption, 0, self.QtCore.Qt.AlignVCenter)
-        hero.addWidget(self.perf_profile_badge.button, 0, self.QtCore.Qt.AlignVCenter)
+        hero.addWidget(self.perf_profile_badge.button, 0, self.QtCore.Qt.AlignTop)
+        self.play_button = self.QtWidgets.QPushButton("Play")
+        self.play_button.setObjectName("gamePlayButton")
+        self.play_button.setProperty("playState", "idle")
+        self.play_button.clicked.connect(self._play_stop_clicked)
+        hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
         self.launch_warning_label = self.QtWidgets.QLabel("")
         self.launch_warning_label.setObjectName("gameLaunchWarning")

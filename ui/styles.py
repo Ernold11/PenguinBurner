@@ -168,17 +168,11 @@ QPushButton#gamePlayButton:pressed {{
 QToolButton#gamePerfProfileBadge {{
     background: {theme.PERF_PROFILE_SURFACE};
     border: 1px solid {theme.PERF_PROFILE_BORDER};
-    border-radius: 12px;
-    padding: 4px;
+    border-radius: 8px;
+    padding: 2px;
 }}
 QToolButton#gamePerfProfileBadge:hover {{
     border-color: {theme.PERF_PROFILE_TIER_BALANCED};
-}}
-QLabel#gamePerfProfileCaption {{
-    color: {theme.PERF_PROFILE_TEXT_MUTED};
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1px;
 }}
 /* Running turns the same button into Stop, so it takes the danger colour
    rather than growing a second button beside it. */

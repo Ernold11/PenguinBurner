@@ -482,27 +482,40 @@ def test_both_launchers_land_on_one_list(qapp) -> None:
     assert any("Shadows" in label for label in labels)
 
 
-def test_every_launchers_game_carries_the_perf_profile_badge(qapp, monkeypatch) -> None:
+def test_the_perf_profile_badge_appears_once_any_launchers_game_has_telemetry(
+    qapp, monkeypatch,
+) -> None:
     from ui.components import game_perf_profile_badge
 
-    read: list[str] = []
+    recorded = {"lutris:27"}
     monkeypatch.setattr(
         game_perf_profile_badge,
         "read_frame_history_for_game",
-        lambda game_key: read.append(game_key),
+        lambda game_key: (
+            SimpleNamespace(header=SimpleNamespace(power_limit_w=0))
+            if game_key in recorded else None
+        ),
     )
+    # Recorded but still warming up: the badge shows its placeholder.
+    monkeypatch.setattr(game_perf_profile_badge, "summarize", lambda history: None)
     panel = _panel(qapp, _steam_and_lutris())
     panel.ensure_scanned()
     opened: list[tuple] = []
     panel.perf_profile_badge.on_open = lambda *args: opened.append(args)
 
-    for key, name in (("steam:620", "Portal 2"), ("lutris:27", "Shadows")):
-        panel._select_key(key)
-        # Not visible while the widget is unshown; isHidden is the explicit flag.
-        assert not panel.perf_profile_badge.button.isHidden()
-        assert read[-1] == key
-        panel.perf_profile_badge.button.click()
-        assert opened[-1] == (key, name, None)
+    # Never recorded: no empty placeholder cluttering the header.
+    panel._select_key("steam:620")
+    assert panel.perf_profile_badge.button.isHidden()
+
+    # Not visible while the widget is unshown; isHidden is the explicit flag.
+    panel._select_key("lutris:27")
+    assert not panel.perf_profile_badge.button.isHidden()
+    panel.perf_profile_badge.button.click()
+    assert opened == [("lutris:27", "Shadows", None)]
+
+    recorded.add("steam:620")
+    panel._select_key("steam:620")
+    assert not panel.perf_profile_badge.button.isHidden()
 
 
 def test_the_telemetry_switch_writes_through_the_owning_launcher(qapp) -> None:

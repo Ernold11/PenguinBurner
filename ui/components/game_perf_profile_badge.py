@@ -1,8 +1,9 @@
 """The Game Perf Profile fingerprint badge a game's details header carries.
 
 Hover or keyboard focus peeks the fingerprint; a click opens the Game Perf
-Profile tab through ``on_open``. Every launcher's games carry one: rings are
-stored under the ``<launcher>:<id>`` game key.
+Profile tab through ``on_open``. It appears only once a game has recorded
+telemetry, for every launcher alike: rings are stored under the
+``<launcher>:<id>`` game key.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from .game_perf_profile import (
     warming_text,
 )
 
-BADGE_SIZE = 64
+BADGE_SIZE = 40
 
 
 class GamePerfProfileBadge:
@@ -43,7 +44,7 @@ class GamePerfProfileBadge:
 
         self.button = QtWidgets.QToolButton()
         self.button.setObjectName("gamePerfProfileBadge")
-        self.button.setFixedSize(BADGE_SIZE + 8, BADGE_SIZE + 8)
+        self.button.setFixedSize(BADGE_SIZE + 6, BADGE_SIZE + 6)
         self.button.setIconSize(QtCore.QSize(BADGE_SIZE, BADGE_SIZE))
         self.button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.button.setVisible(False)
@@ -72,12 +73,6 @@ class GamePerfProfileBadge:
 
         self._hover_filter = _Hover(parent)
         self.button.installEventFilter(self._hover_filter)
-        # The fingerprint is unlabelled by design, so a quiet caption beside it
-        # says what the shape is, once. Uppercased to read as a key; Qt
-        # stylesheets have no text-transform.
-        self.caption = QtWidgets.QLabel("GAME PERFORMANCE PROFILE")
-        self.caption.setObjectName("gamePerfProfileCaption")
-        self.caption.setVisible(False)
 
     def _device_pixel_ratio(self) -> float:
         window = self._parent.window()
@@ -87,19 +82,23 @@ class GamePerfProfileBadge:
     def sync(
         self, game_key: str = "", *, game_name: str = "", target_fps: float | None = None
     ) -> None:
-        """Refresh for the selected game; hidden with no game selected."""
+        """Refresh for the selected game; hidden until it has recorded anything.
+
+        A game that was never recorded gets no badge: an empty placeholder on
+        every row says nothing, and the tab's empty state explains how to
+        record one.
+        """
         self._game_key = game_key if frame_history_file_stem(game_key) else ""
         self._game_name = game_name
         self._target_fps = target_fps
-        if not self._game_key:
+        history = read_frame_history_for_game(self._game_key) if self._game_key else None
+        if history is None:
             self._summary = None
             self.hide_peek()
             self.button.setVisible(False)
-            self.caption.setVisible(False)
             return
-        history = read_frame_history_for_game(self._game_key)
-        summary = summarize(history) if history is not None else None
-        self._power_limit_w = history.header.power_limit_w if history is not None else 0
+        summary = summarize(history)
+        self._power_limit_w = history.header.power_limit_w
         ratio = self._device_pixel_ratio()
         if summary is not None and summary.qualified:
             self._summary = summary
@@ -110,7 +109,9 @@ class GamePerfProfileBadge:
                 self.QtCore, self.QtGui, axes=axes, tier=summary.tier,
                 size=BADGE_SIZE, device_pixel_ratio=ratio,
             )
-            self.button.setToolTip("")
+            self.button.setToolTip(
+                wrapped_tooltip("Game Perf Profile — click to open the full view.")
+            )
         else:
             self._summary = None
             self.hide_peek()
@@ -118,17 +119,12 @@ class GamePerfProfileBadge:
                 self.QtCore, self.QtGui, axes=None, tier="",
                 size=BADGE_SIZE, device_pixel_ratio=ratio,
             )
+            minutes = summary.minutes if summary is not None else 0.0
             self.button.setToolTip(
-                wrapped_tooltip(f"Game Perf Profile — {warming_text(summary.minutes)}")
-                if summary is not None
-                else wrapped_tooltip(
-                    "No Game Perf Profile yet. Play this game with PenguinBurner "
-                    "running to record its telemetry fingerprint."
-                )
+                wrapped_tooltip(f"Game Perf Profile — {warming_text(minutes)}")
             )
         self.button.setIcon(self.QtGui.QIcon(pixmap))
         self.button.setVisible(True)
-        self.caption.setVisible(True)
 
     def _show_peek(self) -> None:
         if self._summary is None:
