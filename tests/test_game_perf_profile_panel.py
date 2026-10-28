@@ -14,6 +14,7 @@ from runtime.frame_history import (
     FRAME_HISTORY_LIVE_DIR_ENV,
     FRAME_HISTORY_SYSTEM_ARCHIVE_DIR_ENV,
     MetricsSample,
+    frame_history_file_stem,
     write_frame_history,
 )
 from ui import theme
@@ -82,9 +83,10 @@ def _write_ring(
     frametimes = []
     for index in range(seconds * 78):
         frametimes.append(30.0 if index % 50 == 49 else 12.8)  # 2% stutter spikes
+    stem = frame_history_file_stem(f"steam:{app_id}")
     target = (
-        tmp_path / "live" / f"{app_id}.ring" if live
-        else tmp_path / "arch" / f"{app_id}.ring.gz"
+        tmp_path / "live" / f"4242.{stem}.ring" if live
+        else tmp_path / "arch" / f"{stem}.ring.gz"
     )
     assert write_frame_history(
         target,
@@ -155,7 +157,7 @@ def test_panel_empty_and_missing_states(qtbot, tmp_path: Path) -> None:
         assert panel._stack.currentIndex() == 0
         panel.refresh()
         assert "in the Game Library tab" in panel.empty_label.text()
-        panel.select_app("999", game_name="Ghost Game")
+        panel.select_game("steam:999", game_name="Ghost Game")
         assert panel._stack.currentIndex() == 0
         assert "No telemetry captured for Ghost Game" in panel.empty_label.text()
     finally:
@@ -169,7 +171,7 @@ def test_panel_warming_state_under_five_minutes(qtbot, tmp_path: Path) -> None:
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("4242", game_name="INDIKA")
+        panel.select_game("steam:4242", game_name="INDIKA")
         assert panel._stack.currentIndex() == 0
         assert "Warming up" in panel.empty_label.text()
         assert "2 of 5 min" in panel.empty_label.text()
@@ -186,7 +188,7 @@ def test_panel_shows_a_live_session_before_the_qualify_gate(
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("4242", game_name="INDIKA")
+        panel.select_game("steam:4242", game_name="INDIKA")
         assert panel._stack.currentIndex() == 1  # detail, not the gate message
         assert panel.frametime_plot is not None
         meta = panel.meta_label.text()
@@ -206,7 +208,7 @@ def test_live_zoom_buys_1hz_and_the_overview_stays_at_2s(
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("4242", game_name="INDIKA")
+        panel.select_game("steam:4242", game_name="INDIKA")
         assert _timer(panel).interval() == 2000
         panel.live_toggle.setChecked(True)
         assert _timer(panel).interval() == 1000
@@ -221,7 +223,7 @@ def test_archived_session_never_buys_the_fast_tick(qtbot, tmp_path: Path) -> Non
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("4242", game_name="INDIKA")
+        panel.select_game("steam:4242", game_name="INDIKA")
         panel.live_toggle.setChecked(True)
         # Dead data cannot advance; 1 Hz would redraw the same picture.
         assert _timer(panel).interval() == 2000
@@ -234,7 +236,7 @@ def test_panel_populates_detail_from_a_qualified_ring(qtbot, tmp_path: Path) -> 
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("3764200", game_name="Resident Evil 9", target_fps=120.0)
+        panel.select_game("steam:3764200", game_name="Resident Evil 9", target_fps=120.0)
         assert panel._stack.currentIndex() == 1
         assert panel.game_title.text() == "Resident Evil 9"
         assert panel.tier_chip.text() == "PERFORMANCE"
@@ -289,7 +291,7 @@ def test_panel_latency_cell_never_shows_the_display_tail(
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("3764200", game_name="Resident Evil 9", target_fps=120.0)
+        panel.select_game("steam:3764200", game_name="Resident Evil 9", target_fps=120.0)
         assert panel._stack.currentIndex() == 1
         assert not panel._latency_cell.isVisibleTo(panel.widget)
     finally:
@@ -301,7 +303,7 @@ def test_panel_latency_cell_hidden_without_any_source(qtbot, tmp_path: Path) -> 
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("3764200", game_name="Resident Evil 9", target_fps=120.0)
+        panel.select_game("steam:3764200", game_name="Resident Evil 9", target_fps=120.0)
         assert panel._stack.currentIndex() == 1
         assert not panel._latency_cell.isVisibleTo(panel.widget)
     finally:
@@ -315,7 +317,7 @@ def test_panel_reads_archived_rings_too(qtbot, tmp_path: Path) -> None:
         FRAME_HISTORY_SYSTEM_ARCHIVE_DIR_ENV: str(tmp_path / "sys-arch"),
     }
     assert write_frame_history(
-        tmp_path / "arch" / "1089130.ring.gz",
+        tmp_path / "arch" / "steam%3A1089130.ring.gz",
         samples=[_sample(i, tier=PROFILE_TIER_EFFICIENCY) for i in range(400)],
         frametimes_ms=[12.8] * 2000,
         app_id=1089130,
@@ -325,7 +327,7 @@ def test_panel_reads_archived_rings_too(qtbot, tmp_path: Path) -> None:
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("1089130", game_name="Quake II RTX")
+        panel.select_game("steam:1089130", game_name="Quake II RTX")
         assert panel._stack.currentIndex() == 1
         assert panel.tier_chip.text() == "EFFICIENCY"
     finally:
@@ -337,7 +339,7 @@ def test_live_window_dropdown_switches_the_tail_span(qtbot, tmp_path: Path) -> N
     panel = _make_panel(env)
     qtbot.addWidget(panel.widget)
     try:
-        panel.select_app("3764200", game_name="Resident Evil 9", target_fps=120.0)
+        panel.select_game("steam:3764200", game_name="Resident Evil 9", target_fps=120.0)
         assert [
             panel.live_window_combo.itemData(i)
             for i in range(panel.live_window_combo.count())

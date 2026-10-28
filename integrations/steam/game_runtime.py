@@ -74,11 +74,7 @@ def game_runtime_profile_argv(
     if setting is None:
         return None
     argv = profile_argv(setting)
-    if argv is None:
-        return None
-    if not setting.telemetry:
-        argv.append("--no-game-telemetry")
-    return argv, steam_game_key(app_id)
+    return None if argv is None else (argv, steam_game_key(app_id))
 
 
 def apply_game_runtime_profile(

@@ -16,7 +16,7 @@ from runtime.frame_history import (
     QUALIFY_MINUTES,
     FrameHistory,
     FrameHistorySummary,
-    read_frame_history_for_app,
+    read_frame_history_for_game,
     summarize,
 )
 from ui import theme
@@ -43,8 +43,8 @@ _PERF_PROFILE_SIZE = 200
 _CONTENT_MAX_WIDTH = 1500
 
 _EMPTY_HINT = (
-    "Select a Steam game in the Game Library tab and click its Game Perf Profile badge.\n"
-    "Telemetry is recorded while a PenguinBurner-enabled Steam game runs."
+    "Select a game in the Game Library tab and click its Game Perf Profile badge.\n"
+    "Telemetry is recorded while a game's PenguinBurner profile runs."
 )
 
 
@@ -155,7 +155,7 @@ class GamePerfProfilePanel:
         self.pg: Any = pg
         # Injectable ring-directory env for tests; None reads the real dirs.
         self._history_env = history_env
-        self._app_id = ""
+        self._game_key = ""
         self._game_name = ""
         self._target_fps: float | None = None
         self._live_mode = False
@@ -472,21 +472,22 @@ class GamePerfProfilePanel:
 
     # ---------- data flow ----------
 
-    def select_app(
-        self, app_id: str, *, game_name: str = "", target_fps: float | None = None
+    def select_game(
+        self, game_key: str, *, game_name: str = "", target_fps: float | None = None
     ) -> None:
-        self._app_id = str(app_id)
-        self._game_name = game_name or str(app_id)
+        """Show one game, by the ``<launcher>:<id>`` key its rings are stored under."""
+        self._game_key = str(game_key)
+        self._game_name = game_name or str(game_key)
         self._target_fps = target_fps
         self.refresh()
 
     def refresh(self) -> None:
         if self.pg is None:
             return
-        if not self._app_id:
+        if not self._game_key:
             self._show_message(_EMPTY_HINT, warming=False)
             return
-        history = read_frame_history_for_app(self._app_id, env=self._history_env)
+        history = read_frame_history_for_game(self._game_key, env=self._history_env)
         summary = summarize(history) if history is not None else None
         if history is None or summary is None:
             self._show_message(
@@ -524,7 +525,7 @@ class GamePerfProfilePanel:
             device_pixel_ratio=self._device_pixel_ratio(),
         )
         self.empty_profile.setPixmap(pixmap)
-        self.empty_profile.setVisible(warming or not self._app_id)
+        self.empty_profile.setVisible(warming or not self._game_key)
         self._stack.setCurrentIndex(0)
 
     def _device_pixel_ratio(self) -> float:
@@ -676,7 +677,7 @@ class GamePerfProfilePanel:
         no portable occlusion signal. A Game Perf Profile tab left open behind a game
         keeps paying, which is why the tick above stays as slow as it can.
         """
-        if not self._app_id or not self.widget.isVisible():
+        if not self._game_key or not self.widget.isVisible():
             return False
         window = self.widget.window()
         return window is None or not window.isMinimized()

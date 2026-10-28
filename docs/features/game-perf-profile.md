@@ -15,11 +15,11 @@ demanding a game is, where its bottleneck lives, and how fluent its
 ## Where it appears
 
 - **Game Library tab** — a small fingerprint badge sits in the header of the
-  selected Steam game. **Hover** it for a quick peek (median and 1%-low
-  frametimes, power, bottleneck); **click** it to open the full detail.
-  Recording covers Steam games only for now; other launchers show no badge.
-  Each Steam game has a **Capture game telemetry** switch (on by default);
-  turning it off stops new capture from the next launch.
+  selected game, whichever launcher it comes from (Steam, Lutris, Heroic,
+  Faugus). **Hover** it for a quick peek (median and 1%-low frametimes, power,
+  bottleneck); **click** it to open the full detail. Each game has a
+  **Capture telemetry** switch under *In game* (on by default); turning it off
+  stops new capture from the next launch.
 - **Game Perf Profile tab** — the full view: the large fingerprint, a stat row, and a
   MangoHUD-style **frametime graph** in milliseconds (30-minute overview with
   red stutter needles, or a **LIVE 10 s** zoom at per-frame resolution).
@@ -49,11 +49,14 @@ buttery game.
 
 ## How the data is stored
 
-The daemon writes one ring file per running session under
+Recording runs while the game's per-game PenguinBurner profile is active (a
+wrapped game whose mode is not *Default*), because that is when the daemon
+watches the game. The daemon writes one ring file per running session under
 `/run/penguin-burner/frame-history/` (about 0.3–0.5 MB) and, when the game
 exits, archives the window trimmed to
-`/var/lib/penguin-burner/frame-history/<appid>.ring` — typically well under
-0.5 MB per game. Frametimes are stored log-companded at one byte per frame
+`/var/lib/penguin-burner/frame-history/<game>.ring` — typically well under
+0.5 MB per game. `<game>` is the game's `launcher:id` key with unsafe
+characters escaped, e.g. `steam%3A620.ring` or `heroic%3AFall%20Guys.ring`. Frametimes are stored log-companded at one byte per frame
 (~2 % resolution, 1–250 ms range); exact per-second p50/p99/p99.9 percentiles
 preserve the stutter tail. Only the newest window is kept — Game Perf Profile never
 accumulates lifetime history.

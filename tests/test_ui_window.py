@@ -434,7 +434,7 @@ def test_returning_to_auto_uv_keeps_plot_geometry(
 def test_show_game_perf_profile_switches_tab_and_selects_the_game(main_window) -> None:
     win = main_window
     assert win.game_library_panel.perf_profile_badge.on_open == win.show_game_perf_profile
-    win.show_game_perf_profile("3764200", game_name="Resident Evil 9", target_fps=120.0)
+    win.show_game_perf_profile("steam:3764200", game_name="Resident Evil 9", target_fps=120.0)
     assert win.tabs.currentIndex() == win.game_perf_profile_tab_index
     # No ring exists in the test environment: the tab shows its empty state
     # for the selected game rather than crashing.

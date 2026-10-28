@@ -1,11 +1,13 @@
 //! Frame-history recorder: the per-game telemetry ring behind Game Perf Profile.
 //!
 //! One ring file per watched game session on tmpfs
-//! (`/run/penguin-burner/frame-history/<pid>.ring`): a 64-byte header, a ring
-//! of 36-byte per-second metric records, and a ring of one log2-companded
+//! (`/run/penguin-burner/frame-history/<pid>.<stem>.ring`): a 64-byte header, a
+//! ring of 36-byte per-second metric records, and a ring of one log2-companded
 //! byte per rendered frame. On session end the ring is trimmed and archived
 //! durably (and world-readably) to
-//! `/var/lib/penguin-burner/frame-history/<app_id>.ring` for the GUI.
+//! `/var/lib/penguin-burner/frame-history/<stem>.ring` for the GUI. The stem is
+//! the escaped `<launcher>:<id>` game key (`ring_file_stem`), so every launcher
+//! records the same way.
 //!
 //! The module is fully self-contained — the engine, supervisor, and latency
 //! receiver each touch it through a single call (`record_metrics`,
@@ -175,6 +177,7 @@ fn pack_header(state: &HeaderState) -> [u8; HEADER_SIZE] {
 struct Recorder {
     file: File,
     path: PathBuf,
+    stem: String,
     header: HeaderState,
     started_mono: Instant,
     // Frames buffered per producer stream for the current second. A session
@@ -184,11 +187,11 @@ struct Recorder {
 }
 
 impl Recorder {
-    fn open(pid: u32, app_id: u32) -> std::io::Result<Recorder> {
+    fn open(pid: u32, stem: String, app_id: u32) -> std::io::Result<Recorder> {
         let dir = live_dir();
         fs::create_dir_all(&dir)?;
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
-        let path = dir.join(format!("{pid}.ring"));
+        let path = dir.join(format!("{pid}.{stem}.ring"));
         let file = File::create(&path)?;
         let total =
             HEADER_SIZE as u64 + u64::from(METRICS_CAP) * RECORD_SIZE as u64 + u64::from(FRAME_CAP);
@@ -216,6 +219,7 @@ impl Recorder {
         Ok(Recorder {
             file,
             path,
+            stem,
             header,
             started_mono: Instant::now(),
             sec_frametimes: std::collections::BTreeMap::new(),
@@ -339,24 +343,71 @@ impl Recorder {
     }
 }
 
-/// The numeric Steam app id the ring header stores, from the daemon's
-/// `<launcher>:<id>` game key (a bare id is accepted too). Other launchers'
-/// ids are arbitrary strings the u32 header cannot hold, so those games are
-/// not recorded.
-fn steam_app_id(game_key: &str) -> Option<u32> {
+/// Longest stem a ring file is named with; longer keys are not recorded.
+const STEM_MAX_LEN: usize = 200;
+
+/// The file stem a game's rings are stored under: the `<launcher>:<id>` game
+/// key with every byte outside `[A-Za-z0-9._-]` %XX-escaped. `:` is always
+/// escaped, so a stem is never `.`/`..` and never holds `/`. None for anything
+/// that is not a game key. Mirrors `frame_history_file_stem` in
+/// `runtime/frame_history.py`.
+fn ring_file_stem(game_key: &str) -> Option<String> {
     let key = game_key.trim();
-    let id = key.strip_prefix("steam:").unwrap_or(key);
-    id.parse::<u32>().ok().filter(|&app_id| app_id > 0)
+    let (launcher, id) = key.split_once(':')?;
+    if launcher.is_empty() || id.is_empty() {
+        return None;
+    }
+    let mut stem = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+            stem.push(char::from(byte));
+        } else {
+            stem.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    (stem.len() <= STEM_MAX_LEN).then_some(stem)
+}
+
+/// Steam's numeric app id for the informational header field, else 0.
+fn header_app_id(game_key: &str) -> u32 {
+    game_key
+        .trim()
+        .strip_prefix("steam:")
+        .and_then(|id| id.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// The stem of a live `<pid>.<stem>.ring` file name.
+fn live_ring_stem(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?;
+    let (pid, rest) = name.split_once('.')?;
+    let stem = rest.strip_suffix(".ring")?;
+    let stem_ok = !stem.is_empty()
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'%'));
+    (pid.bytes().all(|b| b.is_ascii_digit()) && !pid.is_empty() && stem_ok).then_some(stem)
 }
 
 /// Called by the supervisor once a game watch is registered. Also archives
 /// any orphaned rings a previous daemon left behind.
 pub fn session_start(pid: u32, game_key: &str) {
-    recover_orphans();
-    let Some(app_id_num) = steam_app_id(game_key) else {
+    let Some(stem) = ring_file_stem(game_key) else {
         return;
     };
-    match Recorder::open(pid, app_id_num) {
+    {
+        // A live re-apply (mode or target change) re-registers the same
+        // session; keep recording into its ring instead of truncating it.
+        let slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|recorder| recorder.header.pid == pid && recorder.stem == stem)
+        {
+            return;
+        }
+    }
+    recover_orphans();
+    match Recorder::open(pid, stem, header_app_id(game_key)) {
         Ok(recorder) => {
             let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
             *slot = Some(recorder);
@@ -413,8 +464,8 @@ pub fn record_metrics(
 }
 
 /// Called by the supervisor when the watched game's process exits. Trims the
-/// live ring into the durable per-app archive and removes it.
-pub fn session_end(pid: u32, game_key: &str) {
+/// live ring into the durable per-game archive and removes it.
+pub fn session_end(pid: u32) {
     let recorder = {
         let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
         match slot.as_ref() {
@@ -426,10 +477,10 @@ pub fn session_end(pid: u32, game_key: &str) {
         return;
     };
     ACTIVE.store(false, Ordering::Relaxed);
-    let app_id_num = steam_app_id(game_key).unwrap_or(recorder.header.app_id);
     let path = recorder.path.clone();
+    let stem = recorder.stem.clone();
     drop(recorder);
-    let _ = archive_ring_file(&path, app_id_num);
+    let _ = archive_ring_file(&path, &stem);
     let _ = fs::remove_file(&path);
 }
 
@@ -443,34 +494,24 @@ fn recover_orphans() {
         if path.extension().and_then(|e| e.to_str()) != Some("ring") {
             continue;
         }
-        let app_id = ring_app_id(&path).unwrap_or(0);
-        if app_id > 0 {
-            let _ = archive_ring_file(&path, app_id);
+        if let Some(stem) = live_ring_stem(&path) {
+            let _ = archive_ring_file(&path, stem);
         }
         let _ = fs::remove_file(&path);
     }
 }
 
-fn ring_app_id(path: &Path) -> Option<u32> {
-    let mut header = [0u8; HEADER_SIZE];
-    File::open(path).ok()?.read_exact_at(&mut header, 0).ok()?;
-    if &header[0..4] != MAGIC {
-        return None;
-    }
-    Some(u32::from_le_bytes(header[8..12].try_into().ok()?))
-}
-
 /// Rebuild a live ring as a compact archive (caps trimmed to the data) at
-/// `<archive_dir>/<app_id>.ring`, world-readable, atomically.
-fn archive_ring_file(path: &Path, app_id: u32) -> std::io::Result<()> {
+/// `<archive_dir>/<stem>.ring`, world-readable, atomically.
+fn archive_ring_file(path: &Path, stem: &str) -> std::io::Result<()> {
     let data = fs::read(path)?;
-    let Some(compact) = compact_ring(&data, app_id) else {
+    let Some(compact) = compact_ring(&data) else {
         return Ok(());
     };
     let dir = archive_dir();
     fs::create_dir_all(&dir)?;
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
-    let target = dir.join(format!("{app_id}.ring"));
+    let target = dir.join(format!("{stem}.ring"));
     let temp = tempfile::NamedTempFile::new_in(&dir)?;
     temp.as_file().write_all_at(&compact, 0)?;
     let persisted = temp.persist(&target).map_err(|e| e.error)?;
@@ -479,7 +520,7 @@ fn archive_ring_file(path: &Path, app_id: u32) -> std::io::Result<()> {
 }
 
 /// Unwrap both rings and re-lay them out with caps equal to their counts.
-fn compact_ring(data: &[u8], app_id: u32) -> Option<Vec<u8>> {
+fn compact_ring(data: &[u8]) -> Option<Vec<u8>> {
     if data.len() < HEADER_SIZE || &data[0..4] != MAGIC {
         return None;
     }
@@ -519,7 +560,6 @@ fn compact_ring(data: &[u8], app_id: u32) -> Option<Vec<u8>> {
     let mut out =
         vec![0u8; HEADER_SIZE + out_metrics_cap as usize * RECORD_SIZE + out_frame_cap as usize];
     out[..HEADER_SIZE].copy_from_slice(&data[..HEADER_SIZE]);
-    out[8..12].copy_from_slice(&app_id.to_le_bytes());
     out[26..28].copy_from_slice(&(out_metrics_cap as u16).to_le_bytes());
     out[28..30].copy_from_slice(&0u16.to_le_bytes()); // head: unwrapped layout
     out[30..32].copy_from_slice(&(metrics_count as u16).to_le_bytes());
@@ -568,13 +608,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steam_app_id_reads_the_namespaced_game_key() {
-        assert_eq!(steam_app_id("steam:1145360"), Some(1_145_360));
-        assert_eq!(steam_app_id("1145360"), Some(1_145_360));
-        assert_eq!(steam_app_id("heroic:Fortnite"), None);
-        assert_eq!(steam_app_id("lutris:27"), None);
-        assert_eq!(steam_app_id("steam:0"), None);
-        assert_eq!(steam_app_id(""), None);
+    fn every_launchers_game_key_names_a_safe_ring_file() {
+        assert_eq!(
+            ring_file_stem("steam:1145360").as_deref(),
+            Some("steam%3A1145360")
+        );
+        assert_eq!(ring_file_stem("lutris:27").as_deref(), Some("lutris%3A27"));
+        // Heroic ids are store app names; anything outside the safe set is
+        // escaped, so a path separator can never reach the file system.
+        assert_eq!(
+            ring_file_stem("heroic:Fall Guys/..").as_deref(),
+            Some("heroic%3AFall%20Guys%2F..")
+        );
+        assert_eq!(
+            ring_file_stem("faugus:ż").as_deref(),
+            Some("faugus%3A%C5%BC")
+        );
+        assert_eq!(ring_file_stem("42"), None);
+        assert_eq!(ring_file_stem(":27"), None);
+        assert_eq!(ring_file_stem("lutris:"), None);
+        assert_eq!(ring_file_stem(&format!("heroic:{}", "x".repeat(300))), None);
+        assert_eq!(header_app_id("steam:1145360"), 1_145_360);
+        assert_eq!(header_app_id("lutris:27"), 0);
+    }
+
+    #[test]
+    fn live_ring_names_parse_back_to_their_stem() {
+        let stem = |name: &str| live_ring_stem(Path::new(name)).map(str::to_string);
+        assert_eq!(
+            stem("4242.steam%3A620.ring").as_deref(),
+            Some("steam%3A620")
+        );
+        assert_eq!(stem("7.heroic%3Aa.b.ring").as_deref(), Some("heroic%3Aa.b"));
+        assert_eq!(stem("4242.ring"), None);
+        assert_eq!(stem("x.steam%3A620.ring"), None);
+        assert_eq!(stem("7.bad/name.ring"), None);
     }
 
     // Serializes env mutation across tests (the savings.rs guard pattern).
@@ -658,7 +726,7 @@ mod tests {
     #[test]
     fn session_records_and_archives_a_readable_ring() {
         let guard = pin_dir();
-        session_start(4242, "3764200");
+        session_start(4242, "steam:3764200");
         assert!(recording_active());
         for _ in 0..78 {
             record_frame(&timing_sample(12_800.0));
@@ -667,7 +735,7 @@ mod tests {
         record_metrics(&overlay_state("performance"), Some(10_251), Some(360));
         record_metrics(&overlay_state("performance"), Some(10_251), Some(360));
 
-        let live = live_dir().join("4242.ring");
+        let live = live_dir().join("4242.steam%3A3764200.ring");
         assert!(live.exists());
         let data = fs::read(&live).expect("live ring bytes");
         assert_eq!(&data[0..4], MAGIC);
@@ -689,10 +757,10 @@ mod tests {
         // Header carries the board power limit for the PWR spoke.
         assert_eq!(u16::from_le_bytes([data[18], data[19]]), 360);
 
-        session_end(4242, "3764200");
+        session_end(4242);
         assert!(!recording_active());
         assert!(!live.exists());
-        let archived = archive_dir().join("3764200.ring");
+        let archived = archive_dir().join("steam%3A3764200.ring");
         let compact = fs::read(&archived).expect("archive bytes");
         assert_eq!(&compact[0..4], MAGIC);
         // Trimmed caps: metrics_cap == count == 2, frame_cap == 79.
@@ -713,7 +781,7 @@ mod tests {
     #[test]
     fn only_the_dominant_present_stream_is_recorded() {
         let guard = pin_dir();
-        session_start(31337, "367520");
+        session_start(31337, "steam:367520");
         // The game presents 120 frames; a second swapchain (Steam overlay)
         // presents 30. Only the game's cadence must land in the ring.
         for index in 0..150 {
@@ -727,39 +795,58 @@ mod tests {
             record_frame(&map);
         }
         record_metrics(&overlay_state("performance"), None, None);
-        let data = fs::read(live_dir().join("31337.ring")).expect("ring");
+        let data = fs::read(live_dir().join("31337.steam%3A367520.ring")).expect("ring");
         let record = &data[HEADER_SIZE..HEADER_SIZE + RECORD_SIZE];
         let frame_count = u16::from_le_bytes([record[2], record[3]]);
         assert_eq!(frame_count, 120);
         let p99 = f64::from(u16::from_le_bytes([record[30], record[31]])) / 20.0;
         assert!(p99 < 10.0, "overlay frames leaked into percentiles: {p99}");
-        session_end(31337, "367520");
+        session_end(31337);
         drop(guard);
     }
 
     #[test]
     fn orphaned_rings_are_archived_on_the_next_session_start() {
         let guard = pin_dir();
-        session_start(1111, "1089130");
+        session_start(1111, "lutris:27");
         record_frame(&timing_sample(7_000.0));
         record_metrics(&overlay_state("efficiency"), None, Some(360));
         // Daemon "crashes": no session_end. The recorder slot is dropped, the
         // live ring file stays behind.
         *RECORDER.lock().unwrap_or_else(|p| p.into_inner()) = None;
         ACTIVE.store(false, Ordering::Relaxed);
-        assert!(live_dir().join("1111.ring").exists());
+        assert!(live_dir().join("1111.lutris%3A27.ring").exists());
 
-        session_start(2222, "3764200");
-        assert!(!live_dir().join("1111.ring").exists());
-        assert!(archive_dir().join("1089130.ring").exists());
-        session_end(2222, "3764200");
+        session_start(2222, "steam:3764200");
+        assert!(!live_dir().join("1111.lutris%3A27.ring").exists());
+        assert!(archive_dir().join("lutris%3A27.ring").exists());
+        session_end(2222);
+        drop(guard);
+    }
+
+    #[test]
+    fn a_live_reapply_keeps_recording_into_the_same_ring() {
+        let guard = pin_dir();
+        session_start(5, "faugus:12");
+        record_frame(&timing_sample(10_000.0));
+        record_metrics(&overlay_state("balanced"), None, None);
+        // The supervisor re-registers the same pid on a mode/target change.
+        session_start(5, "faugus:12");
+        let data = fs::read(live_dir().join("5.faugus%3A12.ring")).expect("ring");
+        assert_eq!(
+            u16::from_le_bytes([data[30], data[31]]),
+            1,
+            "ring was truncated"
+        );
+        session_end(5);
+        assert!(archive_dir().join("faugus%3A12.ring").exists());
         drop(guard);
     }
 
     #[test]
     fn frame_ring_wraps_and_metrics_survive() {
         let guard = pin_dir();
-        session_start(7, "42");
+        session_start(7, "heroic:Fall Guys");
         // Overflow one frame ring: FRAME_CAP + 100 frames in two batches.
         {
             let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
@@ -771,14 +858,14 @@ mod tests {
             record_frame(&timing_sample(10_000.0));
         }
         record_metrics(&overlay_state("balanced"), None, None);
-        let data = fs::read(live_dir().join("7.ring")).expect("ring");
+        let data = fs::read(live_dir().join("7.heroic%3AFall%20Guys.ring")).expect("ring");
         let frame_head = u32::from_le_bytes(data[36..40].try_into().unwrap());
         let frame_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
         assert_eq!(frame_head, 50);
         assert_eq!(frame_count, FRAME_CAP); // saturated at the cap
-        session_end(7, "42");
+        session_end(7);
         // A wrapped ring still archives compactly at the cap.
-        let archived = fs::read(archive_dir().join("42.ring")).expect("archive");
+        let archived = fs::read(archive_dir().join("heroic%3AFall%20Guys.ring")).expect("archive");
         let cap = u32::from_le_bytes(archived[32..36].try_into().unwrap());
         assert_eq!(cap, FRAME_CAP);
         drop(guard);

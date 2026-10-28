@@ -330,11 +330,11 @@ class MainWindow(ProfileActionsMixin):
         return self.QtGui.QIcon(pixmap)
 
     def show_game_perf_profile(
-        self, app_id: str, game_name: str = "", target_fps: float | None = None
+        self, game_key: str, game_name: str = "", target_fps: float | None = None
     ) -> None:
         """Open the Game Perf Profile tab for a game (the library badge's click path)."""
-        self.game_perf_profile_panel.select_app(
-            app_id, game_name=game_name, target_fps=target_fps
+        self.game_perf_profile_panel.select_game(
+            game_key, game_name=game_name, target_fps=target_fps
         )
         self.tabs.setCurrentIndex(self.game_perf_profile_tab_index)
 

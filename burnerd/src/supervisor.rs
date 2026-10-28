@@ -622,7 +622,7 @@ fn restore_finished_game(supervisor: &mut Supervisor) -> Result<(), String> {
         let running = watch.running(pid);
         if !running {
             // Fires exactly once per pid: archive the game's telemetry ring.
-            crate::frame_history::session_end(pid, &watch.app_id);
+            crate::frame_history::session_end(pid);
         }
         running
     });

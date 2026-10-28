@@ -1,8 +1,8 @@
 """The Game Perf Profile fingerprint badge a game's details header carries.
 
 Hover or keyboard focus peeks the fingerprint; a click opens the Game Perf
-Profile tab through ``on_open``. The badge only appears for games the daemon
-records (see ``runtime.frame_history.frame_history_app_id``).
+Profile tab through ``on_open``. Every launcher's games carry one: rings are
+stored under the ``<launcher>:<id>`` game key.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from runtime.frame_history import (
-    frame_history_app_id,
-    read_frame_history_for_app,
+    frame_history_file_stem,
+    read_frame_history_for_game,
     summarize,
 )
 
@@ -32,9 +32,9 @@ class GamePerfProfileBadge:
         self.QtGui = QtGui
         self.QtWidgets = QtWidgets
         self._parent = parent
-        #: on_open(app_id, game_name, target_fps) -- the window opens the tab.
+        #: on_open(game_key, game_name, target_fps) -- the window opens the tab.
         self.on_open: Callable[[str, str, float | None], None] | None = None
-        self._app_id = ""
+        self._game_key = ""
         self._game_name = ""
         self._target_fps: float | None = None
         self._summary = None
@@ -87,17 +87,17 @@ class GamePerfProfileBadge:
     def sync(
         self, game_key: str = "", *, game_name: str = "", target_fps: float | None = None
     ) -> None:
-        """Refresh for the selected game; hidden for games nothing records."""
-        self._app_id = frame_history_app_id(game_key)
+        """Refresh for the selected game; hidden with no game selected."""
+        self._game_key = game_key if frame_history_file_stem(game_key) else ""
         self._game_name = game_name
         self._target_fps = target_fps
-        if not self._app_id:
+        if not self._game_key:
             self._summary = None
             self.hide_peek()
             self.button.setVisible(False)
             self.caption.setVisible(False)
             return
-        history = read_frame_history_for_app(self._app_id)
+        history = read_frame_history_for_game(self._game_key)
         summary = summarize(history) if history is not None else None
         self._power_limit_w = history.header.power_limit_w if history is not None else 0
         ratio = self._device_pixel_ratio()
@@ -157,5 +157,5 @@ class GamePerfProfileBadge:
 
     def _open(self) -> None:
         self.hide_peek()
-        if self._app_id and self.on_open is not None:
-            self.on_open(self._app_id, self._game_name, self._target_fps)
+        if self._game_key and self.on_open is not None:
+            self.on_open(self._game_key, self._game_name, self._target_fps)

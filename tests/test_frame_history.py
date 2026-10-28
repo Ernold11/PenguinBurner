@@ -31,7 +31,7 @@ from runtime.frame_history import (
     pack_header,
     pack_metrics_sample,
     read_frame_history,
-    read_frame_history_for_app,
+    read_frame_history_for_game,
     summarize,
     tier_from_nibble,
     unpack_metrics_sample,
@@ -317,7 +317,7 @@ def test_dir_helpers_honor_env_overrides(tmp_path: Path) -> None:
     )
 
 
-def test_for_app_prefers_the_newest_matching_live_ring(tmp_path: Path) -> None:
+def test_for_game_prefers_the_newest_matching_live_ring(tmp_path: Path) -> None:
     live = tmp_path / "live"
     arch = tmp_path / "arch"
     env = {
@@ -325,75 +325,77 @@ def test_for_app_prefers_the_newest_matching_live_ring(tmp_path: Path) -> None:
         FRAME_HISTORY_ARCHIVE_DIR_ENV: str(arch),
     }
     write_frame_history(
-        live / "100.ring", samples=[_sample(0)], frametimes_ms=[],
-        app_id=777, started_unix=1000, metrics_cap=4, frame_cap=8,
+        live / "100.lutris%3A777.ring", samples=[_sample(0)], frametimes_ms=[],
+        started_unix=1000, metrics_cap=4, frame_cap=8,
     )
     write_frame_history(
-        live / "200.ring", samples=[_sample(0), _sample(1)], frametimes_ms=[],
-        app_id=777, started_unix=2000, metrics_cap=4, frame_cap=8,
+        live / "200.lutris%3A777.ring", samples=[_sample(0), _sample(1)], frametimes_ms=[],
+        started_unix=2000, metrics_cap=4, frame_cap=8,
     )
     write_frame_history(
-        live / "300.ring", samples=[_sample(0)], frametimes_ms=[],
-        app_id=888, started_unix=3000, metrics_cap=4, frame_cap=8,
+        live / "300.steam%3A777.ring", samples=[_sample(0)], frametimes_ms=[],
+        app_id=777, started_unix=3000, metrics_cap=4, frame_cap=8,
     )
-    found = read_frame_history_for_app("777", env=env)
+    # A key whose stem merely ends like the wanted one is a different game.
+    write_frame_history(
+        live / "400.heroic%3Ax.lutris%3A777.ring", samples=[_sample(0)], frametimes_ms=[],
+        started_unix=4000, metrics_cap=4, frame_cap=8,
+    )
+    found = read_frame_history_for_game("lutris:777", env=env)
     assert found is not None
     assert found.header.started_unix == 2000
     # A ring under /run is being written right now — the caller decides how
     # much to trust a short window on that basis.
     assert found.live is True
-    assert read_frame_history_for_app("999", env=env) is None
-    assert read_frame_history_for_app("not-a-number", env=env) is None
+    assert read_frame_history_for_game("lutris:999", env=env) is None
+    assert read_frame_history_for_game("not-a-key", env=env) is None
 
 
-def test_for_app_falls_back_to_the_archive(tmp_path: Path) -> None:
+def test_for_game_falls_back_to_the_archive(tmp_path: Path) -> None:
     env = {
         FRAME_HISTORY_LIVE_DIR_ENV: str(tmp_path / "live"),
         FRAME_HISTORY_ARCHIVE_DIR_ENV: str(tmp_path / "arch"),
     }
     write_frame_history(
-        tmp_path / "arch" / "555.ring.gz",
+        tmp_path / "arch" / "heroic%3AFall%20Guys.ring.gz",
         samples=[_sample(i) for i in range(3)],
         frametimes_ms=[8.0, 9.0],
-        app_id=555,
         metrics_cap=8,
         frame_cap=8,
     )
-    found = read_frame_history_for_app(555, env=env)
+    found = read_frame_history_for_game("heroic:Fall Guys", env=env)
     assert found is not None
-    assert found.header.app_id == 555
     assert len(found.samples) == 3
     assert found.live is False  # an archive is a finished session
 
 
-def test_archive_frame_history_stamps_app_id_and_compresses(tmp_path: Path) -> None:
-    live_ring = tmp_path / "4242.ring"
+def test_archive_frame_history_names_the_archive_by_game_key(tmp_path: Path) -> None:
+    live_ring = tmp_path / "4242.faugus%3A12.ring"
     env = {FRAME_HISTORY_ARCHIVE_DIR_ENV: str(tmp_path / "arch")}
     write_frame_history(
         live_ring,
         samples=[_sample(i) for i in range(10)],
         frametimes_ms=[12.0] * 40,
-        app_id=0,  # daemon-written rings do not know the app yet
         pid=4242,
         power_limit_w=360,
         metrics_cap=16,
         frame_cap=64,
     )
-    assert archive_frame_history(live_ring, 3764200, env=env)
-    target = tmp_path / "arch" / "3764200.ring.gz"
+    assert archive_frame_history(live_ring, "faugus:12", env=env)
+    target = tmp_path / "arch" / "faugus%3A12.ring.gz"
     assert target.exists()
     with gzip.open(target, "rb") as fh:
         assert fh.read(4) == FRAME_HISTORY_MAGIC
     archived = read_frame_history(target)
     assert archived is not None
-    assert archived.header.app_id == 3764200
     assert archived.header.pid == 4242
     assert len(archived.samples) == 10
     assert len(archived.frametimes_ms) == 40
-    assert not archive_frame_history(tmp_path / "missing.ring", 1, env=env)
+    assert not archive_frame_history(tmp_path / "missing.ring", "faugus:1", env=env)
+    assert not archive_frame_history(live_ring, "not-a-key", env=env)
 
 
-def test_for_app_reads_the_daemon_system_archive(tmp_path: Path) -> None:
+def test_for_game_reads_the_daemon_system_archive(tmp_path: Path) -> None:
     from runtime.frame_history import FRAME_HISTORY_SYSTEM_ARCHIVE_DIR_ENV
 
     env = {
@@ -403,28 +405,27 @@ def test_for_app_reads_the_daemon_system_archive(tmp_path: Path) -> None:
     }
     # An uncompressed daemon archive (the Rust side writes .ring, no gzip).
     write_frame_history(
-        tmp_path / "system" / "3764200.ring",
+        tmp_path / "system" / "steam%3A3764200.ring",
         samples=[_sample(i) for i in range(7)],
         frametimes_ms=[12.8] * 100,
         app_id=3764200,
         metrics_cap=7,
         frame_cap=100,
     )
-    found = read_frame_history_for_app(3764200, env=env)
+    found = read_frame_history_for_game("steam:3764200", env=env)
     assert found is not None
     assert found.header.app_id == 3764200
     assert len(found.samples) == 7
     # The user archive is only the last resort.
     write_frame_history(
-        tmp_path / "user" / "42.ring.gz",
+        tmp_path / "user" / "lutris%3A42.ring.gz",
         samples=[_sample(0)],
         frametimes_ms=[],
-        app_id=42,
         metrics_cap=4,
         frame_cap=8,
     )
-    fallback = read_frame_history_for_app(42, env=env)
-    assert fallback is not None and fallback.header.app_id == 42
+    fallback = read_frame_history_for_game("lutris:42", env=env)
+    assert fallback is not None and len(fallback.samples) == 1
 
 
 def test_summarize_derives_fps_from_frametimes_when_estimator_is_silent() -> None:
@@ -498,11 +499,14 @@ def test_reader_decodes_only_the_window_of_a_wrapped_ring(tmp_path: Path) -> Non
     assert len(calls) < 4096  # never walks the whole ring
 
 
-def test_only_steam_game_keys_map_to_a_recorded_app_id() -> None:
-    # The ring header stores a numeric Steam app id; other launchers' ids are
-    # arbitrary strings the daemon does not record (burnerd's steam_app_id).
-    assert frame_history.frame_history_app_id("steam:1145360") == "1145360"
-    assert frame_history.frame_history_app_id("heroic:Fortnite") == ""
-    assert frame_history.frame_history_app_id("lutris:27") == ""
-    assert frame_history.frame_history_app_id("steam:0") == ""
-    assert frame_history.frame_history_app_id("") == ""
+def test_every_launchers_game_key_names_a_safe_ring_file() -> None:
+    # Mirrors ring_file_stem in burnerd: the daemon and the GUI must agree.
+    stem = frame_history.frame_history_file_stem
+    assert stem("steam:1145360") == "steam%3A1145360"
+    assert stem("lutris:27") == "lutris%3A27"
+    assert stem("heroic:Fall Guys/..") == "heroic%3AFall%20Guys%2F.."
+    assert stem("faugus:ż") == "faugus%3A%C5%BC"
+    assert stem("42") == ""
+    assert stem(":27") == ""
+    assert stem("lutris:") == ""
+    assert stem("heroic:" + "x" * 300) == ""

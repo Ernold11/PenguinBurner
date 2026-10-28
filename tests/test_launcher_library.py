@@ -618,7 +618,6 @@ def test_steam_declares_everything_its_own_tab_used_to_offer() -> None:
     assert [field.key for field in source.fields(game)] == [
         "compat_tool",
         "launch_options",
-        "telemetry",
     ]
     assert [action.key for action in source.bulk_actions()] == [
         "enable_all",
@@ -629,24 +628,7 @@ def test_steam_declares_everything_its_own_tab_used_to_offer() -> None:
     assert {field.setter for field in source.fields(game)} == {
         "set_game_compat_tool",
         "set_raw_launch_options",
-        "set_game_telemetry",
     }
-
-
-def test_steam_telemetry_switch_reflects_the_stored_opt_out() -> None:
-    from dataclasses import replace
-    from typing import Any, cast
-
-    from integrations.launchers.library import FIELD_SWITCH, GROUP_IN_GAME
-    from integrations.steam.library_source import SteamLibrarySource
-
-    source = SteamLibrarySource(manager=cast(Any, _SteamStub()))
-    row = _row()
-    opted_out = replace(row, setting=replace(row.setting, telemetry=False))
-
-    field = _field(source, row, "telemetry")
-    assert (field.kind, field.group, field.value) == (FIELD_SWITCH, GROUP_IN_GAME, True)
-    assert _field(source, opted_out, "telemetry").value is False
 
 
 class _SteamStub:

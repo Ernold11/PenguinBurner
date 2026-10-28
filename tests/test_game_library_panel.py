@@ -482,30 +482,41 @@ def test_both_launchers_land_on_one_list(qapp) -> None:
     assert any("Shadows" in label for label in labels)
 
 
-def test_the_perf_profile_badge_shows_only_for_recorded_games(qapp, monkeypatch) -> None:
+def test_every_launchers_game_carries_the_perf_profile_badge(qapp, monkeypatch) -> None:
     from ui.components import game_perf_profile_badge
 
     read: list[str] = []
     monkeypatch.setattr(
         game_perf_profile_badge,
-        "read_frame_history_for_app",
-        lambda app_id: read.append(app_id),
+        "read_frame_history_for_game",
+        lambda game_key: read.append(game_key),
     )
     panel = _panel(qapp, _steam_and_lutris())
     panel.ensure_scanned()
     opened: list[tuple] = []
     panel.perf_profile_badge.on_open = lambda *args: opened.append(args)
 
-    panel._select_key("steam:620")
-    # Not visible while the widget is unshown; isHidden is the explicit flag.
-    assert not panel.perf_profile_badge.button.isHidden()
-    assert read and set(read) == {"620"}
-    panel.perf_profile_badge.button.click()
-    assert opened == [("620", "Portal 2", None)]
+    for key, name in (("steam:620", "Portal 2"), ("lutris:27", "Shadows")):
+        panel._select_key(key)
+        # Not visible while the widget is unshown; isHidden is the explicit flag.
+        assert not panel.perf_profile_badge.button.isHidden()
+        assert read[-1] == key
+        panel.perf_profile_badge.button.click()
+        assert opened[-1] == (key, name, None)
 
+
+def test_the_telemetry_switch_writes_through_the_owning_launcher(qapp) -> None:
+    sources = _steam_and_lutris()
+    panel = _panel(qapp, sources)
+    panel.ensure_scanned()
     panel._select_key("lutris:27")
-    assert panel.perf_profile_badge.button.isHidden()
-    assert panel.perf_profile_badge.caption.isHidden()
+    assert panel.telemetry_switch.isChecked()  # capture is on by default
+
+    panel.telemetry_switch.setChecked(False)
+    _finish_worker(qapp, panel, "_setting_thread")
+
+    lutris = next(source for source in sources if source.launcher_id == "lutris")
+    assert ("set_game_telemetry", "27", False) in lutris.manager.calls
 
 
 def test_every_row_carries_its_launcher_badge(qapp) -> None:

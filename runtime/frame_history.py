@@ -1,7 +1,10 @@
 """Frame-history ring files: the per-game telemetry window behind Game Perf Profile.
 
-`burnerd` records one ring file per running game session (keyed by pid) under
-``/run/penguin-burner/frame-history/``: a 64-byte header, a fixed-stride ring
+`burnerd` records one ring file per running game session under
+``/run/penguin-burner/frame-history/<pid>.<stem>.ring``, where the stem is the
+escaped ``<launcher>:<id>`` game key (``frame_history_file_stem``), so every
+launcher records the same way. Archives are ``<stem>.ring``. The file is a
+64-byte header, a fixed-stride ring
 of one 36-byte metrics record per second, and a ring of one log-companded byte
 per rendered frame. This module is the Python side of that format contract —
 pure pack/unpack helpers over ``bytes``, an edge reader that swallows I/O and
@@ -114,6 +117,8 @@ def nibble_from_tier(tier: str) -> int:
 @dataclass(frozen=True, slots=True)
 class FrameHistoryHeader:
     version: int
+    # Steam's numeric app id when the game key is a Steam one, else 0.
+    # Informational: a ring's game is identified by its file name.
     app_id: int
     pid: int
     gpu_index: int
@@ -491,22 +496,52 @@ def write_frame_history(
     return True
 
 
+#: Bytes a ring's file stem keeps as they are; every other byte of the UTF-8
+#: game key is %XX-escaped. Mirrors ``ring_file_stem`` in burnerd.
+_STEM_SAFE = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+_STEM_MAX_LEN = 200
+
+
+def frame_history_file_stem(game_key: str) -> str:
+    """The file stem a game's rings are stored under, or "" for a non-key.
+
+    Rings are keyed by the daemon's ``<launcher>:<id>`` game key. Escaping keeps
+    an arbitrary launcher id (a Heroic app name) one safe file name, and since
+    ``:`` is always escaped a stem is never ``.``/``..`` and never holds ``/``.
+    """
+    key = str(game_key or "").strip()
+    launcher, separator, game_id = key.partition(":")
+    if not (launcher and separator and game_id):
+        return ""
+    stem = "".join(
+        chr(byte) if byte in _STEM_SAFE else f"%{byte:02X}" for byte in key.encode()
+    )
+    return stem if len(stem) <= _STEM_MAX_LEN else ""
+
+
+def _live_ring_stem(path: Path) -> str:
+    """The stem of a live ``<pid>.<stem>.ring`` name, or "" for anything else."""
+    pid, _, rest = path.name.partition(".")
+    if not pid.isdigit() or not rest.endswith(".ring"):
+        return ""
+    return rest[: -len(".ring")]
+
+
 def archive_frame_history(
     live_path: str | Path,
-    app_id: int,
+    game_key: str,
     *,
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    """Archive a live ring per-user as ``<app_id>.ring.gz``, stamping app_id.
-
-    The daemon records app_id as 0 (it only knows the pid); the archive is
-    where the association becomes durable.
-    """
+    """Archive a live ring per-user as ``<stem>.ring.gz``."""
+    stem = frame_history_file_stem(game_key)
     history = read_frame_history(live_path)
-    if history is None or not history.samples:
+    if not stem or history is None or not history.samples:
         return False
-    header = replace(history.header, app_id=int(app_id))
-    target = frame_history_archive_dir(env) / f"{int(app_id)}.ring.gz"
+    header = history.header
+    target = frame_history_archive_dir(env) / f"{stem}.ring.gz"
     return write_frame_history(
         target,
         samples=history.samples,
@@ -524,35 +559,18 @@ def archive_frame_history(
     )
 
 
-def frame_history_app_id(game_key: str) -> str:
-    """The app id a game's rings are stored under, or "" when none are kept.
-
-    The daemon records Steam games only: the ring header holds a numeric app
-    id, and other launchers' ids are arbitrary strings. Mirrors
-    ``steam_app_id`` in ``burnerd/src/frame_history``.
-    """
-    launcher, _, game_id = str(game_key or "").strip().partition(":")
-    if launcher != "steam" or not game_id.isdigit() or int(game_id) <= 0:
-        return ""
-    return game_id
-
-
-def read_frame_history_for_app(
-    app_id: str | int,
+def read_frame_history_for_game(
+    game_key: str,
     *,
     env: Mapping[str, str] | None = None,
 ) -> FrameHistory | None:
     """The freshest history for a game: live ring, then archives.
 
-    Live rings are matched on ``header.app_id`` (the daemon stamps it at
-    session start). Fallbacks: the daemon's system archive under /var/lib,
-    then the per-user archive.
+    Live rings are ``<pid>.<stem>.ring``; the newest session wins. Fallbacks:
+    the daemon's system archive under /var/lib, then the per-user archive.
     """
-    try:
-        wanted = int(str(app_id).strip())
-    except ValueError:
-        return None
-    if wanted <= 0:
+    stem = frame_history_file_stem(game_key)
+    if not stem:
         return None
     best: FrameHistory | None = None
     try:
@@ -560,19 +578,21 @@ def read_frame_history_for_app(
     except OSError:
         candidates = []
     for candidate in candidates:
+        if _live_ring_stem(candidate) != stem:
+            continue
         history = read_frame_history(candidate)
-        if history is None or history.header.app_id != wanted:
+        if history is None:
             continue
         if best is None or history.header.started_unix >= best.header.started_unix:
             best = history
     if best is not None:
         return replace(best, live=True)
     system_dir = frame_history_system_archive_dir(env)
-    for name in (f"{wanted}.ring", f"{wanted}.ring.gz"):
+    for name in (f"{stem}.ring", f"{stem}.ring.gz"):
         history = read_frame_history(system_dir / name)
         if history is not None:
             return history
-    return read_frame_history(frame_history_archive_dir(env) / f"{wanted}.ring.gz")
+    return read_frame_history(frame_history_archive_dir(env) / f"{stem}.ring.gz")
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float:

@@ -732,6 +732,30 @@ class GameLibraryPanel:
             subtitle="Draw the PenguinBurner overlay in this game.",
             control=self.overlay_switch,
         )
+        self.telemetry_switch = make_toggle_switch(
+            QtCore=self.QtCore,
+            QtGui=self.QtGui,
+            QtWidgets=self.QtWidgets,
+            object_name="gameTelemetry",
+        )
+        self.telemetry_switch.toggled.connect(
+            lambda checked: self._on_telemetry(checked)
+        )
+        self.telemetry_switch.setToolTip(
+            wrapped_tooltip(
+                "Record a rolling 30-minute window of frametimes, clocks, power, "
+                "and the active tier while this game's profile runs. On by "
+                "default; turning it off stops new capture from the next launch."
+            )
+        )
+        preference_row(
+            QtWidgets=self.QtWidgets,
+            QtCore=self.QtCore,
+            rows_layout=ingame_rows,
+            title="Capture telemetry",
+            subtitle="Feeds this game's Game Perf Profile.",
+            control=self.telemetry_switch,
+        )
         page.addWidget(self._ingame_group)
 
         # -- group: the line the launcher actually runs ------------------------
@@ -1484,6 +1508,7 @@ class GameLibraryPanel:
             self.gpu_combo.setCurrentIndex(max(0, gpu_index))
 
             self.overlay_switch.setChecked(bool(getattr(setting, "overlay", False)))
+            self.telemetry_switch.setChecked(bool(getattr(setting, "telemetry", True)))
             self._sync_write_state(game)
             self._sync_fields(game)
 
@@ -1825,6 +1850,13 @@ class GameLibraryPanel:
             return
         self._write_async(
             self._selected_game(), "set_game_overlay", bool(overlay)
+        )
+
+    def _on_telemetry(self, telemetry: bool) -> None:
+        if self._syncing:
+            return
+        self._write_async(
+            self._selected_game(), "set_game_telemetry", bool(telemetry)
         )
 
     # -- library-wide actions -------------------------------------------------

@@ -17,9 +17,7 @@ from integrations.launchers.compatibility import (
 from integrations.launchers.desktop_icons import desktop_icon
 from integrations.launchers.library import (
     FIELD_MULTILINE,
-    FIELD_SWITCH,
     GROUP_COMMAND,
-    GROUP_IN_GAME,
     WRITE_NEEDS_SETUP,
     WRITE_READY,
     LauncherBulkAction,
@@ -149,7 +147,6 @@ class SteamLibrarySource(LiveOverlaySource):
         return (
             self._compat_tool_field(row),
             self._launch_options_field(row),
-            self._telemetry_field(row),
         )
 
     def _compat_tool_field(self, row: SteamGameRow) -> LauncherField:
@@ -195,24 +192,6 @@ class SteamLibrarySource(LiveOverlaySource):
             setter="set_raw_launch_options",
             value=str(row.launch_options or ""),
             group=GROUP_COMMAND,
-        )
-
-    @staticmethod
-    def _telemetry_field(row: SteamGameRow) -> LauncherField:
-        """Frame-history capture: the daemon only records Steam games so far."""
-        return LauncherField(
-            key="telemetry",
-            kind=FIELD_SWITCH,
-            title="Capture game telemetry",
-            subtitle="Feeds this game's Game Perf Profile",
-            setter="set_game_telemetry",
-            value=bool(row.setting.telemetry),
-            tooltip=(
-                "Record a rolling 30-minute window of frametimes, clocks, power, "
-                "and the active tier while this game runs. On by default; turning "
-                "it off stops new capture from the next launch."
-            ),
-            group=GROUP_IN_GAME,
         )
 
     def write_state(self) -> LauncherWriteState:
