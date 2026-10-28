@@ -43,8 +43,8 @@ _PERF_PROFILE_SIZE = 200
 _CONTENT_MAX_WIDTH = 1500
 
 _EMPTY_HINT = (
-    "Select a game in the Steam tab and click its Game Perf Profile badge.\n"
-    "Telemetry is recorded while a PenguinBurner-enabled game runs."
+    "Select a Steam game in the Game Library tab and click its Game Perf Profile badge.\n"
+    "Telemetry is recorded while a PenguinBurner-enabled Steam game runs."
 )
 
 

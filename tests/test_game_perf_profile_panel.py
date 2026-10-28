@@ -154,7 +154,7 @@ def test_panel_empty_and_missing_states(qtbot, tmp_path: Path) -> None:
     try:
         assert panel._stack.currentIndex() == 0
         panel.refresh()
-        assert "Select a game" in panel.empty_label.text()
+        assert "in the Game Library tab" in panel.empty_label.text()
         panel.select_app("999", game_name="Ghost Game")
         assert panel._stack.currentIndex() == 0
         assert "No telemetry captured for Ghost Game" in panel.empty_label.text()
