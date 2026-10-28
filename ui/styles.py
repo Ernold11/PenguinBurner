@@ -165,18 +165,22 @@ QPushButton#gamePlayButton:pressed {{
     background: {theme.PRIMARY_BUTTON_PRESSED_BG};
     border-color: {theme.PRIMARY_BUTTON_PRESSED_BORDER};
 }}
-QToolButton#gamePerfProfileBadge {{
-    background: {theme.PERF_PROFILE_SURFACE};
-    border: 1px solid {theme.PERF_PROFILE_BORDER};
-    border-radius: 8px;
-    padding: 2px;
+/* Play's shape, a secondary colour: it opens a view, it does not start
+   anything. Dashed and dimmed while the game has no telemetry yet. */
+QPushButton#gamePerfProfileButton {{
+    background: {theme.CONTROL_BG};
+    border-color: {theme.BORDER_STRONG};
+    color: {theme.TEXT_STRONG};
+    font-size: 14px;
+    font-weight: 700;
 }}
-QToolButton#gamePerfProfileBadge:hover {{
-    border-color: {theme.PERF_PROFILE_TIER_BALANCED};
+QPushButton#gamePerfProfileButton:hover {{
+    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
 }}
-QToolButton#gamePerfProfileBadge:disabled {{
+QPushButton#gamePerfProfileButton:disabled {{
     background: transparent;
     border-style: dashed;
+    color: {theme.TEXT_DISABLED};
 }}
 /* Running turns the same button into Stop, so it takes the danger colour
    rather than growing a second button beside it. */

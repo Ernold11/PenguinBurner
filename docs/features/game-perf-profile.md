@@ -14,10 +14,12 @@ demanding a game is, where its bottleneck lives, and how fluent its
 
 ## Where it appears
 
-- **Game Library tab** — a small fingerprint badge sits in the header of the
-  selected game, whichever launcher it comes from (Steam, Lutris, Heroic,
-  Faugus). **Hover** it for a quick peek (median and 1%-low frametimes, power,
-  bottleneck); **click** it to open the full detail. Each game has a
+- **Game Library tab** — a **Perf Profile** button sits beside **Play** in the
+  header of the selected game, whichever launcher it comes from (Steam, Lutris,
+  Heroic, Faugus). **Hover** it for a quick peek (median and 1%-low frametimes,
+  power, bottleneck); **click** it to open the full detail. Until the game has
+  recorded telemetry the button is greyed out and its tooltip says how to
+  record some. Each game has a
   **Capture telemetry** switch under *In game* (on by default); turning it off
   stops new capture from the next launch.
 - **Game Perf Profile tab** — the full view: the large fingerprint, a stat row, and a
@@ -25,7 +27,7 @@ demanding a game is, where its bottleneck lives, and how fluent its
   red stutter needles, or a **LIVE 10 s** zoom at per-frame resolution).
 
 A game needs at least **5 minutes** of captured play before it earns a
-fingerprint; until then the badge shows a dashed "warming up" outline.
+fingerprint; until then the tab shows a dashed "warming up" outline.
 
 ## The five spokes
 

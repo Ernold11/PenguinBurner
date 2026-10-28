@@ -14,7 +14,6 @@ from ui.commands import scan_command
 from ui.components.auto_uv_tier_progress import AutoUvTierProgress
 from ui.components.curve_plot import CurvePlot
 from ui.components.game_library_panel import GameLibraryPanel
-from ui.components.game_perf_profile import PerfProfileAxis, perf_profile_pixmap
 from ui.components.game_perf_profile_panel import GamePerfProfilePanel
 from ui.components.log_view import LogView
 from ui.components.overlay_config import OverlayConfigPanel
@@ -229,7 +228,7 @@ class MainWindow(ProfileActionsMixin):
         )
         self.game_perf_profile_tab_index = self.tabs.addTab(
             self.game_perf_profile_panel.widget,
-            self._game_perf_profile_tab_icon(),
+            tab_icon("tab-game-perf-profile.png"),
             "Game Perf Profile",
         )
         self.tabs.setTabsClosable(True)
@@ -312,22 +311,6 @@ class MainWindow(ProfileActionsMixin):
         # Run environment checks after the window paints, so a first launch or
         # a post-upgrade launch guides the user instead of failing later.
         self.QtCore.QTimer.singleShot(0, self._run_startup_checks)
-
-    def _game_perf_profile_tab_icon(self):
-        """The tab glyph is a fingerprint rendered at runtime — no binary
-        asset to keep in sync with the palette."""
-        glyph_axes = tuple(
-            PerfProfileAxis(code, code, "", fraction)
-            for code, fraction in (
-                ("PWR", 0.85), ("GPU", 0.9), ("FPS", 0.65),
-                ("LOW", 0.75), ("CPU", 0.6),
-            )
-        )
-        pixmap = perf_profile_pixmap(
-            self.QtCore, self.QtGui, axes=glyph_axes,
-            tier="balanced", size=18, device_pixel_ratio=2.0,
-        )
-        return self.QtGui.QIcon(pixmap)
 
     def show_game_perf_profile(
         self, game_key: str, game_name: str = "", target_fps: float | None = None

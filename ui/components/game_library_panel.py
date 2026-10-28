@@ -574,7 +574,7 @@ class GameLibraryPanel:
         self.metadata_label.setWordWrap(True)
         info_column.addWidget(self.metadata_label)
         hero.addLayout(info_column, 1)
-        # The fingerprint sits beside Play, which keeps the header's corner.
+        # Perf Profile sits beside Play, which keeps the header's corner.
         # Disabled, with a tooltip saying why, until the game has telemetry.
         self.perf_profile_badge = GamePerfProfileBadge(
             QtCore=self.QtCore,

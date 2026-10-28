@@ -1,6 +1,7 @@
-"""The Game Perf Profile fingerprint badge a game's details header carries.
+"""The Game Perf Profile button a game's details header carries beside Play.
 
-Hover or keyboard focus peeks the fingerprint; a click opens the Game Perf
+Same shape as Play in a secondary colour, with the tab's own icon. Hover or
+keyboard focus peeks the game's fingerprint; a click opens the Game Perf
 Profile tab through ``on_open``. Every launcher's games carry one (rings are
 stored under the ``<launcher>:<id>`` game key); until a game has recorded
 telemetry it is disabled and its tooltip says how to record some.
@@ -16,15 +17,11 @@ from runtime.frame_history import (
     summarize,
 )
 
+from ..assets import asset_image_path
 from ..dialogs.form_rows import wrapped_tooltip
-from .game_perf_profile import (
-    GamePerfProfilePeek,
-    perf_profile_axes,
-    perf_profile_pixmap,
-    warming_text,
-)
+from .game_perf_profile import GamePerfProfilePeek, warming_text
 
-BADGE_SIZE = 40
+ICON_SIZE = 18
 
 
 class GamePerfProfileBadge:
@@ -42,10 +39,12 @@ class GamePerfProfileBadge:
         self._power_limit_w = 0
         self._peek: GamePerfProfilePeek | None = None
 
-        self.button = QtWidgets.QToolButton()
-        self.button.setObjectName("gamePerfProfileBadge")
-        self.button.setFixedSize(BADGE_SIZE + 6, BADGE_SIZE + 6)
-        self.button.setIconSize(QtCore.QSize(BADGE_SIZE, BADGE_SIZE))
+        self.button = QtWidgets.QPushButton("Perf Profile")
+        self.button.setObjectName("gamePerfProfileButton")
+        icon_path = asset_image_path("tab-game-perf-profile.png")
+        if icon_path is not None:
+            self.button.setIcon(QtGui.QIcon(str(icon_path)))
+        self.button.setIconSize(QtCore.QSize(ICON_SIZE, ICON_SIZE))
         self.button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.button.setVisible(False)
         self.button.setAccessibleName(
@@ -92,20 +91,11 @@ class GamePerfProfileBadge:
             self.button.setVisible(False)
             return
         history = read_frame_history_for_game(self._game_key)
-        ratio = self._device_pixel_ratio()
         self.button.setVisible(True)
+        self.button.setEnabled(history is not None)
         if history is None:
             self._summary = None
             self.hide_peek()
-            self.button.setEnabled(False)
-            self.button.setIcon(
-                self.QtGui.QIcon(
-                    perf_profile_pixmap(
-                        self.QtCore, self.QtGui, axes=None, tier="",
-                        size=BADGE_SIZE, device_pixel_ratio=ratio,
-                    )
-                )
-            )
             self.button.setToolTip(
                 wrapped_tooltip(
                     "Game Perf Profile unavailable — no telemetry recorded for "
@@ -114,33 +104,20 @@ class GamePerfProfileBadge:
                 )
             )
             return
-        self.button.setEnabled(True)
         summary = summarize(history)
         self._power_limit_w = history.header.power_limit_w
         if summary is not None and summary.qualified:
             self._summary = summary
-            axes = perf_profile_axes(
-                summary, target_fps=target_fps, power_limit_w=self._power_limit_w
-            )
-            pixmap = perf_profile_pixmap(
-                self.QtCore, self.QtGui, axes=axes, tier=summary.tier,
-                size=BADGE_SIZE, device_pixel_ratio=ratio,
-            )
             self.button.setToolTip(
                 wrapped_tooltip("Game Perf Profile — click to open the full view.")
             )
         else:
             self._summary = None
             self.hide_peek()
-            pixmap = perf_profile_pixmap(
-                self.QtCore, self.QtGui, axes=None, tier="",
-                size=BADGE_SIZE, device_pixel_ratio=ratio,
-            )
             minutes = summary.minutes if summary is not None else 0.0
             self.button.setToolTip(
                 wrapped_tooltip(f"Game Perf Profile — {warming_text(minutes)}")
             )
-        self.button.setIcon(self.QtGui.QIcon(pixmap))
 
     def _show_peek(self) -> None:
         if self._summary is None:
