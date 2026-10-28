@@ -174,6 +174,10 @@ QToolButton#gamePerfProfileBadge {{
 QToolButton#gamePerfProfileBadge:hover {{
     border-color: {theme.PERF_PROFILE_TIER_BALANCED};
 }}
+QToolButton#gamePerfProfileBadge:disabled {{
+    background: transparent;
+    border-style: dashed;
+}}
 /* Running turns the same button into Stop, so it takes the danger colour
    rather than growing a second button beside it. */
 QPushButton#gamePlayButton[playState="running"] {{

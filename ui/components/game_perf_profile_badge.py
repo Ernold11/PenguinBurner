@@ -1,9 +1,9 @@
 """The Game Perf Profile fingerprint badge a game's details header carries.
 
 Hover or keyboard focus peeks the fingerprint; a click opens the Game Perf
-Profile tab through ``on_open``. It appears only once a game has recorded
-telemetry, for every launcher alike: rings are stored under the
-``<launcher>:<id>`` game key.
+Profile tab through ``on_open``. Every launcher's games carry one (rings are
+stored under the ``<launcher>:<id>`` game key); until a game has recorded
+telemetry it is disabled and its tooltip says how to record some.
 """
 
 from __future__ import annotations
@@ -82,24 +82,41 @@ class GamePerfProfileBadge:
     def sync(
         self, game_key: str = "", *, game_name: str = "", target_fps: float | None = None
     ) -> None:
-        """Refresh for the selected game; hidden until it has recorded anything.
-
-        A game that was never recorded gets no badge: an empty placeholder on
-        every row says nothing, and the tab's empty state explains how to
-        record one.
-        """
+        """Refresh for the selected game; disabled until it has recorded anything."""
         self._game_key = game_key if frame_history_file_stem(game_key) else ""
         self._game_name = game_name
         self._target_fps = target_fps
-        history = read_frame_history_for_game(self._game_key) if self._game_key else None
-        if history is None:
+        if not self._game_key:
             self._summary = None
             self.hide_peek()
             self.button.setVisible(False)
             return
+        history = read_frame_history_for_game(self._game_key)
+        ratio = self._device_pixel_ratio()
+        self.button.setVisible(True)
+        if history is None:
+            self._summary = None
+            self.hide_peek()
+            self.button.setEnabled(False)
+            self.button.setIcon(
+                self.QtGui.QIcon(
+                    perf_profile_pixmap(
+                        self.QtCore, self.QtGui, axes=None, tier="",
+                        size=BADGE_SIZE, device_pixel_ratio=ratio,
+                    )
+                )
+            )
+            self.button.setToolTip(
+                wrapped_tooltip(
+                    "Game Perf Profile unavailable — no telemetry recorded for "
+                    "this game yet. Wrap the game, pick a mode other than "
+                    "Default, keep Capture telemetry on, and play it."
+                )
+            )
+            return
+        self.button.setEnabled(True)
         summary = summarize(history)
         self._power_limit_w = history.header.power_limit_w
-        ratio = self._device_pixel_ratio()
         if summary is not None and summary.qualified:
             self._summary = summary
             axes = perf_profile_axes(
@@ -124,7 +141,6 @@ class GamePerfProfileBadge:
                 wrapped_tooltip(f"Game Perf Profile — {warming_text(minutes)}")
             )
         self.button.setIcon(self.QtGui.QIcon(pixmap))
-        self.button.setVisible(True)
 
     def _show_peek(self) -> None:
         if self._summary is None:

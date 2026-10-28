@@ -482,7 +482,7 @@ def test_both_launchers_land_on_one_list(qapp) -> None:
     assert any("Shadows" in label for label in labels)
 
 
-def test_the_perf_profile_badge_appears_once_any_launchers_game_has_telemetry(
+def test_the_perf_profile_badge_enables_once_any_launchers_game_has_telemetry(
     qapp, monkeypatch,
 ) -> None:
     from ui.components import game_perf_profile_badge
@@ -503,19 +503,24 @@ def test_the_perf_profile_badge_appears_once_any_launchers_game_has_telemetry(
     opened: list[tuple] = []
     panel.perf_profile_badge.on_open = lambda *args: opened.append(args)
 
-    # Never recorded: no empty placeholder cluttering the header.
-    panel._select_key("steam:620")
-    assert panel.perf_profile_badge.button.isHidden()
-
+    # Never recorded: the badge is there but disabled, and says why.
     # Not visible while the widget is unshown; isHidden is the explicit flag.
+    panel._select_key("steam:620")
+    badge = panel.perf_profile_badge.button
+    assert not badge.isHidden()
+    assert not badge.isEnabled()
+    assert "unavailable" in badge.toolTip()
+    badge.click()
+    assert opened == []
+
     panel._select_key("lutris:27")
-    assert not panel.perf_profile_badge.button.isHidden()
-    panel.perf_profile_badge.button.click()
+    assert not badge.isHidden() and badge.isEnabled()
+    badge.click()
     assert opened == [("lutris:27", "Shadows", None)]
 
     recorded.add("steam:620")
     panel._select_key("steam:620")
-    assert not panel.perf_profile_badge.button.isHidden()
+    assert badge.isEnabled()
 
 
 def test_the_telemetry_switch_writes_through_the_owning_launcher(qapp) -> None:
