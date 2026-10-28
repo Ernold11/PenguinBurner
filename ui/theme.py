@@ -72,7 +72,6 @@ TIER_CURVE_PERFORMANCE = "#e05c5c"
 # These are deliberately the mock's values, not the TIER_CURVE_* pastels, so
 # the shipped feature matches the design that was signed off.
 PERF_PROFILE_SURFACE = "#171716"
-PERF_PROFILE_SURFACE_ALT = "#201f1d"
 PERF_PROFILE_TEXT = "#ffffff"
 PERF_PROFILE_TEXT_DIM = "#c3c2b7"
 PERF_PROFILE_TEXT_MUTED = "#8a8880"

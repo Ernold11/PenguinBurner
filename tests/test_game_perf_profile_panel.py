@@ -267,7 +267,7 @@ def test_panel_populates_detail_from_a_qualified_ring(qtbot, tmp_path: Path) -> 
         )
         # the latency cell reports the measured marker latency
         assert panel._latency_cell.isVisibleTo(panel.widget)
-        assert panel._latency_key.text() == "LATENCY"
+        assert panel._latency_key.text() == "Latency"
         assert panel._stat_values["LATENCY"].text() == "34 ms"
         # the y axis is pinned to a zero floor
         assert panel.frametime_plot.getViewBox().viewRange()[1][0] == 0.0

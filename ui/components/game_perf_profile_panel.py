@@ -1,10 +1,10 @@
 """The Game Perf Profile tab: one game's full telemetry detail.
 
-Large fingerprint + stat row and the MangoHUD-style frametime graph
-(30-minute overview or the live last-10-seconds zoom). Reads the daemon's
-ring for the selected game and refreshes while visible. Visuals follow the
-approved mockup via the ``theme.PERF_PROFILE_*`` palette: the trace is always the
-mock's violet-blue; red is reserved for the stutter needles.
+Fingerprint card, boxed stat groups and the MangoHUD-style frametime graph
+(30-minute overview or the live last-10-seconds zoom), laid out like the
+In-Game Overlay tab. Reads the daemon's ring for the selected game and
+refreshes while visible. The trace is always the ``theme.PERF_PROFILE_*``
+violet-blue; red is reserved for the stutter needles.
 """
 
 from __future__ import annotations
@@ -26,6 +26,11 @@ from ui.components.game_perf_profile import (
     tier_color,
     tier_label,
     warming_text,
+)
+from ui.components.preference_rows import (
+    GROUP_SPACING,
+    preference_group,
+    preference_row,
 )
 
 _REFRESH_MS = 2000
@@ -172,58 +177,53 @@ class GamePerfProfilePanel:
             self._refresh_timer = None
             return
 
+        # The In-Game Overlay tab's language: page title and muted subtitle,
+        # a framed card on the left, boxed preference groups with muted values
+        # on the right. Only the trace and the stutter needles keep the
+        # PERF_PROFILE palette; everything around them uses the app theme.
         self.widget.setStyleSheet(
             f"""
             QLabel#gamePerfProfileTitle {{
-                color: {theme.PERF_PROFILE_TEXT}; font-size: 17px; font-weight: 700;
+                color: {theme.TEXT_STRONG}; font-size: 23px; font-weight: 700;
             }}
-            QLabel#gamePerfProfileMeta {{ color: {theme.PERF_PROFILE_TEXT_MUTED}; font-size: 11px;
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; }}
+            QLabel#gamePerfProfileMeta {{ color: {theme.TEXT_MUTED}; font-size: 12px; }}
             QLabel#gamePerfProfileTierChip {{
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                color: {theme.PERF_PROFILE_TEXT_DIM}; font-size: 10px; font-weight: 700;
-                border: 1px solid {theme.PERF_PROFILE_BORDER_STRONG}; border-radius: 9px;
-                padding: 2px 10px;
+                color: {theme.TEXT_MUTED}; font-size: 11px; font-weight: 700;
+                border: 1px solid {theme.BORDER_STRONG}; border-radius: 10px;
+                padding: 3px 12px;
             }}
-            QLabel#gamePerfProfileSection {{
-                color: {theme.PERF_PROFILE_TEXT_DIM}; font-size: 12px; font-weight: 700;
+            QLabel#gamePerfProfileCardTitle {{
+                color: {theme.TEXT_STRONG}; font-size: 13px; font-weight: 600;
             }}
-            QLabel#gamePerfProfileCaption {{ color: {theme.PERF_PROFILE_TEXT_MUTED}; font-size: 10px;
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; }}
-            QLabel#gamePerfProfileStatKey {{
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                color: {theme.PERF_PROFILE_TEXT_MUTED}; font-size: 10px; font-weight: 600;
-            }}
-            QLabel#gamePerfProfileStatValue {{
-                font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-                color: {theme.PERF_PROFILE_TEXT}; font-size: 13px; font-weight: 600;
-            }}
-            QLabel#gamePerfProfileEmpty {{ color: {theme.PERF_PROFILE_TEXT_MUTED}; font-size: 13px; }}
-            QFrame#gamePerfProfileFigure {{
-                background: {theme.PERF_PROFILE_SURFACE};
-                border: 1px solid {theme.PERF_PROFILE_BORDER}; border-radius: 10px;
+            QLabel#gamePerfProfileCaption {{ color: {theme.TEXT_MUTED}; font-size: 11px; }}
+            QLabel#gamePerfProfileValue {{ color: {theme.TEXT_MUTED}; font-size: 12px; }}
+            QLabel#gamePerfProfileEmpty {{ color: {theme.TEXT_MUTED}; font-size: 13px; }}
+            QFrame#gamePerfProfileCard {{
+                background: {theme.SURFACE_BG};
+                border: 1px solid {theme.BORDER_STRONG}; border-radius: 6px;
             }}
             QToolButton#gamePerfProfileLiveToggle {{
-                color: {theme.PERF_PROFILE_TEXT_DIM}; background: {theme.PERF_PROFILE_SURFACE_ALT};
-                border: 1px solid {theme.PERF_PROFILE_BORDER_STRONG}; border-radius: 5px;
-                font-size: 10px; font-weight: 700; padding: 3px 10px;
+                color: {theme.TEXT_MUTED}; background: {theme.CONTROL_BG};
+                border: 1px solid {theme.BORDER_STRONG}; border-radius: 5px;
+                font-size: 11px; font-weight: 700; padding: 3px 12px;
             }}
+            QToolButton#gamePerfProfileLiveToggle:hover {{ background: {theme.CONTROL_HOVER_BG}; }}
             QToolButton#gamePerfProfileLiveToggle:checked {{
-                color: {theme.PERF_PROFILE_TEXT};
-                border-color: {theme.PERF_PROFILE_TIER_BALANCED};
+                color: {theme.PRIMARY_BUTTON_TEXT}; background: {theme.PRIMARY_BUTTON_BG};
+                border-color: {theme.PRIMARY_BUTTON_BORDER};
             }}
             QComboBox#gamePerfProfileLiveWindow {{
-                color: {theme.PERF_PROFILE_TEXT_DIM}; background: {theme.PERF_PROFILE_SURFACE_ALT};
-                border: 1px solid {theme.PERF_PROFILE_BORDER_STRONG}; border-radius: 5px;
-                font-size: 10px; font-weight: 700; padding: 2px 8px;
+                min-height: 22px; padding: 1px 8px; font-size: 11px;
+                background: {theme.SURFACE_BG}; color: {theme.TEXT};
+                border: 1px solid {theme.BORDER_STRONG}; border-radius: 4px;
             }}
             """
         )
 
-        # A centered, width-capped column (the mock's measure): the content
-        # expands up to the cap, extra width becomes symmetric margins.
+        # A centered, width-capped column: the content expands up to the cap,
+        # extra width becomes symmetric margins.
         outer = QtWidgets.QHBoxLayout(self.widget)
-        outer.setContentsMargins(18, 14, 18, 16)
+        outer.setContentsMargins(10, 10, 10, 10)
         content = QtWidgets.QWidget()
         content.setMaximumWidth(_CONTENT_MAX_WIDTH)
         outer.addStretch(1)
@@ -231,7 +231,7 @@ class GamePerfProfilePanel:
         outer.addStretch(1)
         root = QtWidgets.QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
+        root.setSpacing(GROUP_SPACING)
 
         self._stack = QtWidgets.QStackedLayout()
         root.addLayout(self._stack)
@@ -254,62 +254,47 @@ class GamePerfProfilePanel:
         detail_page = QtWidgets.QWidget()
         detail = QtWidgets.QVBoxLayout(detail_page)
         detail.setContentsMargins(0, 0, 0, 0)
-        detail.setSpacing(10)
+        detail.setSpacing(GROUP_SPACING)
 
         header = QtWidgets.QHBoxLayout()
-        header.setSpacing(10)
+        header.setSpacing(12)
+        heading = QtWidgets.QVBoxLayout()
+        heading.setSpacing(2)
         self.game_title = QtWidgets.QLabel("")
         self.game_title.setObjectName("gamePerfProfileTitle")
-        header.addWidget(self.game_title, 0)
-        self.tier_chip = QtWidgets.QLabel("")
-        self.tier_chip.setObjectName("gamePerfProfileTierChip")
-        header.addWidget(self.tier_chip, 0)
-        header.addStretch(1)
+        heading.addWidget(self.game_title)
         self.meta_label = QtWidgets.QLabel("")
         self.meta_label.setObjectName("gamePerfProfileMeta")
-        header.addWidget(self.meta_label, 0)
+        heading.addWidget(self.meta_label)
+        header.addLayout(heading, 1)
+        self.tier_chip = QtWidgets.QLabel("")
+        self.tier_chip.setObjectName("gamePerfProfileTierChip")
+        header.addWidget(self.tier_chip, 0, QtCore.Qt.AlignmentFlag.AlignTop)
         detail.addLayout(header)
 
         top = QtWidgets.QHBoxLayout()
-        top.setSpacing(16)
-        self.profile_label = QtWidgets.QLabel("")
-        self.profile_label.setFixedSize(_PERF_PROFILE_SIZE + 30, _PERF_PROFILE_SIZE + 30)
-        self.profile_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        top.addWidget(self.profile_label, 0)
-        stats = QtWidgets.QGridLayout()
-        stats.setHorizontalSpacing(26)
-        stats.setVerticalSpacing(10)
+        top.setSpacing(GROUP_SPACING + 4)
+        top.addWidget(self._build_fingerprint_card(), 0)
         self._stat_values: dict[str, Any] = {}
-        stat_keys = (
-            "MEDIAN", "1%-LOW", "POWER", "CLOCK",
-            "GPU / CPU-THREAD", "TEMP", "FAN", "LATENCY",
-        )
-        for index, key in enumerate(stat_keys):
-            cell_widget = QtWidgets.QWidget()
-            cell = QtWidgets.QVBoxLayout(cell_widget)
-            cell.setContentsMargins(0, 0, 0, 0)
-            cell.setSpacing(1)
-            key_label = QtWidgets.QLabel(key)
-            key_label.setObjectName("gamePerfProfileStatKey")
-            value_label = QtWidgets.QLabel("")
-            value_label.setObjectName("gamePerfProfileStatValue")
-            cell.addWidget(key_label)
-            cell.addWidget(value_label)
-            stats.addWidget(cell_widget, index // 4, index % 4)
-            self._stat_values[key] = value_label
-            if key == "LATENCY":
-                # Latency has no spoke and no placeholder: the cell exists
-                # only while there is a real measurement to show.
-                self._latency_cell = cell_widget
-                self._latency_key = key_label
+        frame_rate, frame_rows = preference_group(QtWidgets=QtWidgets, heading="Frame rate")
+        self._stat_row(frame_rows, "MEDIAN", "Median")
+        self._stat_row(frame_rows, "1%-LOW", "1% low")
+        # Latency has no spoke and no placeholder: the row exists only while
+        # there is a real measurement to show.
+        self._latency_cell = self._stat_row(frame_rows, "LATENCY", "Latency")
+        self._latency_key = self._latency_cell.property("titleLabel")
         self._latency_cell.setVisible(False)
-        stats.setColumnStretch(4, 1)
-        # The mock's tab-top centers the stats against the fingerprint.
-        stats_wrap = QtWidgets.QVBoxLayout()
-        stats_wrap.addStretch(1)
-        stats_wrap.addLayout(stats)
-        stats_wrap.addStretch(1)
-        top.addLayout(stats_wrap, 1)
+        hardware, hardware_rows = preference_group(QtWidgets=QtWidgets, heading="GPU and system")
+        self._stat_row(hardware_rows, "POWER", "Power draw")
+        self._stat_row(hardware_rows, "CLOCK", "GPU clock")
+        self._stat_row(hardware_rows, "GPU / CPU-THREAD", "GPU / busiest CPU thread")
+        self._stat_row(hardware_rows, "TEMP", "GPU temperature")
+        self._stat_row(hardware_rows, "FAN", "Fan")
+        for group in (frame_rate, hardware):
+            column = QtWidgets.QVBoxLayout()
+            column.addWidget(group)
+            column.addStretch(1)
+            top.addLayout(column, 1)
         detail.addLayout(top)
 
         # The figure takes the remaining height (up to its cap) so the plot
@@ -325,23 +310,56 @@ class GamePerfProfilePanel:
 
     # ---------- figures ----------
 
-    def _figure(self, title: str, caption: str):
-        """A mock ``.figure``: header row, breathing room, plot, then the
-        muted caption under the chart — never riding the plot itself."""
+    def _stat_row(self, rows_layout, key: str, title: str):
+        value = self.QtWidgets.QLabel("")
+        value.setObjectName("gamePerfProfileValue")
+        self._stat_values[key] = value
+        return preference_row(
+            QtWidgets=self.QtWidgets, QtCore=self.QtCore, rows_layout=rows_layout,
+            title=title, control=value,
+        )
+
+    def _build_fingerprint_card(self):
+        """The overlay tab's Preview card, holding the fingerprint."""
         QtWidgets = self.QtWidgets
-        frame = QtWidgets.QFrame()
-        frame.setObjectName("gamePerfProfileFigure")
-        layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(14, 12, 14, 10)
-        layout.setSpacing(0)
+        card = QtWidgets.QFrame()
+        card.setObjectName("gamePerfProfileCard")
+        layout = QtWidgets.QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(4)
+        title = QtWidgets.QLabel("Fingerprint")
+        title.setObjectName("gamePerfProfileCardTitle")
+        layout.addWidget(title)
+        self.profile_label = QtWidgets.QLabel("")
+        self.profile_label.setFixedSize(_PERF_PROFILE_SIZE + 30, _PERF_PROFILE_SIZE + 30)
+        self.profile_label.setAlignment(self.QtCore.Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.profile_label, 0, self.QtCore.Qt.AlignmentFlag.AlignHCenter)
+        caption = QtWidgets.QLabel("Medians of the window · hover for each spoke")
+        caption.setObjectName("gamePerfProfileCaption")
+        layout.addWidget(caption)
+        return card
+
+    def _figure(self, title: str, caption: str):
+        """A preference group whose card holds a plot: overline heading with
+        the controls on its right, then the plot and a muted caption inside."""
+        QtWidgets = self.QtWidgets
+        frame = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(frame)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
         header = QtWidgets.QHBoxLayout()
-        header.setSpacing(12)
-        section = QtWidgets.QLabel(title)
-        section.setObjectName("gamePerfProfileSection")
+        header.setSpacing(8)
+        section = QtWidgets.QLabel(" ".join(title.upper()))
+        section.setObjectName("prefGroupHeading")
         header.addWidget(section, 0)
         header.addStretch(1)
-        layout.addLayout(header)
-        layout.addSpacing(10)
+        outer.addLayout(header)
+        card = QtWidgets.QFrame()
+        card.setObjectName("prefGroupCard")
+        layout = QtWidgets.QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 10)
+        layout.setSpacing(0)
+        outer.addWidget(card, 1)
         caption_label = QtWidgets.QLabel(caption)
         caption_label.setObjectName("gamePerfProfileCaption")
         caption_label.setWordWrap(True)
@@ -382,14 +400,14 @@ class GamePerfProfilePanel:
         plot.setMenuEnabled(False)
         if hasattr(pg, "setConfigOptions"):
             pg.setConfigOptions(antialias=True)
-        plot.setBackground(theme.PERF_PROFILE_SURFACE)
+        plot.setBackground(theme.CONTROL_BG)
         plot.showGrid(x=True, y=True, alpha=0.16)
         # A read-only figure: the panel owns the ranges, the user's wheel
         # must not fight the 2 s refresh.
         plot.setMouseEnabled(x=False, y=False)
         plot.hideButtons()
-        axis_pen = pg.mkPen(theme.PERF_PROFILE_AXIS, width=1)
-        text_color = theme.PERF_PROFILE_TEXT_MUTED
+        axis_pen = pg.mkPen(theme.BORDER_STRONG, width=1)
+        text_color = theme.TEXT_MUTED
         for name in ("bottom", "left"):
             axis = plot.getAxis(name)
             axis.setPen(axis_pen)
@@ -414,7 +432,7 @@ class GamePerfProfilePanel:
         QtWidgets = self.QtWidgets
         pg = self.pg
         frame, layout, header, caption = self._figure(
-            "Frametime — every frame, in milliseconds",
+            "Frametime",
             "flat & low = smooth · stutter needles yellow -> red by severity "
             "(red ~30 ms) · lines: median & 1%-low (p99)",
         )
@@ -540,8 +558,8 @@ class GamePerfProfilePanel:
         self.game_title.setText(self._game_name)
         self.tier_chip.setText(tier_label(summary.tier).upper())
         self.tier_chip.setStyleSheet(
-            f"color: {color}; border: 1px solid {color}; border-radius: 9px;"
-            "padding: 2px 10px; font-size: 10px; font-weight: 700;"
+            f"color: {color}; border: 1px solid {color}; border-radius: 10px;"
+            "padding: 3px 12px; font-size: 11px; font-weight: 700;"
         )
         self.meta_label.setText(meta_text(history, summary))
         axes = perf_profile_axes(
@@ -581,7 +599,7 @@ class GamePerfProfilePanel:
         actually measured it. The present→scanout display tail is recorded in
         the ring but never displayed — a bare scanout time reads as garbage."""
         if summary.latency_ms > 0:
-            self._latency_key.setText("LATENCY")
+            self._latency_key.setText("Latency")
             self._stat_values["LATENCY"].setText(f"{summary.latency_ms:.0f} ms")
             self._latency_cell.setVisible(True)
         else:
@@ -599,7 +617,7 @@ class GamePerfProfilePanel:
             bar_width = window_s * 0.003
             x_range = (-window_s - window_s * 0.03, window_s * 0.01)
             self.frametime_plot.setLabel(
-                "bottom", "seconds ago", color=theme.PERF_PROFILE_TEXT_MUTED
+                "bottom", "seconds ago", color=theme.TEXT_MUTED
             )
         else:
             xs, values, maxes = densify_frametimes(history.frametimes_ms)
@@ -611,7 +629,7 @@ class GamePerfProfilePanel:
             # edges instead of floating in autorange padding.
             x_range = (xs[0] - span * 0.01, span * 0.01) if xs else (-1.0, 0.0)
             self.frametime_plot.setLabel(
-                "bottom", "minutes ago", color=theme.PERF_PROFILE_TEXT_MUTED
+                "bottom", "minutes ago", color=theme.TEXT_MUTED
             )
         # The mock's y-ceiling, rounded to a nice number so the top tick and
         # the range end coincide; spikes keep their height, extremes clamp.
