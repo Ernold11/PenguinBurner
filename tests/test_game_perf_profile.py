@@ -90,6 +90,7 @@ def test_tier_colors_use_the_mock_palette() -> None:
 
 def test_warming_text_names_the_gate() -> None:
     assert "5 min" in warming_text(2.4)
+    assert "4 of 5 min" in warming_text(4.6)
 
 
 def _alpha_pixels(pixmap) -> int:

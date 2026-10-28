@@ -11,7 +11,7 @@ mod cpu;
 mod fan;
 mod frametime;
 mod guard;
-mod latency_rx;
+pub(crate) mod latency_rx;
 mod logfmt;
 mod resume;
 mod runtime_spec;

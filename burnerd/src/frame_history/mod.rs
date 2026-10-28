@@ -25,6 +25,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::profile::latency_rx::{BASE_FRAME_MARKER_PRIORITY, NVAPI_MARKER_SOURCE};
 use crate::profile::telemetry::OverlayState;
 
 pub const FRAME_HISTORY_DIR: &str = "/run/penguin-burner/frame-history";
@@ -180,10 +181,11 @@ struct Recorder {
     stem: String,
     header: HeaderState,
     started_mono: Instant,
-    // Frames buffered per producer stream for the current second. A session
-    // can carry more than one present stream (the game plus e.g. the Steam
-    // overlay swapchain); only the dominant stream is the game's cadence.
-    sec_frametimes: std::collections::BTreeMap<String, Vec<f64>>,
+    // Frames buffered per producer stream for the current second, keyed by
+    // (cadence rank, stream). One session sends several timing streams at
+    // once (raw presents, each base-frame marker, the NVAPI bridge) and can
+    // carry extra swapchains (Steam overlay); exactly one becomes the cadence.
+    sec_frametimes: std::collections::BTreeMap<(u8, String), Vec<f64>>,
 }
 
 impl Recorder {
@@ -226,9 +228,9 @@ impl Recorder {
         })
     }
 
-    fn push_frame(&mut self, stream: String, frametime_ms: f64) {
+    fn push_frame(&mut self, rank: u8, stream: String, frametime_ms: f64) {
         self.sec_frametimes
-            .entry(stream)
+            .entry((rank, stream))
             .or_default()
             .push(frametime_ms);
     }
@@ -257,11 +259,14 @@ impl Recorder {
         mem_clock_mhz: Option<u32>,
         power_limit_w: Option<i64>,
     ) -> std::io::Result<()> {
-        // Keep only the dominant stream's frames for this second; ties break
+        // Keep one stream for this second: the best-ranked cadence that
+        // reported, and within it the dominant stream; ties break
         // deterministically by key so equal-rate streams don't interleave.
         let buckets = std::mem::take(&mut self.sec_frametimes);
+        let best_rank = buckets.keys().next().map(|(rank, _)| *rank);
         let mut frametimes = buckets
             .into_iter()
+            .filter(|((rank, _), _)| Some(*rank) == best_rank)
             .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(&a.0)))
             .map(|(_, frames)| frames)
             .unwrap_or_default();
@@ -421,23 +426,47 @@ pub fn session_start(pid: u32, game_key: &str) {
     }
 }
 
-/// Called by the latency receiver for every timing datagram. Prefers the
-/// base-frame (pre-frame-gen) frametime; falls back to the raw present.
+/// Cadence rank of a timing datagram, lower is better, in the overlay meter's
+/// order: the NVAPI SIMULATION_START cadence, the native base-frame markers
+/// by priority, any other base-frame marker, then the raw (post-frame-gen)
+/// present. Returns the rank, the marker name, and the frametime in µs.
+fn frame_cadence(sample: &serde_json::Map<String, Value>) -> Option<(u8, &str, f64)> {
+    let marker = sample
+        .get("marker_name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if let Some(us) = sample
+        .get("base_frame_frametime_us")
+        .and_then(Value::as_f64)
+    {
+        let nvapi = sample.get("source").and_then(Value::as_str) == Some(NVAPI_MARKER_SOURCE);
+        let rank = if nvapi && marker == "simulation-start" {
+            0
+        } else {
+            BASE_FRAME_MARKER_PRIORITY
+                .iter()
+                .position(|name| *name == marker)
+                .map_or(4, |index| index as u8 + 1)
+        };
+        return Some((rank, marker, us));
+    }
+    let us = sample.get("present_frametime_us").and_then(Value::as_f64)?;
+    Some((5, "", us))
+}
+
+/// Called by the latency receiver for every timing datagram. Each datagram is
+/// buffered under its cadence stream; `flush_second` keeps exactly one.
 pub fn record_frame(sample: &serde_json::Map<String, Value>) {
     if !recording_active() {
         return;
     }
-    let frametime_us = sample
-        .get("base_frame_frametime_us")
-        .and_then(Value::as_f64)
-        .or_else(|| sample.get("present_frametime_us").and_then(Value::as_f64));
-    let Some(frametime_us) = frametime_us else {
+    let Some((rank, marker, frametime_us)) = frame_cadence(sample) else {
         return;
     };
     if !(frametime_us.is_finite()) || frametime_us <= 0.0 {
         return;
     }
-    let stream = sample
+    let session = sample
         .get("session_id")
         .or_else(|| sample.get("pid"))
         .map(|value| match value {
@@ -447,7 +476,7 @@ pub fn record_frame(sample: &serde_json::Map<String, Value>) {
         .unwrap_or_default();
     let mut slot = RECORDER.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(recorder) = slot.as_mut() {
-        recorder.push_frame(stream, frametime_us / 1000.0);
+        recorder.push_frame(rank, format!("{session}/{marker}"), frametime_us / 1000.0);
     }
 }
 
@@ -802,6 +831,57 @@ mod tests {
         let p99 = f64::from(u16::from_le_bytes([record[30], record[31]])) / 20.0;
         assert!(p99 < 10.0, "overlay frames leaked into percentiles: {p99}");
         session_end(31337);
+        drop(guard);
+    }
+
+    #[test]
+    fn one_cadence_is_recorded_when_a_session_sends_several_streams() {
+        let guard = pin_dir();
+        session_start(4040, "lutris:27");
+        // Frame generation at 47 base fps: 94 raw presents plus two native
+        // base-frame markers per base frame, all from one session (the AC
+        // Shadows capture). Interleaving them recorded ~190 frames a second.
+        let marker = |name: &str, us: f64| {
+            let mut map = timing_sample(us);
+            map.insert("session_id".into(), Value::from("acs"));
+            map.insert("marker_name".into(), Value::from(name));
+            map
+        };
+        for index in 0..94 {
+            let mut present = serde_json::Map::new();
+            present.insert("type".into(), Value::from("timing"));
+            present.insert("session_id".into(), Value::from("acs"));
+            present.insert("present_frametime_us".into(), Value::from(10_600.0));
+            record_frame(&present);
+            if index % 2 == 0 {
+                record_frame(&marker("rendersubmit-start", 21_300.0));
+                record_frame(&marker("present-start", 21_200.0));
+            }
+        }
+        record_metrics(&overlay_state("performance"), None, None);
+        // The NVAPI SIMULATION_START cadence outranks the native markers.
+        for _ in 0..47 {
+            record_frame(&marker("present-start", 21_200.0));
+            let mut sim = marker("simulation-start", 21_000.0);
+            sim.insert("source".into(), Value::from(NVAPI_MARKER_SOURCE));
+            record_frame(&sim);
+        }
+        record_metrics(&overlay_state("performance"), None, None);
+
+        let data = fs::read(live_dir().join("4040.lutris%3A27.ring")).expect("ring");
+        let second = |index: usize| {
+            let record = &data[HEADER_SIZE + index * RECORD_SIZE..][..RECORD_SIZE];
+            let frames = u16::from_le_bytes([record[2], record[3]]);
+            let p50 = f64::from(u16::from_le_bytes([record[28], record[29]])) / 20.0;
+            (frames, p50)
+        };
+        let (frames, p50) = second(0);
+        assert_eq!(frames, 47);
+        assert!((p50 - 21.2).abs() < 0.5, "present-start cadence, got {p50}");
+        let (frames, p50) = second(1);
+        assert_eq!(frames, 47);
+        assert!((p50 - 21.0).abs() < 0.5, "nvapi cadence, got {p50}");
+        session_end(4040);
         drop(guard);
     }
 

@@ -67,7 +67,8 @@ def tier_label(tier: str) -> str:
 
 
 def warming_text(minutes: float) -> str:
-    return f"Warming up · {minutes:.0f} of {QUALIFY_MINUTES:.0f} min captured"
+    # Floor, not round: 4.6 min must not read "5 of 5" while the gate is shut.
+    return f"Warming up · {int(minutes)} of {QUALIFY_MINUTES:.0f} min captured"
 
 
 def perf_profile_axes(
