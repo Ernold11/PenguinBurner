@@ -87,3 +87,8 @@ PERF_PROFILE_STUTTER = "#e05656"
 # Graduated stutter severity: needles lerp mild -> PERF_PROFILE_STUTTER; red is only
 # for genuinely laggy frames (>= ~30 ms).
 PERF_PROFILE_STUTTER_MILD = "#e8c258"
+# Fingerprint vertex dots: inside or outside the spoke's "fine" band. GPU
+# load has no band and keeps the neutral dot.
+PERF_PROFILE_POINT_GOOD = "#55d27a"
+PERF_PROFILE_POINT_OUTSIDE = "#f0b84c"
+PERF_PROFILE_POINT_NEUTRAL = "#c3c2b7"

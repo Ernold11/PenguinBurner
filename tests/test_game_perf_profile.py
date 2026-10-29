@@ -13,7 +13,11 @@ from runtime.frame_history import (
 )
 from ui import theme
 from ui.components.game_perf_profile import (
+    AXIS_HIGHER_IS_BETTER,
+    AXIS_LOWER_IS_CHEAPER,
     GamePerfProfilePeek,
+    axis_label_lines,
+    axis_point_color,
     perf_profile_axes,
     perf_profile_pixmap,
     tier_color,
@@ -79,6 +83,48 @@ def test_perf_profile_axes_fallbacks_and_clamping() -> None:
     assert "LAT" not in axes
 
 
+def test_perf_profile_axes_carry_reading_direction_and_fine_band() -> None:
+    axes = {a.code: a for a in perf_profile_axes(_summary(), target_fps=120.0, power_limit_w=360)}
+    # Experience spokes read outward, cost spokes inward; GPU load has no
+    # single good reading, so it carries neither.
+    assert axes["FPS"].direction == AXIS_HIGHER_IS_BETTER
+    assert axes["LOW"].direction == AXIS_HIGHER_IS_BETTER
+    assert axes["PWR"].direction == AXIS_LOWER_IS_CHEAPER
+    assert axes["CPU"].direction == AXIS_LOWER_IS_CHEAPER
+    assert axes["GPU"].direction == ""
+    assert axes["GPU"].good_band is None
+    assert axes["FPS"].caption == "FPS ↑"
+    assert axes["PWR"].caption == "PWR ↓"
+    assert axes["GPU"].caption == "GPU"
+
+
+def test_perf_profile_fine_band_membership_drives_point_color() -> None:
+    # A capped 60 fps game with stutter: on target, cheap, but uneven.
+    capped = _summary(median_fps=59.0, low_fps=42.0, power_w=116, gpu=77, cpu=19)
+    axes = {a.code: a for a in perf_profile_axes(capped, target_fps=None, power_limit_w=0)}
+    assert axes["FPS"].in_good_band is True
+    assert axes["PWR"].in_good_band is True
+    assert axes["CPU"].in_good_band is True
+    assert axes["LOW"].in_good_band is False
+    assert axes["GPU"].in_good_band is None
+    assert axis_point_color(axes["FPS"]) == theme.PERF_PROFILE_POINT_GOOD
+    assert axis_point_color(axes["LOW"]) == theme.PERF_PROFILE_POINT_OUTSIDE
+    assert axis_point_color(axes["GPU"]) == theme.PERF_PROFILE_POINT_NEUTRAL
+
+    # A CPU-bound title misses its target and pins its hottest thread.
+    cpu_bound = _summary(median_fps=48.0, low_fps=40.0, gpu=62, cpu=97)
+    axes = {a.code: a for a in perf_profile_axes(cpu_bound, target_fps=60.0, power_limit_w=360)}
+    assert axes["FPS"].in_good_band is False
+    assert axes["CPU"].in_good_band is False
+
+
+def test_axis_label_lines_add_the_percentage_only_when_detailed() -> None:
+    axes = {a.code: a for a in perf_profile_axes(_summary(), target_fps=120.0, power_limit_w=360)}
+    assert axis_label_lines(axes["LOW"], detailed=False) == ("LOW ↑",)
+    assert axis_label_lines(axes["LOW"], detailed=True) == ("LOW ↑", "74%")
+    assert axis_label_lines(axes["GPU"], detailed=True) == ("GPU", "92%")
+
+
 def test_tier_colors_use_the_mock_palette() -> None:
     assert tier_color(PROFILE_TIER_BALANCED) == theme.PERF_PROFILE_TIER_BALANCED == "#3987e5"
     assert tier_color(PROFILE_TIER_PERFORMANCE) == "#d95926"
@@ -121,6 +167,20 @@ def test_perf_profile_pixmap_renders_fingerprint_and_warming_states(qapp) -> Non
         device_pixel_ratio=2.0,
     )
     assert labeled.width() == 400  # hi-dpi backing store
+    # The labeled variant colors vertex dots by fine-band membership.
+    image = labeled.toImage()
+    good = QtGui.QColor(theme.PERF_PROFILE_POINT_GOOD)
+    assert any(
+        image.pixelColor(x, y).green() > 150
+        and abs(image.pixelColor(x, y).red() - good.red()) < 40
+        and image.pixelColor(x, y).blue() < 160
+        for x in range(0, image.width(), 2)
+        for y in range(0, image.height(), 2)
+    )
+    peek_size = perf_profile_pixmap(
+        QtCore, QtGui, axes=axes, tier=PROFILE_TIER_BALANCED, size=124, labels=True
+    )
+    assert not peek_size.isNull()
     warming = perf_profile_pixmap(QtCore, QtGui, axes=None, tier=PROFILE_TIER_NONE, size=40)
     badge_ink = _alpha_pixels(badge)
     warming_ink = _alpha_pixels(warming)

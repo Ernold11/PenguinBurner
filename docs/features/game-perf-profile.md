@@ -31,13 +31,21 @@ fingerprint; until then the tab shows a dashed "warming up" outline.
 
 ## The five spokes
 
-| Spoke | Meaning | Normalized against |
-| --- | --- | --- |
-| **PWR** | median board power | the card's power limit |
-| **GPU** | median GPU load | 100 % |
-| **CPU** | median hottest-thread load | 100 % |
-| **FPS** | median rendered FPS | the game's target FPS |
-| **LOW** | 1%-low ÷ median (consistency) | 1.0 |
+| Spoke | Meaning | Normalized against | Reads | Fine band |
+| --- | --- | --- | --- | --- |
+| **PWR** | median board power | the card's power limit | ↓ lower is cheaper | under 60 % |
+| **GPU** | median GPU load | 100 % | — | none |
+| **CPU** | median hottest-thread load | 100 % | ↓ lower is cheaper | under 80 % |
+| **FPS** | median rendered FPS | the game's target FPS | ↑ higher is better | 95 % of target or more |
+| **LOW** | 1%-low ÷ median (consistency) | 1.0 | ↑ higher is better | 85 % or more |
+
+In the large fingerprint each vertex dot is green when the value sits inside
+its spoke's fine band and amber outside it. The rings
+mark 25, 50, 75 and 100 % of the spoke scale and sit exactly where those values
+land. FPS and LOW belong at the outer ring; PWR and CPU are costs, so closer to
+the center means more headroom. GPU load has no band: high load is a
+bottleneck when FPS misses its target and simply full use when it does not, so
+its dot stays neutral.
 
 Latency has no spoke: it is not reliably measurable for games without Reflex
 markers, so it never shapes the fingerprint. When marker latency exists it

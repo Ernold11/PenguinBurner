@@ -45,6 +45,25 @@ _FILL_ALPHA_LABELED = 72
 _FILL_ALPHA_BADGE = 77
 _POINT_FLOOR = 0.1
 
+# The labeled radar mixes "more is better" spokes (FPS, LOW) with cost spokes
+# (PWR, CPU), so each spoke carries the band that reads as fine; its vertex
+# dot shows whether the value sits inside that band. The bounds
+# are spoke fractions: FPS within 5% of target, 1%-low at 85%+ of the median,
+# power under 60% of the board limit, the hottest CPU thread under 80%. GPU
+# load has no band: high load is a bottleneck or full use depending on FPS.
+_GOOD_FPS = (0.95, 1.0)
+_GOOD_LOW = (0.85, 1.0)
+_GOOD_PWR = (0.0, 0.6)
+_GOOD_CPU = (0.0, 0.8)
+_RING_FRACTIONS = (0.25, 0.5, 0.75, 1.0)
+# Below this pixmap size the value line and ring numbers would crowd the
+# spokes (the 124 px hover peek); codes and arrows still fit.
+_DETAIL_LABEL_MIN_SIZE = 160
+
+AXIS_HIGHER_IS_BETTER = "higher"
+AXIS_LOWER_IS_CHEAPER = "lower"
+_DIRECTION_ARROWS = {AXIS_HIGHER_IS_BETTER: "↑", AXIS_LOWER_IS_CHEAPER: "↓"}
+
 
 @dataclass(frozen=True, slots=True)
 class PerfProfileAxis:
@@ -52,10 +71,31 @@ class PerfProfileAxis:
     label: str
     text: str
     fraction: float
+    direction: str = ""
+    good_band: tuple[float, float] | None = None
+
+    @property
+    def caption(self) -> str:
+        """Spoke label: the code plus its reading direction, if it has one."""
+        arrow = _DIRECTION_ARROWS.get(self.direction)
+        return f"{self.code} {arrow}" if arrow else self.code
+
+    @property
+    def in_good_band(self) -> bool | None:
+        """Whether the value sits in the spoke's fine band; None without one."""
+        if self.good_band is None:
+            return None
+        low, high = self.good_band
+        return low <= self.fraction <= high
 
 
 def _clamp(fraction: float) -> float:
     return min(1.0, max(0.0, fraction))
+
+
+def _spoke_reach(radius: float, fraction: float) -> float:
+    """Distance from the center for a spoke fraction, shared by points and rings."""
+    return radius * (_POINT_FLOOR + (1 - _POINT_FLOOR) * _clamp(fraction))
 
 
 def tier_color(tier: str) -> str:
@@ -94,6 +134,8 @@ def perf_profile_axes(
             "Power draw",
             f"{summary.median_power_w} W",
             _clamp(summary.median_power_w / power_limit),
+            AXIS_LOWER_IS_CHEAPER,
+            _GOOD_PWR,
         ),
         PerfProfileAxis(
             "GPU",
@@ -106,25 +148,31 @@ def perf_profile_axes(
             "Median FPS",
             f"{median_fps:.0f} fps",
             _clamp(median_fps / target),
+            AXIS_HIGHER_IS_BETTER,
+            _GOOD_FPS,
         ),
         PerfProfileAxis(
             "LOW",
             "Fluency floor",
             f"{low_ratio:.0%} of median",
             _clamp(low_ratio),
+            AXIS_HIGHER_IS_BETTER,
+            _GOOD_LOW,
         ),
         PerfProfileAxis(
             "CPU",
             "CPU hot thread",
             f"{summary.cpu_peak_thread_pct}%",
             _clamp(summary.cpu_peak_thread_pct / 100.0),
+            AXIS_LOWER_IS_CHEAPER,
+            _GOOD_CPU,
         ),
     )
 
 
 def _vertex(center: float, radius: float, index: int, count: int, fraction: float):
     angle = -math.pi / 2 + (index / count) * 2 * math.pi
-    reach = radius * (_POINT_FLOOR + (1 - _POINT_FLOOR) * _clamp(fraction))
+    reach = _spoke_reach(radius, fraction)
     return (
         center + math.cos(angle) * reach,
         center + math.sin(angle) * reach,
@@ -146,6 +194,33 @@ def _label_font(QtGui, size: int, *, compact: bool):
     return font
 
 
+def axis_label_lines(axis: PerfProfileAxis, *, detailed: bool) -> tuple[str, ...]:
+    """Spoke label text: caption, plus the spoke percentage when there is room."""
+    if not detailed:
+        return (axis.caption,)
+    return (axis.caption, f"{round(axis.fraction * 100)}%")
+
+
+def axis_point_color(axis: PerfProfileAxis) -> str:
+    """Vertex dot color: inside the fine band, outside it, or no band at all."""
+    inside = axis.in_good_band
+    if inside is None:
+        return theme.PERF_PROFILE_POINT_NEUTRAL
+    return theme.PERF_PROFILE_POINT_GOOD if inside else theme.PERF_PROFILE_POINT_OUTSIDE
+
+
+def _draw_text_block(QtCore, painter, metrics, lines, *, center_x, center_y, size):
+    """Draw centered lines around a point, clamped so no size clips them."""
+    line_height = metrics.height()
+    top = center_y - line_height * len(lines) / 2
+    top = min(max(top, 0.0), size - line_height * len(lines))
+    for row, line in enumerate(lines):
+        width = metrics.horizontalAdvance(line)
+        text_x = min(max(center_x - width / 2, 0.0), size - width)
+        baseline = top + row * line_height + metrics.ascent()
+        painter.drawText(QtCore.QPointF(text_x, baseline), line)
+
+
 def perf_profile_pixmap(
     QtCore,
     QtGui,
@@ -159,10 +234,12 @@ def perf_profile_pixmap(
     """Render the fingerprint (or the dashed warming placeholder) to a pixmap.
 
     ``axes=None`` draws the warming-up state. ``labels=True`` is the large
-    variant with rings, spokes, axis codes, and vertex dots; the badge is the
-    bare shape — at miniature sizes the silhouette is the information. The
-    labeled radius is computed from the label band's real font metrics so
-    every code always lands inside the pixmap, at any size.
+    variant: rings at 25/50/75/100% of the spoke scale, captions with reading
+    direction, and vertex dots colored by whether the value sits in the
+    spoke's fine band. The badge is the bare shape — at miniature sizes
+    the silhouette is the information. The labeled radius is computed from the
+    label band's real font metrics so every caption always lands inside the
+    pixmap, at any size.
     """
     ratio = max(1.0, float(device_pixel_ratio))
     pixmap = QtGui.QPixmap(round(size * ratio), round(size * ratio))
@@ -172,13 +249,15 @@ def perf_profile_pixmap(
     try:
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         center = size / 2
+        detailed = labels and size >= _DETAIL_LABEL_MIN_SIZE
+        label_rows = 2 if detailed else 1
         if labels:
             font = _label_font(QtGui, size, compact=False)
             painter.setFont(font)
             metrics = QtGui.QFontMetricsF(font)
             # Room for a vertex dot on the outer ring, so it never meets its code.
             gap = max(2.0, size * 0.02) + _dot_radius(size)
-            radius = size / 2 - (metrics.height() + gap)
+            radius = size / 2 - (metrics.height() * label_rows + gap)
         else:
             metrics = None
             gap = 0.0
@@ -201,43 +280,42 @@ def perf_profile_pixmap(
 
         painter.setPen(grid_pen)
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        ring_fractions = (0.33, 0.66, 1.0) if labels else (1.0,)
+        # Rings sit where those spoke values land, floor included, so a vertex
+        # on a ring really is at that percentage.
+        ring_fractions = _RING_FRACTIONS if labels else (1.0,)
         for fraction in ring_fractions:
-            painter.drawEllipse(
-                QtCore.QPointF(center, center), radius * fraction, radius * fraction
-            )
+            reach = _spoke_reach(radius, fraction)
+            painter.drawEllipse(QtCore.QPointF(center, center), reach, reach)
 
         count = len(axes)
-        points = []
-        for index, axis in enumerate(axes):
-            x, y, angle = _vertex(center, radius, index, count, axis.fraction)
-            points.append((x, y))
-            if metrics is not None:
+        points = [
+            _vertex(center, radius, index, count, axis.fraction)[:2]
+            for index, axis in enumerate(axes)
+        ]
+        if metrics is not None:
+            label_pen = QtGui.QPen(QtGui.QColor(theme.TEXT_MUTED))
+            for index, axis in enumerate(axes):
+                angle = -math.pi / 2 + (index / count) * 2 * math.pi
+                cos, sin = math.cos(angle), math.sin(angle)
                 painter.setPen(grid_pen)
                 painter.drawLine(
                     QtCore.QPointF(center, center),
-                    QtCore.QPointF(
-                        center + math.cos(angle) * radius,
-                        center + math.sin(angle) * radius,
-                    ),
+                    QtCore.QPointF(center + cos * radius, center + sin * radius),
                 )
-                # Center the code just outside the ring, then clamp it into
-                # the pixmap so no size can clip a label.
-                width = metrics.horizontalAdvance(axis.code)
-                distance = radius + gap + metrics.height() / 2
-                text_x = center + math.cos(angle) * distance - width / 2
-                text_x = min(max(text_x, 0.0), size - width)
-                baseline = (
-                    center
-                    + math.sin(angle) * distance
-                    + metrics.ascent()
-                    - metrics.height() / 2
+                lines = axis_label_lines(axis, detailed=detailed)
+                distance = radius + gap + metrics.height() * len(lines) / 2
+                painter.setPen(label_pen)
+                _draw_text_block(
+                    QtCore,
+                    painter,
+                    metrics,
+                    lines,
+                    center_x=center + cos * distance,
+                    center_y=center + sin * distance,
+                    size=size,
                 )
-                baseline = min(
-                    max(baseline, metrics.ascent()), size - metrics.descent()
-                )
-                painter.setPen(QtGui.QPen(QtGui.QColor(theme.TEXT_MUTED)))
-                painter.drawText(QtCore.QPointF(text_x, baseline), axis.code)
+            if detailed:
+                _draw_ring_scale(QtCore, QtGui, painter, center, radius, count, size)
 
         color = QtGui.QColor(tier_color(tier))
         fill = QtGui.QColor(color)
@@ -254,13 +332,29 @@ def perf_profile_pixmap(
             ring = QtGui.QPen(QtGui.QColor(theme.SURFACE_BG))
             ring.setWidthF(1.5)
             dot_radius = _dot_radius(size)
-            for x, y in points:
+            for axis, (x, y) in zip(axes, points, strict=True):
                 painter.setPen(ring)
-                painter.setBrush(QtGui.QBrush(color))
+                painter.setBrush(QtGui.QBrush(QtGui.QColor(axis_point_color(axis))))
                 painter.drawEllipse(QtCore.QPointF(x, y), dot_radius, dot_radius)
     finally:
         painter.end()
     return pixmap
+
+
+def _draw_ring_scale(QtCore, QtGui, painter, center, radius, count, size):
+    """Number the rings along the gap between the first two spokes."""
+    font = QtGui.QFont(painter.font())
+    font.setPixelSize(max(7, round(size * 0.04)))
+    painter.setFont(font)
+    metrics = QtGui.QFontMetricsF(font)
+    angle = -math.pi / 2 + math.pi / count
+    painter.setPen(QtGui.QPen(QtGui.QColor(theme.TEXT_DISABLED)))
+    for fraction in _RING_FRACTIONS:
+        reach = _spoke_reach(radius, fraction)
+        text = f"{round(fraction * 100)}"
+        x = center + math.cos(angle) * reach - metrics.horizontalAdvance(text) / 2
+        y = center + math.sin(angle) * reach + metrics.ascent() / 2
+        painter.drawText(QtCore.QPointF(x, y), text)
 
 
 class GamePerfProfilePeek:
