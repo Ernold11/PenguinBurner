@@ -15,7 +15,7 @@ permissions:
 jobs:
   python:
     name: Python quality and tests (${{ matrix.scenario }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -60,7 +60,7 @@ jobs:
 
   rust:
     name: Rust quality and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     defaults:
       run:
