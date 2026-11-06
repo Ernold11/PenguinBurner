@@ -3,7 +3,11 @@
     "strict": true,
     "checks": [
       {
-        "context": "Python quality and tests",
+        "context": "Python quality and tests (3.14)",
+        "app_id": 15368
+      },
+      {
+        "context": "Python quality and tests (3.11)",
         "app_id": 15368
       },
       {
