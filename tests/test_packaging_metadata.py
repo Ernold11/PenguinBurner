@@ -848,6 +848,18 @@ def test_sdist_contains_complete_rust_daemon_crate(tmp_path: Path) -> None:
         assert any(name.endswith(f"/{relative}") for name in names), relative
 
 
+@pytest.mark.parametrize(
+    "script", sorted(Path("scripts").glob("*.sh")), ids=lambda path: path.name
+)
+def test_shell_scripts_parse(script: Path) -> None:
+    # Release scripts never run on pull requests, so a quoting slip would
+    # otherwise first surface while publishing.
+    result = subprocess.run(
+        ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
     build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
 
