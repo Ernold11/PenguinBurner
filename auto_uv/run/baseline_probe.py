@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
+    choose_sustained_curve_clock,
     selected_nvidia_light_load_diagnostic,
 )
 from auto_uv.curve.base_load_voltage import derive_loaded_voltage_band
@@ -29,6 +30,7 @@ from auto_uv.domain.types import (
     FailureSeverity,
     VfCurveCandidate,
 )
+from auto_uv.persistence.scan_checkpoint import ScanCheckpoint
 from auto_uv.persistence.unsafe_voltage_blacklist_file import (
     load_unsafe_voltage_blacklist,
 )
@@ -74,6 +76,7 @@ def run_discovery_probe(
     log: Callable[[str], None],
     event_callback: AutoUvEventCallback | None,
     marker_details: dict | None = None,
+    checkpoint: ScanCheckpoint | None = None,
 ) -> tuple[AutoUvProbeSummary, object]:
     point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
     reference_power_limit_w = baseline_load_reference_power_limit_w(gpu)
@@ -100,6 +103,7 @@ def run_discovery_probe(
         short_probe_base_duration_s=int(short_probe_base_duration_s),
         log=log,
         marker_details=marker_details,
+        checkpoint=checkpoint,
         event_callback=event_callback,
     )
     return run_discovery_probe_with_runner(
@@ -193,13 +197,33 @@ def build_loaded_baseline_candidate(
     discovery_result: object,
     power_limit_w: int | None,
     tail_rise_bins: int = 0,
+    max_clock_mhz: int | None = None,
+    log: Callable[[str], None] | None = None,
+    tier: str = "",
 ) -> tuple[VfCurveCandidate, BaseLoadTarget]:
+    """The flattened curve a tier descends from, locked at or below its clock limit.
+
+    The measured loaded clock stays the reference the probes compare
+    against; only the requested lock moves down, to the highest base-curve
+    step at or below ``max_clock_mhz`` (the tier's table or custom clock).
+    """
     target = choose_base_load_flatten_target(
         base_curve,
         list(getattr(discovery_result, "telemetry_samples", []) or []),
         power_limit_w=power_limit_w,
         fallback_clock_mhz=discovery_summary.avg_core_clock_mhz,
     )
+    if max_clock_mhz is not None and int(target.target_clock_mhz) > int(max_clock_mhz):
+        capped = choose_sustained_curve_clock(base_curve, float(max_clock_mhz))
+        target = replace(target, target_clock_mhz=int(min(capped, target.target_clock_mhz)))
+        if log is not None:
+            log_phase(
+                log,
+                "baseline",
+                f"{tier} stock curve loaded at {float(target.measured_clock_mhz):.0f}MHz "
+                f"above the {int(max_clock_mhz)}MHz clock target; "
+                f"locking the descent at {int(target.target_clock_mhz)}MHz",
+            )
     voltage_band = derive_loaded_voltage_band(
         list(getattr(discovery_result, "telemetry_samples", []) or []),
         power_limit_w=power_limit_w,

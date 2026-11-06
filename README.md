@@ -17,11 +17,13 @@
   <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
 </p>
 
-![PenguinBurner Auto-UV scan, verified profiles, unified Steam, Lutris and Heroic Game Library, and in-game overlay](docs/assets/auto-uv-full-scan-demo.gif)
+![PenguinBurner 0.8.4 demo: Auto-UV, profiles, Game Library and redesigned overlay](docs/assets/auto-uv-full-scan-demo.gif)
+
+*Captured from the installed 0.8.4 UI; scan and overlay readings are illustrative.*
 
 PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
 automatic undervolting, overclocking and adaptive per-game profiles for
-**Steam, Lutris and Heroic** in one [Game Library](#game-library).
+**Steam, Lutris, Heroic and Faugus** in one [Game Library](#game-library).
 
 **One scan. Three verified GPU profiles.**
 
@@ -73,8 +75,8 @@ The GUI, CLI, and scans then use that service without further password prompts.
    **Restore defaults** returns the GPU to stock. See [profile management](docs/features/profile-management.md)
    for multi-GPU settings and other actions.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
-   frame rate changes — use **Game Library** to configure Steam, Lutris and
-   Heroic games.
+   frame rate changes — use **Game Library** to configure Steam, Lutris,
+   Heroic and Faugus games.
 
 ## Automatic Undervolting & Overclocking
 
@@ -115,20 +117,23 @@ recognizes frame caps and idle periods so it can reduce power use.
 
 ## Game Library
 
-Bring your **Steam, Lutris and Heroic games together in one library**, with background
+Bring your **Steam, Lutris, Heroic and Faugus games together in one library**, with background
 discovery, launcher badges, and sorting by launcher, name, recently played or
 most played. Pick **Adaptive**, a fixed tier or **Stock** for each game;
-PenguinBurner applies it at launch and restores your standing profile on exit.
+PenguinBurner applies it at launch and restores your standing profile when the wrapped session ends.
 
-![Game Library showing Steam, Lutris and Heroic games, with a Lutris game's Adaptive settings and overlay controls](docs/assets/game-library.png)
+![Game Library with a Faugus game's Adaptive settings, Proton selection and overlay controls](docs/assets/game-library-faugus.png)
 
 Enable **Wrap this game**, then choose its GPU profile, Adaptive FPS target,
 and overlay settings. Existing launch options, Lutris command prefixes and
-Heroic wrapper rows are preserved. Use **Play / Stop** to control a game or
-**All games** for bulk edits.
+Heroic wrapper rows and Faugus launch arguments are preserved. Use **Play / Stop** to control a game or
+**All games** for bulk edits. Games that start Battle.net, Ubisoft Connect, EA
+app or another store client can keep the session active after the game exits:
+[fully exit the launcher too](docs/features/game-library.md#games-that-start-another-launcher).
 
 [Game Library guide](docs/features/game-library.md) · [Steam setup](docs/steam.md)
 · [Lutris setup](docs/features/lutris.md) · [Heroic setup](docs/features/heroic.md)
+· [Faugus setup](docs/features/faugus.md)
 
 Thanks to [@Ernold11](https://github.com/Ernold11) for the shared Game Library,
 the Heroic integration and adaptive tuning improvements. **Which launcher
@@ -148,12 +153,12 @@ and adaptive switching. NVIDIA-only comparison, to the best of our knowledge:
 | Rust hardware daemon | ✅ | ✅ |
 | **Adaptive** undervolt (switches tiers by frame rate) | ✅ | ❌ |
 | **In-game performance overlay** | ✅ | ❌ |
-| **PC latency meter** | ✅ | ❌ |
+| **Frame latency estimate** | ✅ | ❌ |
 | **Pre-frame-generation FPS counter** (base vs FG FPS) | ✅ | ❌ |
 | Manual V/F curve editor | ✅ | ✅ |
 | Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
 | Power limit | ✅ Auto-UV + saved profiles | ✅ |
-| Steam, Lutris & Heroic game libraries | ✅ shared library with background discovery | ❌ |
+| Steam, Lutris, Heroic & Faugus game libraries | ✅ shared library with background discovery | ❌ |
 | Per-game tuning profiles | ✅ per-game mode, adaptive FPS target, live launch | ❌ |
 | Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
 | MSI Afterburner import | ✅ | ❌ |
@@ -177,10 +182,26 @@ the resulting curve under LACT if you prefer.
 
 ## Performance Overlay
 
-Show **base FPS**, **frame-generation FPS**, **PC latency**, GPU clocks,
+Show **base FPS**, **frame-generation FPS**, **frame latency estimates**, GPU clocks,
 power, temperatures, and the active tier while playing. Enable **Overlay** for
 a game in Game Library and select fields in the Overlay tab. Latency requires
-usable timing markers from the game.
+usable timing endpoints from the game. Estimates are marked with `~` and do not
+measure full mouse-to-screen delay.
+
+Customize the HUD or table layout, font, scale, position, background opacity,
+and metric presets. Show NVIDIA hotspot temperature and separate graphs for
+Present calls and displayed frames where supported.
+
+Use desktop keyboard shortcuts while playing: **Alt+X** toggles visibility,
+**Alt+C** cycles presets, **Alt+G** cycles graphs, **Alt+O** cycles opacity,
+**Alt+[ / Alt+]** changes scale, and **Alt+< / Alt+>** changes position.
+Configure bindings through **Keyboard shortcuts…** in the Overlay tab; KDE and
+GNOME setup is supported.
+
+**DLSS 5 through OptiScaler works alongside the PenguinBurner overlay.** For an
+optional NR GPU-time readout, enable the overlay and its neural-rendering timing
+field before launching the game. See the [supported capture interfaces and
+requirements](docs/features/overlay.md#dlss-5-neural-rendering-gpu-time).
 
 ![Performance overlay](docs/assets/overlay.png)
 

@@ -546,9 +546,10 @@ pub fn status(daemon_holds: DaemonGpuHolds) -> Option<DeepSleepStatus> {
         runtime_status: state.last_runtime_status.map(|s| s.as_str().to_string()),
         runtime_active_ms: state.runtime_active_ms,
         runtime_suspended_ms: state.runtime_suspended_ms,
-        autostart_deferred: state.autostart_deferred,
+        // Engine attachment is current; watcher flags can lag behind reattachment.
+        autostart_deferred: state.autostart_deferred && !daemon_holds.engine_attached,
         suspended_observed: state.suspended_observed,
-        parked: state.parked,
+        parked: state.parked && !daemon_holds.engine_attached,
         daemon: daemon_holds,
         gpu_clients: state
             .gpu_clients
@@ -698,6 +699,32 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         assert!(status(DaemonGpuHolds::default()).is_none());
+        reset_for_test();
+    }
+
+    #[test]
+    fn attached_engine_overrides_stale_park_and_deferral_observations() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        reset_for_test();
+        let root = tempfile::tempdir().expect("tempdir");
+        let probe =
+            detect::Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
+        evaluate(&probe, None);
+        set_parked(true);
+        set_autostart_deferred(true);
+
+        let attached = status(DaemonGpuHolds {
+            engine_attached: true,
+            rpc_backends: 0,
+        })
+        .expect("evaluated");
+        assert!(!attached.parked);
+        assert!(!attached.autostart_deferred);
+        let detached = status(DaemonGpuHolds::default()).expect("evaluated");
+        assert!(detached.parked);
+        assert!(detached.autostart_deferred);
         reset_for_test();
     }
 

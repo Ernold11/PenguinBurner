@@ -58,7 +58,7 @@ missing right after the first setup, the relaunch is the fix.
 
 ## Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/))
 
-Fedora 42 / 43 / 44, with the NVIDIA driver from Fedora's repo or RPM Fusion:
+Fedora 43 / 44 / 45, with the NVIDIA driver from Fedora's repo or RPM Fusion:
 
 ```bash
 sudo dnf install -y dnf-plugins-core
@@ -119,6 +119,15 @@ service setup, the installer atomically copies the current wheel-bundled
 `/usr/libexec/penguin-burnerd` source into that fixed path. Failed startup or
 socket readiness restores the previous binary, unit, and service state.
 
+On SELinux systems the installer relabels that directory with `restorecon`.
+Older policies (Fedora 41 and earlier, RHEL 9 and similar distributions such as
+AlmaLinux 9 and RED OS 8) label `/var/opt` `var_t`, which systemd may not
+execute, so the service would fail with `203/EXEC`. There the installer adds a
+small local file-context module, `penguin_burner`, that labels only
+`/var/opt/penguin-burner/libexec` as `bin_t`. Newer policies already label it
+correctly and get no module. Uninstalling the service leaves the binary and
+this module in place; `sudo semodule -r penguin_burner` removes the module.
+
 ## Recovery: getting back to stock
 
 Applied tuning persists across reboots only while **Apply on startup** is
@@ -137,6 +146,9 @@ penguin-burner-cli --restore-stock
 This asks the running root daemon to clear core/memory offsets, release locked
 clocks, restore the factory V/F curve and default power limit, and makes stock
 the boot state. Saved profiles are kept and can be re-applied later.
+You can then start a GUI or CLI Auto-UV scan normally: scan startup releases
+the active stock runtime profile without disabling the service or changing
+the stock boot setting.
 
 If a boot profile ever makes the desktop unusable before you can run that
 command, boot once into systemd rescue mode (hold the boot menu, select the

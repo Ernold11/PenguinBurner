@@ -67,7 +67,12 @@ be installed and running (see one-time setup above). Start a scan with:
 ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
-The CLI scan options mirror the GUI Auto-UV tuning dialog. Start with
+After a successful interactive scan, the CLI asks whether to start the profile
+and save it for startup. Each successful action prints a confirmation. After
+the final answer, the CLI prints its completion message and exits, returning
+to your shell prompt; the root daemon manages any requested runtime.
+
+The common CLI scan options mirror the GUI Auto-UV setup dialog. Start with
 `--auto-uv-voltage-scan`, then choose the same preset family shown in the GUI
 with `--auto-uv-mode efficiency|balanced|performance|adaptive` (`adaptive` runs all tiers).
 
@@ -83,6 +88,19 @@ Common scan controls, shown for every GUI preset:
 - `--gpu-index N`: select the NVIDIA GPU used for scan, verification, and runtime.
 - `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
 - `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
+
+CLI-only controls (independent of the profile tier):
+
+- `--auto-uv-boost standard|aggressive`: Standard Boost uses 2 rising tail bins (+30 MHz nominal); Aggressive Boost uses 4 (+60 MHz nominal). Standard is the default. Applies to every scanned tier, including full scans. Actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze`: off by default. When you explicitly resume after a reboot, allow the interrupted climb to retry at higher voltage. Failed points remain blacklisted; prediction margins, floor caution and voltage headroom stay unchanged. Further freezes may require further reboots.
+
+Use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost` for a custom tail.
+Resume with the same options. See [boost and freeze recovery](docs/features/auto-uv.md#cli-only-boost-and-freeze-recovery).
+
+```bash
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-boost aggressive
+pburn-cli --auto-uv-voltage-scan --auto-uv-mode adaptive --auto-uv-retry-after-freeze
+```
 
 Full-scan (`--auto-uv-mode adaptive`) per-tier overrides — each tier of the
 combined run can carry its own limits, mirroring the GUI's per-profile
@@ -303,6 +321,25 @@ Enable optional dxvk-nvapi in-game latency marker parsing:
 ```text
 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
 ```
+
+Change overlay settings while a wrapped game is running:
+
+| Command | Default desktop shortcut |
+| --- | --- |
+| `penguin-burner-cli --overlay-toggle` | Alt+X |
+| `penguin-burner-cli --overlay-detail-next` | Alt+C |
+| `penguin-burner-cli --overlay-graph-next` | Alt+G |
+| `penguin-burner-cli --overlay-opacity-next` | Alt+O |
+| `penguin-burner-cli --overlay-scale-down` / `--overlay-scale-up` | Alt+[ / Alt+] |
+| `penguin-burner-cli --overlay-position-prev` / `--overlay-position-next` | Alt+< / Alt+> |
+
+Set up desktop bindings through **Keyboard shortcuts…** in the Overlay tab.
+See the [overlay guide](docs/features/overlay.md#changing-the-overlay-without-leaving-the-game)
+for KDE/GNOME setup, direct settings commands, and visibility overrides.
+
+DLSS 5 through OptiScaler works alongside the PenguinBurner overlay. The optional
+NR GPU-time readout requires the overlay and its timing field enabled before
+launch; see [NR timing](docs/features/overlay.md#dlss-5-neural-rendering-gpu-time).
 
 ## Debugging
 

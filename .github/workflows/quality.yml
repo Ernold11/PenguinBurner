@@ -14,9 +14,14 @@ permissions:
 
 jobs:
   python:
-    name: Python quality and tests
-    runs-on: ubuntu-latest
+    name: Python quality and tests (${{ matrix.scenario }})
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Newest supported Python, and the requires-python floor.
+        scenario: ['3.14', '3.11']
     env:
       QT_QPA_PLATFORM: offscreen
       PENGUIN_BURNER_REQUIRE_DAEMON: '1'
@@ -29,7 +34,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.scenario }}
       - name: Install build and analysis dependencies
         run: |
           sudo apt-get update
@@ -55,7 +60,7 @@ jobs:
 
   rust:
     name: Rust quality and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     defaults:
       run:

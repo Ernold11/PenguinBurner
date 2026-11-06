@@ -28,6 +28,33 @@ pburn-cli --auto-uv-voltage-scan --auto-uv-mode efficiency
 
 See the [CLI reference](../../readme-cli.md#auto-uv-scan) for per-tier overrides.
 
+### CLI-only boost and freeze recovery
+
+GUI scans use **Standard Boost** and normal freeze recovery. The CLI exposes
+two independent controls:
+
+- `--auto-uv-boost standard` (default): a 2-bin rising tail, +30 MHz nominal.
+- `--auto-uv-boost aggressive`: **Aggressive Boost**, a 4-bin rising tail,
+  up to +60 MHz nominal above the selected anchor (30 MHz more than Standard).
+  Applies to every tier of a full scan and is tested and saved
+  with the curve. Extra headroom can increase power use and instability;
+  actual boost depends on the GPU and workload.
+- `--auto-uv-retry-after-freeze` (off by default): on an explicit resume after
+  reboot, allow the interrupted clock climb to retry at higher voltage.
+  Further freezes may require further reboots.
+
+Boost does not enable freeze retries. Both recovery settings preserve the
+failed-point blacklist, predicted stability margins, floor caution, and the
+six-bin Performance voltage headroom above Balanced. Neither option adds a
+profile tier: Efficiency, Balanced, and Performance keep their usual roles.
+
+For a custom tail, use `--auto-uv-tail-rise-bins N` instead of `--auto-uv-boost`.
+Resume with the same options so the checkpoint matches.
+
+The tail count describes requested headroom, not a guaranteed measured clock
+increase. See [the exact curve shape and monitoring evidence](auto-uv-search.md#monitoring-the-requested-and-observed-boost)
+for driver-applied limits, workload telemetry, and what a passing scan proves.
+
 ## What happens
 
 1. Apply and read back the tier's power limit and measure its baseline.
@@ -39,7 +66,8 @@ Failures fall back to safer settings where possible. Final verification can
 retry another tested curve; a failed later tier preserves completed profiles.
 Stopping the scan remains a user-controlled action.
 
-All tiers use a smooth ramp and **two rising tail bins** (+30 MHz nominal).
+By default, all tiers use a smooth ramp and **two rising tail bins** (+30 MHz nominal).
+The CLI Aggressive Boost option uses four bins (+60 MHz nominal).
 The voltage target is a curve anchor: GPU boost can use higher voltage bins.
 Power limits can also reduce the loaded clock below the requested target.
 There is no fixed percentage cutoff for measured clock loss; workload stability,
@@ -90,6 +118,8 @@ clock targets use the tested clock climb toward the configured targets.
 
 GPUs without table entries show **Auto**. Custom ranges use driver-reported
 clocks and editable voltage bins where available; missing ranges remain Auto.
+A box left at its table default is also automatic: the scan receives only
+edited targets, so the defaults never act as hard bounds on the search.
 No other GPU's preset is substituted. Fixed-power laptop GPUs use the stock
 limit with the power control disabled.
 
@@ -128,7 +158,8 @@ pburn-cli --daemonize --auto-uv-profile latest --silent-fan-curve
 Under the PenguinBurner user config directory:
 
 - `debug-logs/` — scan logs.
-- `uv-result/` — checkpoints, results, and unsafe-point history.
+- `uv-result/` — checkpoints and results.
+- `auto-uv-unsafe-voltages.json` — unsafe-point history; kept across scans.
 - `auto-uv-profiles/` — saved profiles shown in the GUI.
 
 If a scan cannot finish, read its latest log and follow the

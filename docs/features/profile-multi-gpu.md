@@ -37,3 +37,14 @@ The same preference is available without the GUI:
 pburn-cli --set-main-gpu GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 pburn-cli --clear-main-gpu
 ```
+
+## Auto-UV benchmark selection
+
+Auto-UV passes the selected NVIDIA GPU's UUID to managed Q2RTX so Vulkan
+renders on that card even when enumeration order differs. An invalid or
+unavailable explicit UUID stops the benchmark instead of selecting another
+card; a pinned run disables multi-device/SLI rendering. This support is included
+in Q2RTX benchmark `pb-benchmark-v0.1.2` and later. Updating PenguinBurner source
+alone does not replace an older benchmark binary; managed scans check for
+benchmark updates. For routing problems, include the Q2RTX log line
+`Q2RTX_TARGET_UUID pinned physical device` with the selected GPU's UUID.

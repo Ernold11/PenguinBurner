@@ -12,7 +12,7 @@ Live settings and Proton selection refuse to connect to a different running
 Steam installation. Close the other client before using these controls.
 
 Use [Game Library](features/game-library.md) to set a GPU profile, Adaptive FPS
-target, and overlay for each Steam game alongside your Lutris and Heroic
+target, and overlay for each Steam game alongside your Lutris, Heroic and Faugus
 libraries.
 
 ## Setup
@@ -53,10 +53,10 @@ or while live Steam control is unavailable.
 
 Use **Play / Stop** in Game Library or launch normally from Steam. The wrapper
 applies the game profile through the root daemon without an admin prompt.
-On exit it restores the standing profile. For a different target GPU, it first
+When the wrapped session ends, it restores the standing profile. For a different target GPU, it first
 restores that card's saved state, or stock if none is known.
 
-Steam, Lutris and Heroic share session tracking. If the wrapper hands off to a
+Steam, Lutris, Heroic and Faugus share session tracking. If the wrapper hands off to a
 child process, the game profile remains active until the final tracked process
 exits. Restoration and relaunch no longer wait for a fixed three-second grace.
 If you retry an unconfirmed launch, the library keeps unresolved attempts
@@ -66,6 +66,10 @@ confirmed running while the retry dialog is open cancels that retry.
 If the daemon is unavailable, the game still starts. A second concurrent game
 can start too, but its runtime request does not replace the first game's
 monitoring ownership.
+
+For games that start EA app, Ubisoft Connect or another client,
+[fully exit that launcher too](features/game-library.md#games-that-start-another-launcher)
+to return to stopped/Play after quitting the game.
 
 ## Manual launch options
 

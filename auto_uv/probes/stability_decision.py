@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from auto_uv.domain.types import FailureKind, FailureSeverity, StableRunDecision
+from stability.cuda_bruteforce import CUDA_INSTABILITY_EXIT_CODES
 
 from ..curve.base_load_telemetry import derive_active_power_floor_w
 from ..shared.probe_data_fields import percent as _percent
@@ -25,6 +26,7 @@ class StabilityThresholds:
 
 
 FATAL_REASON_PREFIXES = (
+    "benchmark-companion-start-missing",
     "benchmark-crashed-signal",
     "benchmark-duration-short",
     "benchmark-event-pipe-closed",
@@ -34,6 +36,7 @@ FATAL_REASON_PREFIXES = (
     "benchmark-metrics-invalid",
     "benchmark-nonzero-exit",
     "benchmark-start-missing",
+    "benchmark-startup-timeout",
     "benchmark-summary-missing",
     "benchmark-timeout",
     "fatal-cuda-output",
@@ -100,8 +103,11 @@ def _failed_workload_severity(reason: str, output: Iterable[str] = ()) -> Failur
         return FailureSeverity.CRITICAL
     # CUDA reports subprocess return codes rather than Q2RTX's signal names.
     # SIGTERM (-15), used for controlled cleanup, is deliberately excluded.
+    # The workload's own instability codes (mismatch, GPU fault, hang) count
+    # even when the log tail was cut short.
     if reason.startswith("cuda-bruteforce-failed exit=") and reason.rpartition("=")[2] in {
         "-4", "-5", "-6", "-7", "-8", "-9", "-11",
+        *(str(code) for code in CUDA_INSTABILITY_EXIT_CODES),
     }:
         return FailureSeverity.UNSAFE
     if str(reason).startswith("benchmark-crashed-signal") or any(

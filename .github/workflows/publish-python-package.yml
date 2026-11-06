@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     name: Build distribution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -75,6 +75,7 @@ jobs:
                 glibc-devel.i686 libstdc++-devel.i686 libgcc.i686 \
                 gcc-toolset-14-libstdc++-devel.i686
             fi
+            bash {project}/scripts/prepare-manylinux-mingw.sh
             export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.82.0 --no-modify-path
         run: python -m cibuildwheel --platform linux --output-dir dist
@@ -100,6 +101,9 @@ jobs:
                   if not any(name.endswith(suffix) for name in names):
                       raise SystemExit(f"missing required {label}: {suffix}")
           PY
+
+      - name: Verify display-timing capture in both native layers
+        run: python scripts/check-native-display-timing.py dist/*.whl
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4

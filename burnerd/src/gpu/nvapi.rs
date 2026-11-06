@@ -1,4 +1,4 @@
-//! Hidden NVAPI (`libnvidia-api.so.1`) FFI for core-voltage and per-point VF
+//! Hidden NVAPI (`libnvidia-api.so.1`) FFI for telemetry and per-point VF
 //! curve control. Reached only through the single exported
 //! `nvapi_QueryInterface(u32) -> *mut c_void`, casting each returned pointer to
 //! a typed `extern "C"` fn. Every version-tagged `#[repr(C)]` struct carries a
@@ -12,6 +12,9 @@ use std::mem::size_of;
 use std::os::raw::{c_char, c_int};
 
 use libloading::{Library, Symbol};
+
+mod thermal;
+use thermal::HotspotReader;
 
 use super::{
     decode_cstr, vf_editable_core_points, vf_find_nearest, vf_summary_of, voltage_uv_in_window,
@@ -83,6 +86,24 @@ struct VfPointStatusV3 {
     rsvd: [u8; 256],
 }
 const _: () = assert!(size_of::<VfPointStatusV3>() == 348);
+
+impl VfPointStatusV3 {
+    fn base_values(&self) -> (i64, i64) {
+        // Turing drivers can leave the optional base tuple empty. Preserve
+        // populated base components and use the reported point for missing ones.
+        let freq = if self.vf_tuple_base.freq_khz > 0 {
+            self.vf_tuple_base.freq_khz
+        } else {
+            self.freq_khz
+        };
+        let voltage = if self.vf_tuple_base.voltage_uv > 0 {
+            self.vf_tuple_base.voltage_uv
+        } else {
+            self.voltage_uv
+        };
+        (i64::from(freq), i64::from(voltage))
+    }
+}
 
 /// `ClockClientClkVfPointsStatusV3` (88844 bytes; points at offset 104).
 #[repr(C)]
@@ -278,20 +299,25 @@ fn select_gpu(
 }
 
 // ------------------------------------------------------------------------
-// Voltage reader (`HiddenNvapiVoltageReader`).
+// Telemetry reader (voltage and optional hotspot share one driver session).
 // ------------------------------------------------------------------------
-pub(crate) struct NvapiVoltageSession {
+pub(crate) struct NvapiTelemetrySession {
     _lib: Library,
     gpu: NvapiHandle,
     unload: UnloadFn,
     get_err: GetErrMsgFn,
-    get_voltage: GetVoltageFn,
+    get_voltage: Option<GetVoltageFn>,
+    hotspot: Option<HotspotReader>,
     last_raw_uv: Cell<Option<i64>>,
     initialized: bool,
 }
 
-impl NvapiVoltageSession {
-    pub(crate) fn open(gpu_index: u32, pci_bus_id: &str) -> Result<Self, GpuError> {
+impl NvapiTelemetrySession {
+    pub(crate) fn open(
+        gpu_index: u32,
+        pci_bus_id: &str,
+        architecture: Option<u32>,
+    ) -> Result<Self, GpuError> {
         let requested_bus = pci_bus_number_from_bus_id(pci_bus_id);
         // SAFETY: trusted system soname; the resolved query fn is used to bind
         // the entry points to their declared signatures below.
@@ -312,7 +338,7 @@ impl NvapiVoltageSession {
             let get_err: GetErrMsgFn = query_interface(query, Q_GET_ERROR_MESSAGE)?;
             let enum_fn: EnumGpusFn = query_interface(query, Q_ENUM_PHYSICAL_GPUS)?;
             let get_bus: Option<GetBusIdFn> = try_query_interface(query, Q_GET_BUS_ID);
-            let get_voltage: GetVoltageFn = query_interface(query, Q_VOLTAGE)?;
+            let get_voltage: Option<GetVoltageFn> = try_query_interface(query, Q_VOLTAGE);
             (init, unload, get_err, enum_fn, get_bus, get_voltage)
         };
 
@@ -336,12 +362,15 @@ impl NvapiVoltageSession {
             }
         };
 
+        // SAFETY: the library stays loaded and `gpu` belongs to this session.
+        let hotspot = unsafe { HotspotReader::open(query, gpu, architecture) };
         Ok(Self {
             _lib: lib,
             gpu,
             unload,
             get_err,
             get_voltage,
+            hotspot,
             last_raw_uv: Cell::new(None),
             initialized: true,
         })
@@ -349,13 +378,16 @@ impl NvapiVoltageSession {
 
     /// Raw microvolts (propagates on failure, like `read_raw_microvolts`).
     fn read_raw_microvolts(&self) -> GpuResult<i64> {
+        let get_voltage = self
+            .get_voltage
+            .ok_or_else(|| GpuError::other("NVAPI voltage query unavailable", 0))?;
         let mut data: NvApiVoltage =
             // SAFETY: every field is a POD integer; all-zero is a valid value.
             unsafe { std::mem::zeroed() };
         data.version = make_version(size_of::<NvApiVoltage>(), 1);
         // SAFETY: `gpu` is a valid handle; `data` is a correctly-sized,
         // version-tagged struct.
-        let rc = unsafe { (self.get_voltage)(self.gpu, &mut data) };
+        let rc = unsafe { get_voltage(self.gpu, &mut data) };
         if rc != 0 {
             return Err(GpuError::nvapi(
                 "NvAPI voltage query",
@@ -376,9 +408,14 @@ impl NvapiVoltageSession {
             _ => None,
         }
     }
+
+    pub(crate) fn read_hotspot_c(&self) -> Option<f64> {
+        // SAFETY: the reader's functions and this handle share the live library.
+        unsafe { self.hotspot.as_ref()?.read(self.gpu) }
+    }
 }
 
-impl Drop for NvapiVoltageSession {
+impl Drop for NvapiTelemetrySession {
     fn drop(&mut self) {
         if self.initialized {
             // SAFETY: `unload` pairs with the `init` performed in `open`.
@@ -553,14 +590,15 @@ impl NvapiVfSession {
             let info_p = &info.vf_points[i];
             let st = &status.vf_points[i];
             let ct = &control.vf_points[i];
+            let (base_freq_khz, base_voltage_uv) = st.base_values();
             points.push(VfPoint {
                 index: idx,
                 type_: info_p.type_,
                 voltage_based: u32::from(info_p.b_voltage_based),
                 freq_khz: i64::from(st.freq_khz),
                 voltage_uv: i64::from(st.voltage_uv),
-                base_freq_khz: i64::from(st.vf_tuple_base.freq_khz),
-                base_voltage_uv: i64::from(st.vf_tuple_base.voltage_uv),
+                base_freq_khz,
+                base_voltage_uv,
                 current_offset_khz: i64::from(ct.data.prog_freq_offset_khz),
             });
         }
@@ -616,6 +654,29 @@ impl Drop for NvapiVfSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_base_tuple_components_use_reported_point() {
+        // SAFETY: this driver status structure contains only integer POD fields.
+        let mut point: VfPointStatusV3 = unsafe { std::mem::zeroed() };
+        point.freq_khz = 405_000;
+        point.voltage_uv = 450_000;
+        for (freq, voltage, expected) in [
+            (0, 0, (405_000, 450_000)),
+            (390_000, 440_000, (390_000, 440_000)),
+            (390_000, 0, (390_000, 450_000)),
+            (0, 440_000, (405_000, 440_000)),
+        ] {
+            point.vf_tuple_base.freq_khz = freq;
+            point.vf_tuple_base.voltage_uv = voltage;
+            assert_eq!(point.base_values(), expected);
+        }
+        point.freq_khz = 0;
+        point.voltage_uv = 0;
+        point.vf_tuple_base.freq_khz = 0;
+        point.vf_tuple_base.voltage_uv = 0;
+        assert_eq!(point.base_values(), (0, 0));
+    }
 
     #[test]
     fn bus_number_from_standard_bus_id() {

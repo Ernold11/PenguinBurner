@@ -21,6 +21,7 @@ def test_base_package_installs_gui_dependencies() -> None:
     dependencies = set(metadata["project"]["dependencies"])
 
     assert "PySide6-Essentials>=6.7" in dependencies
+    assert "PySide6-Essentials<6.12; python_version<'3.12'" in dependencies
     assert "colorama>=0.4" in dependencies
     assert "pyqtgraph>=0.13" in dependencies
 
@@ -847,6 +848,18 @@ def test_sdist_contains_complete_rust_daemon_crate(tmp_path: Path) -> None:
         assert any(name.endswith(f"/{relative}") for name in names), relative
 
 
+@pytest.mark.parametrize(
+    "script", sorted(Path("scripts").glob("*.sh")), ids=lambda path: path.name
+)
+def test_shell_scripts_parse(script: Path) -> None:
+    # Release scripts never run on pull requests, so a quoting slip would
+    # otherwise first surface while publishing.
+    result = subprocess.run(
+        ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
     build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
 
@@ -905,6 +918,9 @@ def test_pypi_release_builds_manylinux_native_layer_wheel() -> None:
         assert "CIBW_MANYLINUX_X86_64_IMAGE" in text
         assert "manylinux_2_28" in text
         assert "vulkan-headers" in text
+        # CI and the release runner must prepare the same D3D12-capable
+        # MinGW headers; EPEL 8's headers cannot build the NR collector.
+        assert "bash {project}/scripts/prepare-manylinux-mingw.sh" in text
 
 
 def test_desktop_icons_are_transparent_and_large_enough() -> None:
@@ -1027,8 +1043,8 @@ def test_desktop_launchers_are_english_only_and_consistent() -> None:
         assert "Name=PenguinBurner" in text
         assert "GenericName=NVIDIA GPU Tuning Tool" in text
         assert "Automatic NVIDIA GPU undervolting and overclocking" in text
-        assert "adaptive per-game profiles for Steam, Lutris and Heroic" in text
-        assert "Steam;Lutris;Heroic;" in text
+        assert "adaptive per-game profiles for Steam, Lutris, Heroic and Faugus" in text
+        assert "Steam;Lutris;Heroic;Faugus;" in text
     # A native install and a Flatpak install must show the same app name.
     def entry_lines(text: str, field: str) -> list[str]:
         return [line for line in text.splitlines() if line.startswith(f"{field}=")]
@@ -1059,10 +1075,10 @@ def test_pypi_summary_matches_readme_positioning() -> None:
         "Automatic NVIDIA GPU undervolting, overclocking, and per-game tuning"
     )
     assert "three verified tiers" in summary
-    assert "Steam, Lutris and Heroic" in summary
-    assert "PC latency" in summary
-    assert "Steam, Lutris and Heroic" in readme
-    assert {"overclocking", "adaptive", "steam", "lutris", "heroic", "overlay"} <= keywords
+    assert "Steam, Lutris, Heroic and Faugus" in summary
+    assert "frame latency estimates" in summary
+    assert "Steam, Lutris, Heroic and Faugus" in readme
+    assert {"overclocking", "adaptive", "steam", "lutris", "heroic", "faugus", "overlay"} <= keywords
 
 
 def test_native_package_descriptions_cover_readme_headline_features() -> None:
@@ -1097,9 +1113,9 @@ def test_native_package_descriptions_cover_readme_headline_features() -> None:
             "Efficiency, Balanced, and Performance", "Efficiency, Balanced and Performance"
         )
         assert "Adaptive undervolting" in prose
-        assert "Steam, Lutris and Heroic games into one list" in prose
+        assert "Steam, Lutris, Heroic and Faugus games into one list" in prose
         assert "frame-generation FPS" in prose
-        assert "PC latency" in prose
+        assert "frame latency estimates" in prose
         assert "MSI Afterburner profile import" in prose
         assert "LACT config export" in prose
         assert "penguin-burnerd" in prose

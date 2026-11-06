@@ -1,4 +1,8 @@
-"""Bridge NVAPI-shim Reflex marker lines into the latency receiver.
+"""Bridge NVAPI-shim Reflex markers and driver reports into the latency receiver.
+
+Successful GetLatency reports carry the driver's unchanged endpoints through
+the same FIFO. The daemon validates their scope, deduplicates frames and prefers
+complete input-to-GPU spans over the marker fallback described below.
 
 The drop-in NVAPI shim (overlay/shim_deploy.py) writes one line per Reflex
 marker to the launch's marker FIFO, reusing the wire format the old
@@ -50,6 +54,9 @@ from pathlib import Path
 from types import FrameType
 
 from .. import shim_deploy as _shim_deploy
+from .base_timing import BaseFramePublisher, base_timing_dir
+from .nr_timing import parse_nr_timing
+from .reflex_report import REPORT_PREFIX, parse_reflex_report
 from .sockets import latency_socket_path, latency_socket_paths
 
 # NV_LATENCY_MARKER_TYPE values named on the shim's marker lines.
@@ -442,6 +449,7 @@ def run(
     sock.setblocking(False)
     pid = os.getpid() if pid is None else pid
     session_id = str(env.get(TELEMETRY_SESSION_ENV) or "").strip()
+    base_graph = BaseFramePublisher(base_timing_dir(env), session_id)
 
     try:
         pending_sim: dict[int, int] = {}
@@ -466,6 +474,15 @@ def run(
             session_alive_fn=session_alive_fn,
             session_quiesced_fn=session_quiesced_fn,
         ):
+            nr_sample = parse_nr_timing(line, session_id)
+            if nr_sample is not None:
+                _send_sample(sock, targets, nr_sample)
+                continue
+            if line.startswith(REPORT_PREFIX):
+                report = parse_reflex_report(line, session_id)
+                if report is not None:
+                    _send_sample(sock, targets, report)
+                continue
             parsed = _parse_line_with_pid(line)
             if parsed is None:
                 # Not one of ours: it is the game's own diagnostic output,
@@ -502,6 +519,7 @@ def run(
                 while len(input_order) > _MAX_PENDING:
                     pending_input.pop(input_order.pop(0), None)
             elif marker == NV_MARKER_SIMULATION_START:
+                base_graph.publish(frame, t_us, sample_pid)
                 previous = last_simulation_start.get(sample_pid)
                 if previous is not None:
                     previous_frame, previous_us = previous
@@ -574,6 +592,7 @@ def run(
                     while len(awaiting_oob) > _MAX_PENDING:
                         awaiting_oob.pop(0)
     finally:
+        base_graph.close()
         sock.close()
 
 

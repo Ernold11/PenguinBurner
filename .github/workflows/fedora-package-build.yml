@@ -17,12 +17,12 @@ on:
 jobs:
   build:
     name: Fedora package (${{ matrix.scenario }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["fedora-43", "fedora-44", "rawhide"]') || fromJSON('["fedora-43", "fedora-44"]') }}
+        scenario: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["fedora-43", "fedora-44", "fedora-45", "rawhide"]') || fromJSON('["fedora-43", "fedora-44", "fedora-45"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Build package in ${{ matrix.scenario }} scenario

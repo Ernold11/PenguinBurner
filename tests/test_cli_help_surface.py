@@ -88,7 +88,9 @@ def test_main_cli_help_removes_old_compat_flags(capsys):
         "--auto-uv-final-seconds",
         "--auto-uv-short-seconds",
         "--install-q2rtx",
-        "--overlay-toggle",
+        # --overlay-toggle is back on purpose: it is how a desktop shortcut
+        # reaches the overlay in a running game. --overlay-enable/-disable
+        # stay gone; --overlay-visible on|off|auto replaced the pair.
         "--overlay-enable",
         "--overlay-disable",
         "--check-latency-layer",
@@ -135,7 +137,6 @@ def test_main_cli_help_hides_internal_profile_verification_flags(capsys):
         ["--auto-uv-final-seconds", "600"],
         ["--auto-uv-short-seconds", "10"],
         ["--install-q2rtx"],
-        ["--overlay-toggle"],
         ["--overlay-enable"],
         ["--overlay-disable"],
         ["--check-latency-layer"],
@@ -146,6 +147,20 @@ def test_removed_main_cli_flags_are_rejected(argv):
     with pytest.raises(SystemExit) as exc:
         parse_arguments(argv)
     assert exc.value.code == 2
+
+
+def test_overlay_control_flags_are_accepted():
+    assert parse_arguments(["--overlay-toggle"]).overlay_toggle is True
+    assert parse_arguments(["--overlay-visible", "auto"]).overlay_visible == "auto"
+    assert parse_arguments(["--overlay-detail-next"]).overlay_detail_next is True
+    assert parse_arguments(["--overlay-detail", "full"]).overlay_detail == "full"
+
+
+def test_overlay_control_flags_reject_unknown_values():
+    for argv in (["--overlay-visible", "maybe"], ["--overlay-detail", "extreme"]):
+        with pytest.raises(SystemExit) as exc:
+            parse_arguments(argv)
+        assert exc.value.code == 2
 
 
 def test_auto_uv_power_limit_flag_is_accepted():
@@ -211,3 +226,52 @@ def test_internal_profile_verification_flags_are_accepted_for_ui_command_path():
     assert args.auto_uv_profile == "latest"
     assert args.stability_seconds == 600
     assert args.stability_stop_request_file == "/tmp/verify.stop"
+
+
+def test_freeze_retry_is_a_cli_only_boolean_defaulting_off():
+    from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
+
+    plain = parse_arguments(["--auto-uv-voltage-scan"])
+    assert plain.auto_uv_retry_after_freeze is False
+    assert "auto_uv_retry_after_freeze" not in build_effective_auto_uv_runtime_options(plain)
+    retry = parse_arguments(["--auto-uv-voltage-scan", "--auto-uv-retry-after-freeze"])
+    assert build_effective_auto_uv_runtime_options(retry)["auto_uv_retry_after_freeze"] is True
+    with pytest.raises(SystemExit):
+        parse_arguments(["--auto-uv-tuning-mode", "aggressive"])
+
+
+@pytest.mark.parametrize("mode", ["efficiency", "balanced", "performance", "adaptive"])
+@pytest.mark.parametrize("boost,bins", [(None, 2), ("standard", 2), ("aggressive", 4)])
+def test_boost_preset_reaches_scan_settings(mode, boost, bins):
+    from auto_uv.main_loop import adaptive_tier_descent_tail_rise_bins
+    from auto_uv.run.scan_runtime_settings import tail_rise_bins
+    from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
+
+    argv = ["--auto-uv-voltage-scan", "--auto-uv-mode", mode]
+    if boost:
+        argv += ["--auto-uv-boost", boost]
+    options = build_effective_auto_uv_runtime_options(parse_arguments(argv))
+    assert tail_rise_bins(options, auto_uv_mode=mode) == bins
+    if mode == "adaptive":
+        for tier in ("efficiency", "balanced", "performance"):
+            assert adaptive_tier_descent_tail_rise_bins(tier, options) == bins
+    assert "auto_uv_retry_after_freeze" not in options
+
+
+def test_boost_and_custom_tail_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        parse_arguments(["--auto-uv-boost", "aggressive", "--auto-uv-tail-rise-bins", "2"])
+
+
+def test_boost_and_freeze_retry_are_independent(capsys):
+    from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
+
+    options = build_effective_auto_uv_runtime_options(parse_arguments([
+        "--auto-uv-boost", "aggressive", "--auto-uv-retry-after-freeze",
+    ]))
+    assert options["auto_uv_tail_rise_bins"] == 4
+    assert options["auto_uv_retry_after_freeze"] is True
+    help_text = _help_output(capsys, parse_arguments)
+    assert "--auto-uv-boost" in help_text
+    assert "--auto-uv-retry-after-freeze" in help_text
+    assert "--auto-uv-tuning-mode" not in help_text

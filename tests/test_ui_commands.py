@@ -513,6 +513,17 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert options["auto_uv_tail_rise_bins"] == 2
 
 
+def test_ui_scan_command_does_not_forward_cli_only_recovery_options(monkeypatch) -> None:
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
+    options = _scan_daemon_options(commands.scan_command({
+        "auto_uv_mode": "adaptive",
+        "auto_uv_tuning_mode": "aggressive",
+        "auto_uv_retry_after_freeze": True,
+    }))
+    assert "auto_uv_tuning_mode" not in options
+    assert "auto_uv_retry_after_freeze" not in options
+
+
 def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
@@ -1660,9 +1671,11 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
+    from overlay.metrics import (
+        METRICS,
+        OVERLAY_ITEM_SECTIONS,
+    )
     from ui.window import MainWindow
-    from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
-    from ui.components.overlay_config import ITEM_LABELS
 
     monkeypatch.setattr(MainWindow, "_load_profiles", lambda self: None)
     qt_modules = (QtCore, QtGui, QtWidgets, pytest.importorskip("pyqtgraph"))
@@ -1678,9 +1691,8 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
         )
         is None
     )
-    # The overlay tab lost its global checkbox, but the per-game switch in the
-    # library tab is a different control and must survive. It is a toggle
-    # switch, not a checkbox: a QAbstractButton painted from the theme.
+    # The per-game switch in Game Library remains a separate control.
+    # It is a QAbstractButton painted from the shared theme.
     assert (
         window.game_library_panel.widget.findChild(
             QtWidgets.QAbstractButton,
@@ -1691,58 +1703,34 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     assert (
         window.overlay_config.widget.findChild(
             QtWidgets.QScrollArea,
-            "overlayOptionsScroll",
         )
-        is not None
+        is window.overlay_config._options_scroll
     )
-    basic_group = window.overlay_config.widget.findChild(
-        QtWidgets.QGroupBox,
-        "overlayBasicOptionsGroup",
-    )
-    advanced_group = window.overlay_config.widget.findChild(
-        QtWidgets.QGroupBox,
-        "overlayAdvancedOptionsGroup",
-    )
-    assert basic_group is not None
-    assert advanced_group is not None
-    assert advanced_group.geometry().top() == basic_group.geometry().top()
-    assert advanced_group.geometry().left() > basic_group.geometry().left()
-    advanced_checkboxes = advanced_group.findChildren(QtWidgets.QCheckBox)
-    advanced_labels = [checkbox.text() for checkbox in advanced_checkboxes]
-    assert advanced_labels == [ITEM_LABELS[item] for item in ADVANCED_OVERLAY_ITEM_IDS]
-    assert (
-        advanced_group.findChild(
-            QtWidgets.QCheckBox,
-            "overlayItemCheckbox_gpu_util_pct",
-        ).text()
-        == "GPU %"
-    )
-    assert (
-        advanced_group.findChild(
-            QtWidgets.QCheckBox,
-            "overlayItemCheckbox_cpu_util_pct",
-        ).text()
-        == "CPU %"
-    )
-    assert (
-        advanced_group.findChild(
-            QtWidgets.QCheckBox,
-            "overlayItemCheckbox_cpu_peak_thread_pct",
-        ).text()
-        == "CPU-T %"
-    )
-    value_labels = list(window.overlay_config.item_value_labels.values())
-    assert len({label.width() for label in value_labels}) == 1
-    assert value_labels[0].width() >= value_labels[0].fontMetrics().horizontalAdvance(
-        "UV -9999 mV"
-    )
+    # Subject groups use the same cards as Game Library, with full labels
+    # and checkboxes revealed inside each section only while editing it.
+    panel = window.overlay_config
+    headings = {
+        label.property("headingText")
+        for label in panel.widget.findChildren(QtWidgets.QLabel, "prefGroupHeading")
+    }
+    assert {title for title, _ids in OVERLAY_ITEM_SECTIONS}.issubset(headings)
+    for title, item_ids in OVERLAY_ITEM_SECTIONS:
+        labels = [panel.item_title_labels[item].text() for item in item_ids]
+        assert labels == [METRICS[item].label for item in item_ids]
+        assert all(panel.item_checkboxes[item].isHidden() for item in item_ids)
+        panel.section_edit_buttons[title].click()
+        assert all(not panel.item_checkboxes[item].isHidden() for item in item_ids)
+        panel.section_edit_buttons[title].click()
+    assert panel.item_title_labels["gpu_util_pct"].text() == "GPU usage"
+    assert panel.item_title_labels["cpu_util_pct"].text() == "CPU usage"
+    assert panel.item_title_labels["cpu_peak_thread_pct"].text() == "Busiest CPU thread"
 
     window.tabs.setCurrentIndex(window.auto_uv_tab_index)
     assert window.table_panel.isVisibleTo(window.window)
     window.window.close()
 
 
-def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
+def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1759,6 +1747,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     # The adaptive target FPS moved to the Steam tab's per-game settings.
     assert panel.widget.layout().contentsMargins().top() >= 16
@@ -1768,7 +1757,7 @@ def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
     )
 
 
-def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
+def test_overlay_panel_saves_manual_scale(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1778,7 +1767,12 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from overlay.config import load_overlay_config
+    from overlay.config import (
+        load_overlay_config,
+    )
+    from overlay.style import (
+        OVERLAY_SCALE_OPTIONS,
+    )
     from ui.components.overlay_config import OverlayConfigPanel
 
     config_path = tmp_path / "overlay.toml"
@@ -1787,18 +1781,25 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=config_path,
     )
+    qtbot.addWidget(panel.widget)
 
-    # Defaults to the adaptive 1x option.
-    assert panel.scale_combo.currentText() == "1x"
+    # The slider uses the existing adaptive scale steps, displayed as percentages.
+    assert panel.scale_slider.value() == OVERLAY_SCALE_OPTIONS.index(1.0)
+    assert panel.scale_value_label.text() == "100%"
 
-    panel.scale_combo.setCurrentIndex(2)
+    panel.scale_slider.setValue(OVERLAY_SCALE_OPTIONS.index(2.0))
 
-    assert panel.scale_combo.currentText() == "2x"
+    assert panel.scale_value_label.text() == "200%"
     assert load_overlay_config(config_path).scale == 2.0
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
+    panel.scale_slider.setValue(OVERLAY_SCALE_OPTIONS.index(0.75))
 
-def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
+    assert load_overlay_config(config_path).scale == 0.75
+    assert "scale = 0.75" in config_path.read_text(encoding="utf-8")
+
+
+def test_overlay_panel_has_no_steam_launch_controls(tmp_path, qtbot) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1815,6 +1816,7 @@ def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
     )
+    qtbot.addWidget(panel.widget)
 
     assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
     assert panel.widget.findChild(QtWidgets.QLineEdit, "overlaySteamLaunchLine") is None
@@ -2208,10 +2210,19 @@ def test_stopping_rows_remain_active_until_stop_is_finalized() -> None:
     assert not _is_active_decision("stopped")
 
 
-def test_app_stylesheet_does_not_override_native_scrollbars() -> None:
+def test_app_stylesheet_keeps_custom_scrollbars_inside_overlay() -> None:
     first_selector = STYLESHEET.split("{", 1)[0]
+    scrollbar_selectors = [
+        selector.strip()
+        for rule in STYLESHEET.split("}")
+        for selector in rule.split("{", 1)[0].split(",")
+        if "QScrollBar" in selector
+    ]
 
-    assert "QScrollBar" not in STYLESHEET
+    assert all(
+        selector.startswith("QWidget#overlayConfigPanel QScrollBar")
+        for selector in scrollbar_selectors
+    )
     assert "QWidget" not in first_selector
 
 
@@ -2942,9 +2953,9 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     assert "auto_uv_max_clock_drop_pct" not in options
     assert "auto_uv_memory_offset_mhz" not in options
     assert "auto_uv_tail_rise_bins" not in options
-    assert options["auto_uv_efficiency_target_voltage_mv"] == 850
-    assert options["auto_uv_balanced_target_voltage_mv"] == 900
-    assert options["auto_uv_performance_target_voltage_mv"] == 925
+    # Unedited table defaults (850/900/925 mV on the 5080) stay automatic:
+    # sent as explicit targets they became hard Auto-OC bounds (issue #109).
+    assert not any("_target_" in key for key in options)
 
 
 def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
@@ -3226,8 +3237,15 @@ def test_tier_target_controls_validate_ranges_and_auto(monkeypatch, gpu_name, ha
                                        QtWidgets=QtWidgets, parent=None, gpu_index=0)
     assert options is not None
     if gpu_name.startswith("NVIDIA"):
-        for tier, (low, _, voltage) in expected.items():
-            assert options[f"auto_uv_{tier}_target_clock_mhz"] == low
-            assert options[f"auto_uv_{tier}_target_voltage_mv"] == voltage
+        # The clock boxes were edited down to their minimum; the voltage boxes
+        # still hold the table default, which is not an override. Balanced and
+        # Performance minimums equal their table clocks, so those stay automatic.
+        defaults = {"efficiency": 2800, "balanced": 2800, "performance": 2950}
+        for tier, (low, _, _voltage) in expected.items():
+            if low != defaults[tier]:
+                assert options[f"auto_uv_{tier}_target_clock_mhz"] == low
+            else:
+                assert f"auto_uv_{tier}_target_clock_mhz" not in options
+            assert f"auto_uv_{tier}_target_voltage_mv" not in options
     else:
         assert not any("target_" in key for key in options)

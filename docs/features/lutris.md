@@ -11,8 +11,8 @@ Flatpak Lutris uses `~/.var/app/net.lutris.Lutris/data/lutris/pga.db`, with
 configuration under that app's `config/lutris` directory when present, otherwise
 its data directory. Its compatibility picker queries Lutris inside that sandbox.
 
-[Game Library](game-library.md) lists installed Lutris games beside Steam and
-Heroic.
+[Game Library](game-library.md) lists installed Lutris games beside Steam,
+Heroic and Faugus.
 Enable **Wrap this game**, select a mode, and use **Play** or launch from Lutris.
 Wrapping and compatibility-tool changes take effect on the next launch.
 Profile modes, Adaptive targets and overlay visibility also apply live to an
@@ -25,18 +25,19 @@ Adaptive targets, GPU selection, and overlay controls.
 
 ## Command prefix
 
-PenguinBurner adds its wrapper to the game's `system.prefix_command`, preserving
-your existing command. For example:
+PenguinBurner adds its wrapper to the end of the game's `system.prefix_command`,
+after your existing command, so it runs next to the game as it does in Steam.
+Wrappers such as gamescope stay outside it. For example:
 
 ```yaml
 system:
-  prefix_command: PENGUIN_BURNER --pb-overlay=1 --pb-game-id=lutris:27 game-performance
+  prefix_command: game-performance PENGUIN_BURNER --pb-overlay=1 --pb-game-id=lutris:27
 ```
 
 The ID identifies the game to PenguinBurner, qualified by the launcher that
 owns it. Prefixes written by earlier versions carry `--pb-lutris-id=27`
 instead and keep working; they are rewritten the next time you change a
-setting. Other configuration keys remain unchanged. Disabling wrapping restores an explicit per-game prefix, or resumes
+setting, which also moves a wrapper that earlier versions put first. Other configuration keys remain unchanged. Disabling wrapping restores an explicit per-game prefix, or resumes
 runner/global inheritance when the game originally inherited its prefix.
 
 The **Command** field is editable. Press Enter or leave the field to save.
@@ -52,6 +53,10 @@ fixed profiles and launching remain available. Rescan after changing a renderer.
 Wine/Proton games can use the NVAPI latency shim. Native games use Vulkan timing
 where available. See [latency and FPS](latency-fg.md) for sources and manual
 wrapper commands.
+
+For games that start Battle.net, EA app, Ubisoft Connect or another client,
+[exit the store launcher too](game-library.md#games-that-start-another-launcher)
+to end the wrapped session after playing.
 
 ## Troubleshooting
 

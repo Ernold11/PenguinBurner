@@ -227,6 +227,8 @@ def maybe_prompt_post_scan_runtime_actions(
             deps=deps,
         )
 
+    deps.log("Auto-UV CLI finished. Returning to the terminal.")
+
 
 def auto_uv_result_profile_selector(result) -> str:
     try:
@@ -269,6 +271,11 @@ def _run_optional_runtime_action(
         )
     except Exception as exc:  # noqa: BLE001
         deps.log(f"Could not apply optional runtime action through burnerd: {exc}")
+    else:
+        if persist_on_startup:
+            deps.log("Startup profile saved successfully.")
+        else:
+            deps.log("Runtime profile started successfully.")
 
 
 def emit_auto_uv_final_result(

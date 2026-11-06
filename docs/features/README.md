@@ -7,10 +7,11 @@
 - **[Adaptive Undervolting](adaptive-uv.md)** — switch tiers while playing.
   [Tuning reference](adaptive-tuning.md)
 - **[Game Library](game-library.md)** — per-game profiles, FPS targets, and overlay.
-  [Steam setup](../steam.md) · [Lutris setup](lutris.md) · [Heroic setup](heroic.md)
+  [Steam setup](../steam.md) · [Lutris setup](lutris.md) · [Heroic setup](heroic.md) · [Faugus setup](faugus.md)
 - **[Profiles](profile-management.md)** — apply, verify, edit, and export curves.
   [Multi-GPU behavior](profile-multi-gpu.md)
-- **[Overlay](overlay.md)** — configure the in-game HUD.
+- **[Overlay](overlay.md)** — configure HUD/table layouts, fonts, presets, opacity,
+  keyboard shortcuts, hotspot temperature, frame-timing graphs and DLSS 5 NR timing.
   [Latency and FPS details](latency-fg.md)
 - **[Curve editors](curve-editor.md)** — edit V/F and fan curves manually.
 - **[Silent fan curve](silent-fan-curve.md)** — generate quieter cooling settings.

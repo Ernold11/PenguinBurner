@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
@@ -26,6 +26,8 @@ from auto_uv.persistence.unsafe_voltage_blacklist_file import (
     load_unsafe_voltage_blacklist,
 )
 from auto_uv.persistence.unsafe_voltage_cache import unsafe_voltage_block_reason
+from auto_uv.run.edge_margin import hard_crash_entry
+from auto_uv.run.tuning_policy import PERFORMANCE_VOLTAGE_HEADROOM_BINS, TuningPolicy
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
 from auto_uv.shared.positive_int import positive_int
@@ -88,6 +90,7 @@ def run_auto_oc_candidate_search(
     measured_baseline_clock_mhz: float | None = None,
     target_profile_id: str = AUTO_OC_TARGET_PROFILE_ID,
     probe_stable_history: list[AutoUvProbeSummary] | None = None,
+    policy: TuningPolicy | None = None,
 ) -> AutoOcSearchResult:
     endpoint = auto_oc_endpoint(
         gpu_name,
@@ -98,6 +101,34 @@ def run_auto_oc_candidate_search(
     if endpoint is None:
         return AutoOcSearchResult(
             selected_candidate=start_candidate, selected_probe=start_probe
+        )
+
+    # The loaded descent can need more voltage than the default table point.
+    # Keep that proven voltage and search the remaining clock headroom; an
+    # explicit user voltage limit must still remain a hard bound.
+    retry_voltage_cap_mv = int(endpoint.voltage_mv)
+    if (
+        target_profile_id == AUTO_OC_TARGET_PROFILE_ID
+        and target_voltage_mv is None
+        and start_candidate.voltage_mv > endpoint.voltage_mv
+        and start_candidate.target_mhz < endpoint.clock_mhz
+    ):
+        endpoint = replace(endpoint, voltage_mv=int(start_candidate.voltage_mv))
+        # Rungs the blacklist or the edge margin close at the proven voltage
+        # may be retried a few bins higher: Performance is allowed to spend a
+        # little more voltage than Balanced proved to buy clock.
+        headroom_bins = (
+            PERFORMANCE_VOLTAGE_HEADROOM_BINS if policy is not None else 0
+        )
+        retry_voltage_cap_mv = voltage_bins_above(
+            base_curve, int(start_candidate.voltage_mv), headroom_bins
+        )
+        log_phase(
+            log, "auto-oc",
+            f"default voltage target {endpoint.voltage_mv}mV below proven "
+            f"{start_candidate.voltage_mv}mV; climbing at the proven voltage, "
+            f"retrying closed rungs up to {retry_voltage_cap_mv}mV "
+            f"({headroom_bins} bins of headroom)",
         )
 
     ladder = build_auto_oc_ladder(
@@ -139,7 +170,7 @@ def run_auto_oc_candidate_search(
     attempts: list[AutoOcAttempt] = []
     passed_candidates = [(start_candidate, start_probe)]
     failed_voltage_floor_mv: int | None = None
-    consumed_voltage_floor_mv: int | None = None
+    retry_voltage_floor_mv: int | None = None
     power_wall_reached = False
 
     def probe_step(step: AutoOcStep, *, action: str) -> tuple[VfCurveCandidate, VoltageProbeOutcome]:
@@ -158,6 +189,21 @@ def run_auto_oc_candidate_search(
             lock_clock_mhz=int(candidate.target_mhz),
             profile_tier=target_profile_id,
         )
+        if not blocked and policy is not None:
+            # Same handling as a cached band: no hardware call, and the
+            # climb may retry this clock at a higher voltage within its cap.
+            blocked = policy.edge_margin.block_reason(
+                candidate_voltage_mv=int(candidate.voltage_mv),
+                lock_clock_mhz=int(candidate.target_mhz),
+            )
+        if not blocked and (policy is None or not policy.retry_frozen_rungs):
+            blocked = frozen_rung_block_reason(
+                load_unsafe_voltage_blacklist(),
+                base_curve,
+                start_voltage_mv=int(start_candidate.voltage_mv),
+                rung_voltage_mv=int(candidate.voltage_mv),
+                lock_clock_mhz=int(candidate.target_mhz),
+            )
         if blocked:
             outcome = VoltageProbeOutcome(decision=StableRunDecision(
                 False, FailureKind.CACHED_UNSAFE, FailureSeverity.UNSAFE, blocked
@@ -275,17 +321,17 @@ def run_auto_oc_candidate_search(
 
     stop_requested = False
     for step in ladder:
-        if (
-            consumed_voltage_floor_mv is not None
-            and int(step.voltage_mv) <= int(consumed_voltage_floor_mv)
+        # A successful voltage retry proves this clock at the higher voltage;
+        # it does not exhaust that voltage's remaining clock headroom. Carry
+        # it forward instead of dropping every remaining rung when a retry
+        # reaches the voltage cap early (including a reused Balanced start).
+        if retry_voltage_floor_mv is not None:
+            step = replace(step, voltage_mv=max(step.voltage_mv, retry_voltage_floor_mv))
+        if any(
+            attempt.candidate.voltage_mv == step.voltage_mv
+            and attempt.candidate.target_mhz == step.target_mhz
+            for attempt in attempts
         ):
-            log_phase(
-                log,
-                "auto-oc",
-                "skip consumed-voltage-rung "
-                f"{int(step.voltage_mv)}mV@{int(step.target_mhz)}MHz "
-                f"consumed-voltage={int(consumed_voltage_floor_mv)}mV",
-            )
             continue
         if (
             failed_voltage_floor_mv is not None
@@ -302,7 +348,10 @@ def run_auto_oc_candidate_search(
         candidate, outcome = probe_step(step, action="try")
         if outcome.decision.failure_kind is FailureKind.USER_STOP:
             break
-        if outcome.decision.severity is FailureSeverity.UNSAFE:
+        if (
+            outcome.decision.severity is FailureSeverity.UNSAFE
+            and outcome.decision.failure_kind is not FailureKind.CACHED_UNSAFE
+        ):
             backoff_after_unsafe(step, outcome)
             break
         passed = record_outcome(candidate, step, outcome)
@@ -324,13 +373,8 @@ def run_auto_oc_candidate_search(
         for retry_voltage_mv in auto_oc_retry_voltages(
             base_curve,
             failed_voltage_mv=int(candidate.voltage_mv),
-            endpoint_voltage_mv=int(endpoint.voltage_mv),
+            endpoint_voltage_mv=int(retry_voltage_cap_mv),
         ):
-            if (
-                consumed_voltage_floor_mv is not None
-                and int(retry_voltage_mv) <= int(consumed_voltage_floor_mv)
-            ):
-                continue
             retry_step = AutoOcStep(
                 index=int(step.index),
                 voltage_mv=int(retry_voltage_mv),
@@ -344,14 +388,19 @@ def run_auto_oc_candidate_search(
             if retry_outcome.decision.failure_kind is FailureKind.USER_STOP:
                 stop_requested = True
                 break
+            # Cached bands are checked before any hardware call. Look for an
+            # allowed higher voltage at this same clock; a new unsafe probe
+            # still ends the climb and uses the tested backoff path.
+            if retry_outcome.decision.failure_kind is FailureKind.CACHED_UNSAFE:
+                continue
             if retry_outcome.decision.severity is FailureSeverity.UNSAFE:
                 backoff_after_unsafe(retry_step, retry_outcome)
                 stop_requested = True
                 break
             retry_passed = record_outcome(retry_candidate, retry_step, retry_outcome)
             if retry_passed:
-                consumed_voltage_floor_mv = max(
-                    int(consumed_voltage_floor_mv or 0),
+                retry_voltage_floor_mv = max(
+                    int(retry_voltage_floor_mv or 0),
                     int(retry_candidate.voltage_mv),
                 )
                 break
@@ -359,7 +408,11 @@ def run_auto_oc_candidate_search(
                 int(failed_voltage_floor_mv or 0),
                 int(retry_candidate.voltage_mv),
             )
-        if stop_requested:
+        else:
+            if outcome.decision.failure_kind is FailureKind.CACHED_UNSAFE:
+                backoff_after_unsafe(step, outcome)
+                stop_requested = True
+        if stop_requested or power_wall_reached:
             break
 
     # A later crash can blacklist neighbouring clocks that passed earlier.
@@ -520,6 +573,63 @@ def retarget_clock_ceiling(
         ),
     )
     log_phase(log, "ceiling", clock_ceiling.describe())
+
+
+# A rung that froze the host stays closed for retries this close above the
+# freeze voltage; the band below a failure already covers the voltages at or
+# under it. Four or more bins higher is a different operating point and may
+# be tried (the issue 109 card held 950 after freezing at 937 at the same
+# clock; a 5080 climbing at 900 mV must not be stopped by a 865 mV freeze).
+FROZEN_RUNG_CLOSE_BINS = 3
+
+
+def frozen_rung_block_reason(
+    unsafe_entries: list[dict],
+    base_curve: list[dict],
+    *,
+    start_voltage_mv: int,
+    rung_voltage_mv: int,
+    lock_clock_mhz: int,
+) -> str:
+    """Close a climb rung, and every rung above it, once it froze the host.
+
+    The hard blacklist band only covers voltages at or below the freeze, so
+    a climb could retry the same rung one bin higher after every reboot. One
+    reboot per climb is the accepted price: within FROZEN_RUNG_CLOSE_BINS
+    above the freeze voltage the rung and everything above it stay closed.
+    Freezes below the climb's starting voltage belong to the descents and do
+    not count.
+    """
+    for entry in unsafe_entries:
+        if not hard_crash_entry(entry):
+            continue
+        frozen_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
+        frozen_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
+        if frozen_voltage_mv is None or frozen_clock_mhz is None:
+            continue
+        if int(frozen_voltage_mv) < int(start_voltage_mv):
+            continue
+        if int(lock_clock_mhz) < int(frozen_clock_mhz):
+            continue
+        closed_up_to_mv = voltage_bins_above(
+            base_curve, int(frozen_voltage_mv), FROZEN_RUNG_CLOSE_BINS
+        )
+        if int(rung_voltage_mv) <= int(closed_up_to_mv):
+            return (
+                f"rung {int(lock_clock_mhz)}MHz stays closed up to {int(closed_up_to_mv)}mV: "
+                f"{int(frozen_voltage_mv)}mV@{int(frozen_clock_mhz)}MHz froze the card "
+                "and a climb retries no rung at or above a freeze within "
+                f"{FROZEN_RUNG_CLOSE_BINS} bins of its voltage"
+            )
+    return ""
+
+
+def voltage_bins_above(base_curve: list[dict], voltage_mv: int, bins: int) -> int:
+    """The editable voltage ``bins`` steps above ``voltage_mv`` (clamped to the top)."""
+    higher = sorted(v for v in editable_voltage_bins(base_curve) if int(v) > int(voltage_mv))
+    if bins <= 0 or not higher:
+        return int(voltage_mv)
+    return int(higher[min(int(bins), len(higher)) - 1])
 
 
 def auto_oc_retry_voltages(

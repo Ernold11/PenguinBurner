@@ -27,23 +27,28 @@ os.environ.setdefault("QT_SCALE_FACTOR", "1")
 os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
+if "--installed" in sys.argv:
+    # Resolve production modules from the installed distribution, never this checkout.
+    sys.path[:] = [entry for entry in sys.path if Path(entry or ".").resolve() != REPO_ROOT]
+elif str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import ui.components.overlay_config as overlay_config_mod
-import ui.window as window_mod
-from integrations.launchers.library import SORT_RECENT, LibraryGame
-from integrations.steam.library import InstalledSteamGame
-from integrations.steam.manager import SteamGameRow
-from integrations.steam.settings import SteamGameSetting
-from overlay.config import OverlayConfig
-from ui.components.game_library_panel import game_key
-from ui.main import APP_DISPLAY_NAME
-from ui.qt import apply_dark_palette, import_qt
-from ui.window import MainWindow
+# Select checkout or installed modules before importing the UI.
+import ui.components.overlay_config as overlay_config_mod  # noqa: E402
+import ui.window as window_mod  # noqa: E402
+from integrations.launchers.library import SORT_RECENT, LibraryGame  # noqa: E402
+from integrations.steam.library import InstalledSteamGame  # noqa: E402
+from integrations.steam.manager import SteamGameRow  # noqa: E402
+from integrations.steam.settings import SteamGameSetting  # noqa: E402
+from overlay.config import OverlayConfig  # noqa: E402
+from ui.components.game_library_panel import game_key  # noqa: E402
+from ui.features.tuning.gpu_selection import GpuChoice  # noqa: E402
+from ui.main import APP_DISPLAY_NAME  # noqa: E402
+from ui.qt import apply_dark_palette, import_qt  # noqa: E402
+from ui.window import MainWindow  # noqa: E402
 
 FPS = 7
-DURATION_S = 24.0
+DURATION_S = 28.0
 # Mobile-miniature intro: how long the completed three-curve payoff holds as
 # the GIF's opening (and therefore its static preview frame).
 PAYOFF_HOLD_S = 1.3
@@ -53,6 +58,10 @@ DEFAULT_OUTPUT = REPO_ROOT / "docs/assets/auto-uv-full-scan-demo.gif"
 PROFILES_REVEAL_S = 15.6
 GAME_LIBRARY_REVEAL_S = 18.4
 OVERLAY_REVEAL_S = 21.2
+DEMO_GPU = GpuChoice(
+    index=0, name="NVIDIA GeForce RTX 5080",
+    uuid="GPU-00000000-0000-0000-0000-000000005080", power_limit_default_w=360,
+)
 
 SOURCE_POINTS: list[tuple[float, float]] = [
     (800, 1940),
@@ -253,6 +262,9 @@ DEMO_OVERLAY_CONFIG = OverlayConfig(
         "base_fps",
         "fg_fps",
         "latency_ms",
+        "nr_gpu_ms",
+        "hotspot_temperature_c",
+        "frametime_graph",
         "clock_mhz",
         "voltage_mv",
         "power_w",
@@ -261,13 +273,17 @@ DEMO_OVERLAY_CONFIG = OverlayConfig(
         "cpu_peak_thread_pct",
     ),
     update_interval_s=1,
-    scale=0.5,
+    scale=0.75,
+    opacity=0.85,
+    graph_mode="both",
 )
 
 DEMO_OVERLAY_STATE = {
     "present_fps": "125.0",
     "framegen_fps": "238.4",
     "latency_ms": "31.7",
+    "nr_gpu_ms": "2.20",
+    "hotspot_temperature_c": "79",
     "clock_mhz": "2912",
     "voltage_mv": "915",
     "power_w": "310",
@@ -307,6 +323,8 @@ def _stub_external_state(*, live_game_library: bool) -> None:
     window_mod.penguin_burner_runtime_is_active = lambda: False
     window_mod.silent_fan_curve_from_runtime_config = lambda: False
     window_mod.silent_fan_curve_to_runtime_config = lambda value: value
+    window_mod.detected_gpu_choices = lambda: [DEMO_GPU]
+    window_mod.gpu_choices_with_fallback = lambda **_kwargs: ([DEMO_GPU], 0)
 
 
 def _demo_steam_source():
@@ -349,7 +367,7 @@ def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
                 state_flags=4,
                 last_played=game.last_played,
                 last_updated=game.last_played,
-                icon_path=None,
+                art_path=None,
                 compat_tool=game.compat_tool,
                 effective_compat_tool=(
                     game.effective_compat_tool
@@ -560,6 +578,7 @@ def render(
     *,
     live_game_library: bool = False,
     selected_game: str = "",
+    screenshots_dir: Path | None = None,
 ) -> None:
     _stub_external_state(live_game_library=live_game_library)
     QtCore, QtGui, QtWidgets, pg = import_qt()
@@ -608,7 +627,7 @@ def render(
     window.header.set_candidate("Simulation only — the hardware daemon is not used")
     window.log_view.text_edit.clear()
     window.log_view._at_line_start = True
-    _append_log(window, "$ penguin-burner demo-auto-uv --mode adaptive --no-gpu-writes")
+    _append_log(window, "Auto-UV demonstration — simulated events, no GPU writes")
 
     window._handle_scan_event(
         {
@@ -633,6 +652,13 @@ def render(
     profiles_revealed = False
     game_library_revealed = False
     overlay_revealed = False
+    screenshots = {
+        round(15.5 * FPS): "auto-uv-scan.png",
+        round(18.0 * FPS): "profiles-management.png",
+        round(23.0 * FPS): "overlay.png",
+    }
+    if screenshots_dir is not None:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         frame_count = round(DURATION_S * FPS)
@@ -889,12 +915,14 @@ def render(
             if elapsed_s >= PROFILES_REVEAL_S and not profiles_revealed:
                 profiles_revealed = True
                 window.profile_list.set_profiles(
-                    [dict(profile) for profile in DEMO_PROFILES],
+                    [dict(profile, gpu_identity={
+                        "name": DEMO_GPU.name, "uuid": DEMO_GPU.uuid,
+                    }) for profile in DEMO_PROFILES],
                     silent_fan_checked=True,
                 )
                 window.tabs.setCurrentIndex(window.profiles_tab_index)
                 window.controls.set_status_text(
-                    "Verified RTX 5080 results — every GPU tunes differently."
+                    "Example RTX 5080 profiles — every GPU tunes differently."
                 )
 
             if elapsed_s >= GAME_LIBRARY_REVEAL_S and not game_library_revealed:
@@ -934,10 +962,10 @@ def render(
                 overlay_revealed = True
                 window.overlay_config.refresh_preview()
                 window.header.set_candidate(
-                    "Overlay: base FPS · frame generation · PC latency"
+                    "Overlay: DLSS 5 NR timing · hotspot · frame-timing graphs"
                 )
                 window.controls.set_status_text(
-                    "In-Game Overlay — representative live telemetry."
+                    "In-Game Overlay — simulated telemetry."
                 )
                 window.tabs.setCurrentIndex(window.overlay_tab_index)
 
@@ -948,6 +976,16 @@ def render(
                 app,
                 frame_dir / f"frame-{frame_index:03d}.png",
             )
+            if screenshots_dir is not None and frame_index in screenshots:
+                name = screenshots[frame_index]
+                height = {"profiles-management.png": 430, "overlay.png": 600}.get(
+                    name, CAPTURE_SIZE[1]
+                )
+                window.window.resize(CAPTURE_SIZE[0], height)
+                app.processEvents()
+                if not window.window.grab().save(str(screenshots_dir / name)):
+                    raise RuntimeError(f"Could not save {name}")
+                window.window.resize(*CAPTURE_SIZE)
 
         # GitHub mobile does not autoplay GIFs: the static miniature is the
         # FIRST frame. Open on the scan-complete payoff (all three verified
@@ -994,11 +1032,29 @@ def main() -> int:
         default="",
         help="Select this installed game in a live Game Library capture.",
     )
+    parser.add_argument(
+        "--screenshots-dir", type=Path,
+        help="Also save the scan, profiles and overlay screenshots here.",
+    )
+    parser.add_argument(
+        "--installed", action="store_true",
+        help="Capture the installed PenguinBurner UI instead of checkout modules.",
+    )
     args = parser.parse_args()
+    if args.installed:
+        from importlib.metadata import distribution
+
+        installed = distribution("penguin-burner")
+        installed_root = Path(installed.locate_file("")).resolve()
+        module_path = Path(window_mod.__file__).resolve()
+        if not module_path.is_relative_to(installed_root) or module_path.is_relative_to(REPO_ROOT):
+            parser.error(f"UI did not resolve to the installed distribution: {module_path}")
+        print(f"Installed capture: PenguinBurner {installed.version}, {module_path}")
     render(
         args.output.resolve(),
         live_game_library=args.live_game_library,
         selected_game=args.select_game,
+        screenshots_dir=args.screenshots_dir,
     )
     return 0
 

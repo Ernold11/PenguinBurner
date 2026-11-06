@@ -11,6 +11,16 @@ release, then publishes **PyPI, AUR, COPR, Ubuntu PPA, and Flatpak/Pages**.
 Distribution channels run concurrently; a failure in one does not skip others.
 The command waits for remote COPR/PPA builds and the Pages deployment.
 
+For a GitHub-only release (tag, notes, Python artifacts, and source RPM):
+
+```bash
+scripts/release.sh VERSION --github-only
+```
+
+This mode requires GitHub access and the build tools, but no other publication
+credentials or signing keys. Run the full command later from the same commit
+to publish the remaining channels using the retained artifacts.
+
 ## Before running
 
 1. Update Python, Cargo, Arch, RPM, and Flatpak version metadata and write
@@ -25,6 +35,14 @@ The command waits for remote COPR/PPA builds and the Pages deployment.
 The runner uses a clean clone so untracked local files do not enter artifacts.
 Python build tools live in a release-specific virtual environment. Podman is
 preferred when available; `CIBW_CONTAINER_ENGINE` overrides that choice.
+The manylinux build uses `scripts/prepare-manylinux-mingw.sh` to install
+checksum-pinned MinGW headers when the container lacks Direct3D 12 declarations
+needed by the NVAPI shim. This keeps the existing manylinux glibc baseline.
+
+Flatpak publication builds the 32-bit companion layer in the manylinux
+container first (`scripts/build-native-layer-i386.sh`) and runs flatpak-builder
+with `--disable-rofiles-fuse`: appstream 1.1 decodes icons inside its own
+bubblewrap sandbox, which cannot read through the rofiles-fuse mount.
 
 ## Package checks
 
@@ -35,7 +53,7 @@ checks exercise the working tree. Run all checks from the clean release commit.
 | Surface | Check |
 | --- | --- |
 | Arch and CachyOS | `scripts/check-arch-package-build.sh vanilla cachyos-shelly` |
-| Supported Fedora | `scripts/check-fedora-package-build.sh fedora-43 fedora-44` |
+| Supported Fedora | `scripts/check-fedora-package-build.sh fedora-43 fedora-44 fedora-45` |
 | Ubuntu PPA | `scripts/check-ubuntu-package-build.sh resolute` |
 | Flatpak package/install | `scripts/check-flatpak-install-smoke.sh --container fedora` (also `ubuntu-lts`, `arch`) |
 | Flatpak host Python | `scripts/check-flatpak-host-python.sh` (Debian, Ubuntu, Fedora, Arch scenarios) |
@@ -53,6 +71,12 @@ default to Docker; the systemd lifecycle check defaults to Podman. The manylinux
 builder separately uses `CIBW_CONTAINER_ENGINE`. Flatpak publication also tests
 fresh installation and upgrading the previous signed snapshot before uploading
 the new snapshot.
+
+The Arch checks cover the native Rust package and a fresh CachyOS rustup
+installation. When Cargo is a rustup proxy, the AUR recipe installs the selected
+toolchain as the build user (`RUSTUP_TOOLCHAIN`, defaulting to `stable`) without
+replacing an existing global default. Both paths require the daemon inside the
+wheel as well as the package's `usr/libexec/penguin-burnerd` binary.
 
 ## Unattended signing
 
@@ -99,3 +123,21 @@ Check the GitHub release/tag, PyPI file hashes, AUR version, COPR/PPA build
 results and package repositories, and the public Flatpak bundle/repository.
 Existing report pages must remain available after Pages deployment.
 Update the local GUI/daemon only when that host upgrade is requested.
+
+### Native display-timing build requirement
+
+The Vulkan layer uses the pinned Khronos C headers under
+`overlay/native/latency_layer/vendor/vulkan-headers` in every package build,
+including offline builds. Keep their upstream version, archive hash and licenses
+with the vendored files. An explicit CMake `VULKAN_INCLUDE_DIR` override must
+support `VK_EXT_present_timing`; configuration fails otherwise.
+
+Before publication, check both native layers in the built wheel:
+
+```bash
+python scripts/check-native-display-timing.py dist/python/*.whl
+```
+
+This gate rejects the missing capture implementation shipped in 0.8.4. It checks
+binary contents, not driver support; also verify displayed-frame samples in a
+restarted game on a supported driver.
